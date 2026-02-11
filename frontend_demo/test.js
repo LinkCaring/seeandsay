@@ -95,6 +95,22 @@ function Test({ allQuestions, lang, t }) {
 
   const isMountedRef = React.useRef(true);
 
+  // Adjust counts helpers
+  function adjustCountsForResult(resultString, delta) {
+    if (resultString === "correct") setCorrectAnswers(prev => Math.max(0, prev + delta));
+    else if (resultString === "partly") setPartialAnswers(prev => Math.max(0, prev + delta));
+    else if (resultString === "wrong") setWrongAnswers(prev => Math.max(0, prev + delta));
+  }
+
+  function removeResultForQuestion(questionNumber) {
+    const idx = questionResults.map(function (r) { return r.questionNumber; }).lastIndexOf(questionNumber);
+    if (idx === -1) return;
+    const removed = questionResults[idx];
+    adjustCountsForResult(removed.result, -1);
+    const nextResults = questionResults.slice(0, idx).concat(questionResults.slice(idx + 1));
+    setQuestionResults(nextResults);
+  }
+
   React.useEffect(function cleanupMount() {
     return function () {
       isMountedRef.current = false;
@@ -182,9 +198,13 @@ function Test({ allQuestions, lang, t }) {
     return y * 12 + m;
   }
 
-
   function getCurrentQuestionIndex() {
     return currentIndex;
+  }
+
+  function getQuestionTypeLabel(q) {
+    if (!q) return "comprehension";
+    return q.query_type === "הבנה" ? "comprehension" : "expression";
   }
 
   // =============================================================================
@@ -482,6 +502,38 @@ function Test({ allQuestions, lang, t }) {
     }
   }
 
+  function cancelTrafficPopup() {
+    setShowContinue(false);
+    setTrafficPopupOpen(false);
+    setTrafficPopupChoice(null);
+    setClickedCorrect(false);
+    setClickedMultiAnswers([]);
+    setOrderedClickSequence([]);
+    setMaskImage(null);
+    setMaskCanvas(null);
+  }
+
+  function goToPreviousQuestion() {
+    const currentIdx = getCurrentQuestionIndex();
+    if (currentIdx <= 0) return;
+
+    const currentQuestion = questions[currentIdx];
+    if (currentQuestion) {
+      removeResultForQuestion(currentQuestion.query_number);
+    }
+
+    setShowContinue(false);
+    setTrafficPopupOpen(false);
+    setTrafficPopupChoice(null);
+    setClickedCorrect(false);
+    setClickedMultiAnswers([]);
+    setOrderedClickSequence([]);
+    setMaskImage(null);
+    setMaskCanvas(null);
+
+    updateCurrentQuestionIndex(currentIdx - 1);
+  }
+
   function handleTrafficPopupChoice(result) {
     if (trafficPopupChoice) return;
     setTrafficPopupChoice(result);
@@ -768,6 +820,7 @@ function Test({ allQuestions, lang, t }) {
     let updatedQuestionResults = questionResults;
     if (currentQuestion) {
       const questionNumber = currentQuestion.query_number;
+      const questionTypeLabel = getQuestionTypeLabel(currentQuestion);
       // Map result to string format
       let resultString = "";
       if (result === "success") {
@@ -781,7 +834,8 @@ function Test({ allQuestions, lang, t }) {
       // Create updated array locally to avoid sync issues
       updatedQuestionResults = [...questionResults, {
         questionNumber: questionNumber,
-        result: resultString
+        result: resultString,
+        questionType: questionTypeLabel
       }];
 
       // Add to question results array
@@ -804,20 +858,26 @@ function Test({ allQuestions, lang, t }) {
   // HELPER FUNCTIONS
   // =============================================================================
 
-  // Format question results as Python tuple format: [(1,"correct"),(2,"partly"),(3,"wrong")]
+  // Format question results grouped by type
   function formatQuestionResultsArray(resultsArray) {
     const resultsToFormat = resultsArray || questionResults;
-    if (resultsToFormat.length === 0) {
-      return "[]";
-    }
+    const comp = [];
+    const expr = [];
 
-    const formattedTuples = resultsToFormat.map(function (item) {
+    resultsToFormat.forEach(function (item) {
       const questionNum = parseInt(item.questionNumber, 10);
-      return "(" + questionNum + ",\"" + item.result + "\")";
+      const tuple = "(" + questionNum + ",\"" + item.result + "\")";
+      if (item.questionType === "expression") {
+        expr.push(tuple);
+      } else {
+        comp.push(tuple);
+      }
     });
 
-
-    return "[" + formattedTuples.join(",") + "]";
+    return JSON.stringify({
+      comprehension: "[" + comp.join(",") + "]",
+      expression: "[" + expr.join(",") + "]"
+    });
   }
 
   // Combine two audio blobs into one
@@ -1279,7 +1339,7 @@ function Test({ allQuestions, lang, t }) {
       { className: "progress-bar-container" },
       React.createElement(
         "div",
-        { style: { display: "flex", alignItems: "center", gap: "15px", width: "100%" } },
+        { style: { display: "flex", alignItems: "center", gap: "10px", width: "100%" } },
         // Pause/Resume button on the left (only show during active test)
         voiceIdentifierConfirmed && !sessionCompleted
           ? React.createElement(
@@ -1301,6 +1361,28 @@ function Test({ allQuestions, lang, t }) {
               }
             },
             isPaused ? tr("test.resume") : tr("test.pause")
+          )
+          : null,
+        currentIdx > 0 && voiceIdentifierConfirmed && !sessionCompleted
+          ? React.createElement(
+            "button",
+            {
+              type: "button",
+              onClick: goToPreviousQuestion,
+              "aria-label": tr("test.nav.back.aria"),
+              style: {
+                padding: "8px 12px",
+                fontSize: "13px",
+                backgroundColor: "#e9f9fe",
+                color: "#304348",
+                border: "1px solid rgba(66,171,199,0.35)",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontWeight: 600,
+                flexShrink: 0
+              }
+            },
+            tr("test.nav.back")
           )
           : null,
         // Progress bar and text in the remaining space
@@ -1677,6 +1759,32 @@ function Test({ allQuestions, lang, t }) {
 
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
 
+    // Split results by question type
+    const compStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
+    const exprStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
+    questionResults.forEach(function (item) {
+      const bucket = item.questionType === "expression" ? exprStats : compStats;
+      bucket.total += 1;
+      if (item.result === "correct") bucket.correct += 1;
+      else if (item.result === "partly") bucket.partial += 1;
+      else if (item.result === "wrong") bucket.wrong += 1;
+    });
+
+    const strongerLabel = (function () {
+      if (compStats.correct > exprStats.correct) {
+        return lang === "en" ? "Stronger in comprehension" : "חזק יותר בהבנה";
+      }
+      if (exprStats.correct > compStats.correct) {
+        return lang === "en" ? "Stronger in expression" : "חזק יותר בהבעה";
+      }
+      return lang === "en" ? "Balanced between comprehension and expression" : "מאוזן בין הבנה להבעה";
+    })();
+
+    const statsLine = function (titleHe, titleEn, stats) {
+      const title = lang === "en" ? titleEn : titleHe;
+      return title + ": " + stats.correct + " ✔ / " + stats.partial + " ~ / " + stats.wrong + " ✖ מתוך " + stats.total;
+    };
+
     // Download recording function
     const downloadRecording = function () {
       // Use synchronous version since we're in a synchronous context
@@ -1772,6 +1880,14 @@ function Test({ allQuestions, lang, t }) {
       React.createElement("p", null,
         tr("test.done.total", { answered: totalAnswered, total: questions.length })
       ),
+      React.createElement(
+        "div",
+        { style: { display: "grid", gap: "6px", marginTop: "6px", textAlign: "center" } },
+        React.createElement("strong", null, lang === "en" ? "By category:" : "לפי קטגוריה:"),
+        React.createElement("span", null, statsLine("הבנה", "Comprehension", compStats)),
+        React.createElement("span", null, statsLine("הבעה", "Expression", exprStats)),
+        React.createElement("span", { style: { marginTop: "4px", fontWeight: 600 } }, strongerLabel)
+      ),
       // Download buttons container
       React.createElement(
         "div",
@@ -1855,6 +1971,15 @@ function Test({ allQuestions, lang, t }) {
   const currentQuestion = questions[currentIdx];
   const currentQuestionAgeGroup = currentQuestion ? currentQuestion.age_group : "";
   const currentImageCount = images.length;
+  const isMobile = React.useMemo(function () {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(max-width: 640px)").matches;
+  }, []);
+  const maxRows = 2;
+  const gridColumns = Math.max(1, Math.ceil(currentImageCount / maxRows));
+  const compactImages = currentImageCount > 6;
+  const minImgWidth = compactImages ? (isMobile ? 140 : 120) : (isMobile ? 160 : 140);
+  const imagesGridStyle = { gridTemplateColumns: "repeat(" + gridColumns + ", minmax(" + minImgWidth + "px, 1fr))", gap: isMobile ? "12px" : "16px" };
   const imagesContainerClassName =
     "images-container" +
     (currentImageCount === 1 ? " images-container--single" : "") +
@@ -2039,6 +2164,37 @@ function Test({ allQuestions, lang, t }) {
               e.stopPropagation();
             }
           },
+          (function () {
+            const fallbackBack = lang === "en" ? "↪️ Back" : "↪️ חזור";
+            const fallbackAria = lang === "en" ? "Back to question" : "חזרה לשאלה";
+            const backLabel = (function () {
+              const s = tr("test.trafficPopup.back");
+              return s && s !== "test.trafficPopup.back" ? s : fallbackBack;
+            })();
+            const backAria = (function () {
+              const s = tr("test.trafficPopup.backAria");
+              return s && s !== "test.trafficPopup.backAria" ? s : fallbackAria;
+            })();
+            return React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: cancelTrafficPopup,
+                style: {
+                  position: "absolute",
+                  top: "6px",
+                  left: lang === "en" ? "6px" : "auto",
+                  right: lang === "en" ? "auto" : "6px",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  fontWeight: 700
+                },
+                "aria-label": backAria
+              },
+              backLabel
+            );
+          })(),
           React.createElement("div", { className: "traffic-popup__kicker" }, "🚦"),
           React.createElement("h3", { className: "traffic-popup__title" }, tr("test.trafficPopup.title")),
           React.createElement(
@@ -2119,100 +2275,113 @@ function Test({ allQuestions, lang, t }) {
         "div",
         {
           className: imagesContainerClassName,
+          style: isTwoRow ? { display: "flex", flexDirection: "column", gap: isMobile ? "10px" : "12px" } : imagesGridStyle,
           "data-count": currentImageCount,
           "data-question-type": "C",
         },
-        isTwoRow
-          ? React.createElement(
-            "div",
-            { className: "two-row-layout" },
-            // Top row
-            React.createElement(
+        (function () {
+          const useTwoRows = isTwoRow;
+          const topCountDynamic = isTwoRow ? topRowCount : Math.ceil(currentImageCount / 2);
+          const bottomImages = images.slice(topCountDynamic);
+          if (useTwoRows) {
+            return React.createElement(
               "div",
-              { className: "image-row top-row" },
-              images.slice(0, topRowCount).map(function (img, i) {
-                const imgIndex = i + 1;
-                const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
-                const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
-                  (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
-                const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
+              { className: "two-row-layout" },
+              React.createElement(
+                "div",
+                { className: "image-row top-row" },
+                images.slice(0, topCountDynamic).map(function (img, i) {
+                  const imgIndex = i + 1;
+                  const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
+                  const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
+                  const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
+                    (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
+                  const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
 
-                return React.createElement(
-                  "div",
-                  {
-                    key: i,
-                    className: "image-wrapper",
-                    style: {
-                      position: "relative",
-                      border: isCorrectMulti ? "4px solid #00ff00" : "none",
-                      borderRadius: isCorrectMulti ? "8px" : "0",
-                      boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
-                      opacity: isNonClickable ? 0.5 : 1,
-                      cursor: isNonClickable ? "not-allowed" : "pointer"
-                    }
-                  },
-                  showFireworks
-                    ? React.createElement("img", {
-                      src: "resources/test_assets/general/fireworks.webp",
-                      className: "fireworks",
-                      alt: "celebration",
+                  return React.createElement(
+                    "div",
+                    {
+                      key: i,
+                      className: "image-wrapper",
+                      style: {
+                        position: "relative",
+                        border: isCorrectMulti ? "4px solid #00ff00" : "none",
+                        borderRadius: isCorrectMulti ? "8px" : "0",
+                        boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
+                        opacity: isNonClickable ? 0.5 : 1,
+                        cursor: isNonClickable ? "not-allowed" : "pointer"
+                      }
+                    },
+                    showFireworks
+                      ? React.createElement("img", {
+                        src: "resources/test_assets/general/fireworks.webp",
+                        className: "fireworks",
+                        alt: "celebration",
+                      })
+                      : null,
+                    React.createElement("img", {
+                      src: img,
+                      alt: "option " + (i + 1),
+                      className: topRowBigger ? "image top-row-big" : "image",
+                      style: compactImages
+                        ? { maxWidth: isMobile ? "42vw" : "120px" }
+                        : (isMobile ? { maxWidth: "48vw" } : undefined),
+                      onClick: function (e) { handleClick(img, e); },
                     })
-                    : null,
-                  React.createElement("img", {
-                    src: img,
-                    alt: "option " + (i + 1),
-                    className: topRowBigger ? "image top-row-big" : "image",
-                    onClick: function (e) { handleClick(img, e); },
-                  })
-                );
-              })
-            ),
-            // Bottom row
-            React.createElement(
-              "div",
-              { className: "image-row bottom-row" },
-              images.slice(topRowCount).map(function (img, i) {
-                const imgIndex = topRowCount + i + 1;
-                const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
-                const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
-                  (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
-                const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
+                  );
+                })
+              ),
+              bottomImages.length > 0
+                ? React.createElement(
+                  "div",
+                  { className: "image-row bottom-row" },
+                  bottomImages.map(function (img, i) {
+                    const imgIndex = topCountDynamic + i + 1;
+                    const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
+                    const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
+                    const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
+                      (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
+                    const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
 
-                return React.createElement(
-                  "div",
-                  {
-                    key: topRowCount + i,
-                    className: "image-wrapper",
-                    style: {
-                      position: "relative",
-                      border: isCorrectMulti ? "4px solid #00ff00" : "none",
-                      borderRadius: isCorrectMulti ? "8px" : "0",
-                      boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
-                      opacity: isNonClickable ? 0.5 : 1,
-                      cursor: isNonClickable ? "not-allowed" : "pointer"
-                    }
-                  },
-                  showFireworks
-                    ? React.createElement("img", {
-                      src: "resources/test_assets/general/fireworks.webp",
-                      className: "fireworks",
-                      alt: "celebration",
-                    })
-                    : null,
-                  React.createElement("img", {
-                    src: img,
-                    alt: "option " + (topRowCount + i + 1),
-                    className: "image",
-                    onClick: function (e) { handleClick(img, e); },
+                    return React.createElement(
+                      "div",
+                      {
+                        key: topCountDynamic + i,
+                        className: "image-wrapper",
+                        style: {
+                          position: "relative",
+                          border: isCorrectMulti ? "4px solid #00ff00" : "none",
+                          borderRadius: isCorrectMulti ? "8px" : "0",
+                          boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
+                          opacity: isNonClickable ? 0.5 : 1,
+                          cursor: isNonClickable ? "not-allowed" : "pointer"
+                        }
+                      },
+                      showFireworks
+                        ? React.createElement("img", {
+                          src: "resources/test_assets/general/fireworks.webp",
+                          className: "fireworks",
+                          alt: "celebration",
+                        })
+                        : null,
+                      React.createElement("img", {
+                        src: img,
+                        alt: "option " + (topCountDynamic + i + 1),
+                        className: "image",
+                        style: compactImages
+                          ? { maxWidth: isMobile ? "42vw" : "120px" }
+                          : (isMobile ? { maxWidth: "48vw" } : undefined),
+                        onClick: function (e) { handleClick(img, e); },
+                      })
+                    );
                   })
-                );
-              })
-            )
-          )
-          : // Single row layout (original)
-          images.map(function (img, i) {
+                )
+                : null
+            );
+          }
+
+          // Single row fallback for 1–2 images
+          return images.map(function (img, i) {
             const imgIndex = i + 1;
             const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
             const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
@@ -2245,10 +2414,14 @@ function Test({ allQuestions, lang, t }) {
                 src: img,
                 alt: "option " + (i + 1),
                 className: "image",
+                style: compactImages
+                  ? { maxWidth: isMobile ? "42vw" : "120px" }
+                  : (isMobile ? { maxWidth: "48vw" } : undefined),
                 onClick: function (e) { handleClick(img, e); },
               })
             );
-          }),
+          });
+        })(),
         // Hint chest (if hint text exists)
         hintText && hintText.trim() !== ""
           ? React.createElement(
@@ -2273,7 +2446,6 @@ function Test({ allQuestions, lang, t }) {
       : null,
 
     questionType === "E"
-
       ? React.createElement(
         "div",
         { className: "expression-container" },
@@ -2315,21 +2487,78 @@ function Test({ allQuestions, lang, t }) {
         // microphoneSkipped
         //   ? React.createElement("p", { className : "skippedText" }, "Recording skipped - please evaluate the response")
         //   : null,
-        React.createElement(
-          "div",
-          {
-            className: imagesContainerClassName,
-            "data-count": currentImageCount,
-            "data-question-type": "E",
-          },
-          images.map(function (img, i) {
-            return React.createElement(
-              "div",
-              { key: i, className: "image-wrapper" },
-              React.createElement("img", { src: img, alt: "option " + (i + 1), className: "image" })
-            );
-          })
-        )
+        (function () {
+          const useTwoRows = currentImageCount > 2;
+          const topCountDynamic = Math.ceil(currentImageCount / 2);
+          const bottomImages = images.slice(topCountDynamic);
+
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName,
+              style: useTwoRows ? { display: "flex", flexDirection: "column", gap: isMobile ? "10px" : "12px" } : imagesGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "E",
+            },
+            useTwoRows
+              ? React.createElement(
+                "div",
+                { className: "two-row-layout" },
+                React.createElement(
+                  "div",
+                  { className: "image-row top-row" },
+                  images.slice(0, topCountDynamic).map(function (img, i) {
+                    return React.createElement(
+                      "div",
+                      { key: i, className: "image-wrapper" },
+                      React.createElement("img", {
+                        src: img,
+                        alt: "option " + (i + 1),
+                        className: "image",
+                        style: compactImages
+                          ? { maxWidth: isMobile ? "42vw" : "120px" }
+                          : (isMobile ? { maxWidth: "48vw" } : undefined)
+                      })
+                    );
+                  })
+                ),
+                bottomImages.length > 0
+                  ? React.createElement(
+                    "div",
+                    { className: "image-row bottom-row" },
+                    bottomImages.map(function (img, i) {
+                      return React.createElement(
+                        "div",
+                        { key: topCountDynamic + i, className: "image-wrapper" },
+                        React.createElement("img", {
+                          src: img,
+                          alt: "option " + (topCountDynamic + i + 1),
+                          className: "image",
+                          style: compactImages
+                            ? { maxWidth: isMobile ? "42vw" : "120px" }
+                            : (isMobile ? { maxWidth: "48vw" } : undefined)
+                        })
+                      );
+                    })
+                  )
+                  : null
+              )
+              : images.map(function (img, i) {
+                return React.createElement(
+                  "div",
+                  { key: i, className: "image-wrapper" },
+                  React.createElement("img", {
+                    src: img,
+                    alt: "option " + (i + 1),
+                    className: "image",
+                    style: compactImages
+                      ? { maxWidth: isMobile ? "42vw" : "120px" }
+                      : (isMobile ? { maxWidth: "48vw" } : undefined)
+                  })
+                );
+              })
+          );
+        })()
       )
       : null,
     // Comments display (if comment text exists) - shown for both comprehension and expression questions

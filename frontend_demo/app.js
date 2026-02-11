@@ -29,6 +29,7 @@ function App() {
   });
   const [csvLoaded, setCsvLoaded] = React.useState(false);
   const [allQuestions, setAllQuestions] = React.useState([]);
+  const [showResetConfirm, setShowResetConfirm] = React.useState(false);
 
   const t = function (key, vars) {
     return (window.I18N && window.I18N.t) ? window.I18N.t(key, vars) : key;
@@ -91,7 +92,7 @@ function App() {
     localStorage.removeItem("idDigits");
     localStorage.removeItem("sessionCompleted");
     localStorage.removeItem("sessionRecordingStarted");
-    
+
     // Clean up continuous session recording
     localStorage.removeItem("sessionRecordingActive");
     localStorage.removeItem("sessionRecordingUrl");
@@ -114,7 +115,7 @@ function App() {
 
     window.location.reload();
   }
-  
+
 
 
 
@@ -188,10 +189,92 @@ function App() {
       "button",
       {
         className: "reset-button",
-        onClick: resetAll,
+        onClick: function () {
+          setShowResetConfirm(true);
+        },
       },
       t("app.reset")
-    )
+    ),
+    showResetConfirm
+      ? React.createElement(
+        "div",
+        {
+          style: {
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: "16px"
+          },
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-label": t("app.reset.title"),
+          onClick: function () { setShowResetConfirm(false); }
+        },
+        React.createElement(
+          "div",
+          {
+            style: {
+              background: "white",
+              borderRadius: "14px",
+              padding: "24px 24px 18px",
+              boxShadow: "0 18px 40px rgba(0,0,0,0.22)",
+              maxWidth: "400px",
+              width: "100%",
+              textAlign: "center",
+              fontFamily: "var(--font-family)",
+              position: "relative"
+            },
+            onClick: function (e) { e.stopPropagation(); }
+          },
+          React.createElement("div", { style: { fontSize: "22px", fontWeight: 700, marginBottom: "10px" } }, t("app.reset.title")),
+          React.createElement("p", { style: { color: "#304348", marginBottom: "18px", lineHeight: 1.5 } }, t("app.reset.body")),
+          React.createElement(
+            "div",
+            { style: { display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () { setShowResetConfirm(false); resetAll(); },
+                style: {
+                  padding: "10px 16px",
+                  background: "linear-gradient(135deg,#ff6b6b,#ff8a65)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "10px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  minWidth: "120px"
+                }
+              },
+              t("app.reset.yes")
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () { setShowResetConfirm(false); },
+                style: {
+                  padding: "10px 16px",
+                  background: "#f0f4f7",
+                  color: "#304348",
+                  border: "1px solid rgba(48,67,72,0.15)",
+                  borderRadius: "10px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  minWidth: "120px"
+                }
+              },
+              t("app.reset.no")
+            )
+          )
+        )
+      )
+      : null
   );
 }
 

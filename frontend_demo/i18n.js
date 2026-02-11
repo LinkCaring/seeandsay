@@ -11,6 +11,11 @@ window.I18N = (function () {
             "app.loading.title": "רגע אחד",
             "app.loading.body": "אנחנו טוענים את כל השאלות והמשחקים בשבילכם.",
             "app.reset": "איפוס",
+            "app.reset.confirm": "האם לבצע איפוס? הפעולה תמחק את ההתקדמות.",
+            "app.reset.title": "לאפס את ההתקדמות?",
+            "app.reset.body": "נמחק את כל הנתונים וההתקדמות במבחן הזה. להמשיך?",
+            "app.reset.yes": "כן, לאפס",
+            "app.reset.no": "ביטול",
             "app.brandAlt": "לוגו",
             "app.lang.he": "עברית",
             "app.lang.en": "English",
@@ -36,6 +41,8 @@ window.I18N = (function () {
             "test.trafficPopup.orange.desc": "ענה נכון עם עזרה",
             "test.trafficPopup.red.title": "ננסה שוב",
             "test.trafficPopup.red.desc": "לא הצליח / צריך תרגול",
+            "test.trafficPopup.back": "↪️ חזור",
+            "test.trafficPopup.backAria": "חזרה לשאלה",
 
             "test.paused.title": "⏸️ בהשהיה",
             "test.paused.body": "המבחן בהשהיה. ההקלטה נעצרה.",
@@ -97,12 +104,20 @@ window.I18N = (function () {
             "test.done.downloadRecording": "📥 הורדת הקלטה בלבד (MP3)",
             "test.done.downloadTimestamps": "📄 הורדת פרטי הקלטה בלבד",
 
+            "test.nav.back": "⬅️ לשאלה קודמת",
+            "test.nav.back.aria": "חזרה לשאלה קודמת",
+
             "dev.off": "כבה מצב מפתח"
         },
         en: {
             "app.loading.title": "One moment",
             "app.loading.body": "We’re loading all questions and games for you.",
             "app.reset": "Reset",
+            "app.reset.confirm": "Are you sure? This will clear all progress.",
+            "app.reset.title": "Reset progress?",
+            "app.reset.body": "We’ll clear all data and progress for this test. Continue?",
+            "app.reset.yes": "Yes, reset",
+            "app.reset.no": "Cancel",
             "app.brandAlt": "Logo",
             "app.lang.he": "עברית",
             "app.lang.en": "English",
@@ -128,6 +143,8 @@ window.I18N = (function () {
             "test.trafficPopup.orange.desc": "Correct with help",
             "test.trafficPopup.red.title": "Try again",
             "test.trafficPopup.red.desc": "Not correct / needs practice",
+            "test.trafficPopup.back": "↪️ Back",
+            "test.trafficPopup.backAria": "Back to question",
 
             "test.paused.title": "⏸️ Paused",
             "test.paused.body": "The test is paused. Recording stopped.",
@@ -188,6 +205,9 @@ window.I18N = (function () {
             "test.done.downloadBoth": "📦 Download both (MP3 + timestamps)",
             "test.done.downloadRecording": "📥 Recording only (MP3)",
             "test.done.downloadTimestamps": "📄 Timestamps only",
+
+            "test.nav.back": "⬅️ Previous question",
+            "test.nav.back.aria": "Go back to previous question",
 
             "dev.off": "Turn off dev mode"
         }
