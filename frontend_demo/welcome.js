@@ -1,6 +1,6 @@
 function Welcome({ lang }) {
   const isEn = lang === "en";
-
+ 
   return (
     <div className="welcome-screen">
       <section className="welcome-hero">
