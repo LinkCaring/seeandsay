@@ -30,6 +30,7 @@ function App() {
   const [csvLoaded, setCsvLoaded] = React.useState(false);
   const [allQuestions, setAllQuestions] = React.useState([]);
   const [showResetConfirm, setShowResetConfirm] = React.useState(false);
+  const [testPhase, setTestPhase] = React.useState(null); // "age" | "mic" | "voice" | "questions" | "complete" | null
 
   const t = function (key, vars) {
     return (window.I18N && window.I18N.t) ? window.I18N.t(key, vars) : key;
@@ -57,7 +58,7 @@ function App() {
 
   // Load CSV and start image loading as soon as the site opens
   React.useEffect(() => {
-    Papa.parse("resources/query_database.csv", {
+    Papa.parse("resources/query_database.csv?v=20250218-1", {
       download: true,
       header: true,
       complete: function (res) {
@@ -119,6 +120,13 @@ function App() {
 
 
 
+  // Redirect legacy "help" page to home (help is now merged into landing)
+  React.useEffect(function redirectHelp() {
+    if (page === "help") setPage("home");
+  }, [page]);
+
+  const isLandingPage = page === "home" || page === "help";
+
   let content;
   if (!csvLoaded) {
     content = React.createElement(
@@ -132,69 +140,82 @@ function App() {
       )
     );
   } else if (page === "test") {
-    content = React.createElement(Test, { allQuestions: allQuestions, lang: lang, t: t });
-  } else if (page === "help") {
-    content = React.createElement(Help, { lang: lang, t: t });
+    content = React.createElement(Test, {
+      allQuestions: allQuestions,
+      lang: lang,
+      t: t,
+      onHome: function () { setPage("home"); },
+      onReset: function () { setShowResetConfirm(true); },
+      setLang: function (newLang) {
+        const next = window.I18N.setLang(newLang);
+        setLang(next);
+      },
+      onTestPhase: setTestPhase,
+    });
   } else {
-    content = React.createElement(Welcome, { lang: lang, t: t });
+    content = React.createElement(Welcome, { lang: lang, setPage: setPage });
   }
+
+  var showTopNav = isLandingPage || (page === "test" && testPhase !== "questions" && testPhase !== "complete");
 
   return React.createElement(
     "div",
-    { className: "app-container" },
+    {
+      className: "app-container",
+      "data-page": page,
+      "data-test-phase": page === "test" ? testPhase : undefined,
+    },
     React.createElement(
       "header",
       { className: "top-header" },
-      React.createElement(
-        "div",
-        { className: "top-header__inner" },
-        React.createElement("img", {
-          className: "top-header__logo",
-          src: "resources/test_assets/general/LogoHeader.png",
-          alt: t("app.brandAlt"),
-        }),
-        React.createElement(
-          "div",
-          { className: "top-header__lang" },
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              className: "lang-pill" + (lang === "he" ? " is-active" : ""),
-              onClick: function () {
-                const next = window.I18N.setLang("he");
-                setLang(next);
-              },
-            },
-            t("app.lang.he")
-          ),
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              className: "lang-pill" + (lang === "en" ? " is-active" : ""),
-              onClick: function () {
-                const next = window.I18N.setLang("en");
-                setLang(next);
-              },
-            },
-            t("app.lang.en")
+      showTopNav
+        ? React.createElement(
+            window.AppNavbar,
+            page === "home"
+              ? {
+                  variant: "home",
+                  lang: lang,
+                  t: t,
+                  onReset: function () { setShowResetConfirm(true); },
+                  setLang: function (newLang) {
+                    var next = window.I18N.setLang(newLang);
+                    setLang(next);
+                  },
+                }
+              : {
+                  variant: "complete",
+                  lang: lang,
+                  t: t,
+                  onHome: function () { setPage("home"); },
+                  onReset: function () { setShowResetConfirm(true); },
+                  setLang: function (newLang) {
+                    var next = window.I18N.setLang(newLang);
+                    setLang(next);
+                  },
+                }
           )
-        )
+        : null
+    ),
+    React.createElement(
+      "div",
+      { className: isLandingPage ? "landing-wrapper" : "page-content" },
+      content
+    ),
+    // Landscape orientation overlay — shown only in test mode + portrait
+    React.createElement(
+      "div",
+      { className: "rotate-overlay" },
+      React.createElement("div", { className: "rotate-overlay__icon" }, "📱"),
+      React.createElement("div", { className: "rotate-overlay__arrow" }, "↔️"),
+      React.createElement(
+        "p",
+        { className: "rotate-overlay__msg" },
+        lang === "en"
+          ? "Please rotate your device to landscape mode"
+          : "אנא סובבו את המכשיר למצב אופקי"
       )
     ),
-    React.createElement("div", { className: "page-content" }, content),
-    React.createElement(BottomNav, { page: page, setPage: setPage, lang: lang, t: t }),
-    React.createElement(
-      "button",
-      {
-        className: "reset-button",
-        onClick: function () {
-          setShowResetConfirm(true);
-        },
-      },
-      t("app.reset")
-    ),
+    /* Reset button moved to test navbar */
     showResetConfirm
       ? React.createElement(
         "div",

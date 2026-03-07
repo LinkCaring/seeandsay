@@ -45,6 +45,12 @@ html[dir="ltr"] body {
   border-bottom: 1px solid rgba(48, 67, 72, 0.08);
 }
 
+/* Top header shown on test only when not in questions/complete (age, mic, voice) */
+.app-container[data-page="test"][data-test-phase="questions"] .top-header,
+.app-container[data-page="test"][data-test-phase="complete"] .top-header {
+  display: none;
+}
+
 .top-header__inner {
   width: min(100%, var(--layout-max-width));
   margin: 0 auto;
@@ -106,6 +112,23 @@ html[dir="ltr"] body {
   transform: scale(0.98);
 }
 
+/* Home button inside the language switcher group */
+.top-header__home-pill {
+  font-size: 16px;
+  padding: 6px 10px;
+  min-width: 36px;
+}
+
+/* Thin vertical separator between home icon and lang pills */
+.top-header__lang-sep {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  background: rgba(48, 67, 72, 0.18);
+  margin: 0 2px;
+  border-radius: 1px;
+}
+
 a {
   color: var(--colors-turquoise);
   text-decoration: none;
@@ -149,6 +172,15 @@ p {
   flex-direction: column;
   gap: 24px;
   padding-inline: clamp(16px, 4vw, 32px);
+}
+
+/* Test: default padding when top header is visible (age, mic, voice) */
+.app-container[data-page="test"] .page-content {
+  padding-top: 72px; /* top header height */
+}
+/* Test: when in questions phase — space for TestNavbar + progress bar */
+.app-container[data-page="test"][data-test-phase="questions"] .page-content {
+  padding-top: 158px; /* 64px navbar gap + progress bar height */
 }
 
 .mdc-elevation--z2 {
@@ -229,7 +261,7 @@ p {
   border-radius: 999px;
   background: rgba(66, 171, 199, 0.12);
   color: var(--colors-turquoise);
-  font-size: 13px;
+  font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -405,12 +437,15 @@ button:focus-visible {
 
 /* Query text */
 .query-text {
-  font-size: clamp(22px, 4vw, 42px);
+  font-size: clamp(16px, 2.8vw, 26px);
   font-weight: 600;
   color: var(--colors-text);
   font-family: var(--font-family);
   text-align: center;
   letter-spacing: -0.01em;
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .skippedTest {
@@ -419,27 +454,117 @@ button:focus-visible {
   font-family: var(--font-family);
 }
 
-/* Align question and traffic light */
+/* Question section card (replay + text + hint/expected) */
+.question-section {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 12px;
+
+  width: min(100%, var(--layout-max-width));
+  margin: 0 auto 0px;
+  margin-top: 0;
+  padding: clamp(12px, 3vw, 20px) 10px clamp(12px, 3vw, 20px) 0;
+  scroll-margin-top: 158px; /* Ensure question section always visible below fixed navbar + progress bar */
+
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(66, 171, 199, 0.22);
+  border-radius: 20px;
+  box-shadow: 0 16px 40px rgba(48, 67, 72, 0.14);
+
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+
+  animation: question-glow 3.6s ease-in-out infinite;
+}
+
+[dir="rtl"] .question-section {
+  padding: clamp(12px, 3vw, 20px) 0 clamp(12px, 3vw, 20px) 10px; /* 10px on visual right in RTL */
+}
+
+/* Speaker icon + question text — one unit, attached */
+.question-section__query-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.question-section__query-row .query-text {
+  flex: 0 1 auto;
+  margin: 0;
+}
+
+/* Notes (expected answer / hint) — same row as question by default */
+.question-section__notes {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.question-section__notes.expected-answer-box {
+  padding: 6px 14px;
+}
+
+.question-section__notes.hint-inline-container {
+  justify-content: center;
+}
+
+/* On small screens: notes drop to own line and are centered */
+@media (max-width: 600px) {
+  .question-section__notes {
+    width: 100%;
+  }
+}
+
+/* On very small screens, stack vertically */
+@media (max-width: 400px) {
+  .question-section {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .question-section__notes {
+    width: 100%;
+  }
+}
+
+.question-section::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background:
+    radial-gradient(260px at 20% 20%, rgba(255, 234, 0, 0.14), transparent 55%),
+    radial-gradient(260px at 80% 35%, rgba(255, 0, 153, 0.10), transparent 60%),
+    radial-gradient(320px at 50% 95%, rgba(66, 171, 199, 0.16), transparent 62%);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* keep old .question-row alias for any leftover references */
 .question-row {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: clamp(16px, 4vw, 32px);
   flex-wrap: wrap;
-
   width: min(100%, var(--layout-max-width));
   margin: 0 auto 18px;
   padding: clamp(18px, 4vw, 28px);
-
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(66, 171, 199, 0.22);
   border-radius: 26px;
   box-shadow: 0 20px 50px rgba(48, 67, 72, 0.16);
-
   position: relative;
   overflow: hidden;
   isolation: isolate;
-
   animation: question-glow 3.6s ease-in-out infinite;
 }
 
@@ -498,7 +623,7 @@ button:focus-visible {
 .images-container {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 24px;
+  gap: 10px;
   margin: 0;
   padding: 0;
 }
@@ -509,6 +634,8 @@ button:focus-visible {
   display: flex;
   justify-content: center;
   align-items: center;
+  overflow: hidden; /* keep fireworks inside the image bounds */
+  border-radius: 16px; /* match .image border-radius */
 }
 
 /* Each image */
@@ -519,7 +646,8 @@ button:focus-visible {
   border-radius: 16px;
   cursor: pointer;
   transition: transform var(--transition-base), box-shadow var(--transition-base);
-  object-fit: cover;
+  object-fit: contain;
+  background-color: #f5f5f5;
   box-shadow: 0 10px 20px rgba(48, 67, 72, 0.16);
   border: 1px solid rgba(48, 67, 72, 0.08);
 }
@@ -542,66 +670,45 @@ button:focus-visible {
 /* Fireworks above the correct image */
 .fireworks {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: clamp(110px, 16vw, 190px);
-  height: auto;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
   pointer-events: none;
-  z-index: 50;
-  mix-blend-mode: screen;
-  filter:
-    saturate(3.4) contrast(1.34) brightness(1.22) drop-shadow(0 10px 18px rgba(48, 67, 72, 0.28)) drop-shadow(0 0 14px rgba(255, 234, 0, 0.7)) drop-shadow(0 0 24px rgba(255, 0, 153, 0.75)) drop-shadow(0 0 34px rgba(102, 0, 255, 0.62)) drop-shadow(0 0 40px rgba(0, 255, 255, 0.5));
-  transform-origin: 50% 80%;
+  z-index: 1500;
+  mix-blend-mode: normal;
+  transform-origin: 50% 50%;
   will-change: transform, filter, opacity;
   animation:
-    fireworks-pop 380ms cubic-bezier(0.2, 1.4, 0.2, 1) both,
-    fireworks-float 1200ms ease-in-out 380ms infinite,
-    fireworks-hue 2200ms linear 380ms infinite;
+    fireworks-pulse 900ms ease-in-out infinite,
+    fireworks-hue 2200ms linear infinite;
 }
 
-@keyframes fireworks-pop {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) translateY(10px) scale(0.65) rotate(-8deg);
-    filter:
-      saturate(3.4) contrast(1.34) brightness(1.22) drop-shadow(0 0 0 rgba(48, 67, 72, 0)) drop-shadow(0 0 0 rgba(255, 234, 0, 0)) drop-shadow(0 0 0 rgba(255, 0, 153, 0)) drop-shadow(0 0 0 rgba(102, 0, 255, 0)) drop-shadow(0 0 0 rgba(0, 255, 255, 0));
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate(-50%, -50%) translateY(-10px) scale(1.22) rotate(6deg);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate(-50%, -50%) translateY(0) scale(1) rotate(0deg);
-  }
-}
-
-@keyframes fireworks-float {
-  0% {
-    transform: translate(-50%, -50%) translateY(0) scale(1);
-  }
-
-  50% {
-    transform: translate(-50%, -50%) translateY(-8px) scale(1.02);
-  }
-
-  100% {
-    transform: translate(-50%, -50%) translateY(0) scale(1);
-  }
+/* Starts fully visible, then pulses on/off */
+@keyframes fireworks-pulse {
+  0%   { opacity: 1;    transform: scale(1); }
+  40%  { opacity: 1;    transform: scale(1.08); }
+  55%  { opacity: 0.05; transform: scale(0.92); }
+  70%  { opacity: 1;    transform: scale(1.05); }
+  100% { opacity: 1;    transform: scale(1); }
 }
 
 @keyframes fireworks-hue {
   0% {
     filter:
-      hue-rotate(0deg) saturate(3.4) contrast(1.34) brightness(1.22) drop-shadow(0 10px 18px rgba(48, 67, 72, 0.28)) drop-shadow(0 0 14px rgba(255, 234, 0, 0.7)) drop-shadow(0 0 24px rgba(255, 0, 153, 0.75)) drop-shadow(0 0 34px rgba(102, 0, 255, 0.62)) drop-shadow(0 0 40px rgba(0, 255, 255, 0.5));
+      hue-rotate(0deg) saturate(6) contrast(1.8) brightness(2)
+      drop-shadow(0 0 22px rgba(255, 234, 0, 1))
+      drop-shadow(0 0 36px rgba(255, 0, 153, 1))
+      drop-shadow(0 0 50px rgba(102, 0, 255, 0.9))
+      drop-shadow(0 0 60px rgba(0, 255, 255, 0.8));
   }
-
   100% {
     filter:
-      hue-rotate(360deg) saturate(3.4) contrast(1.34) brightness(1.22) drop-shadow(0 10px 18px rgba(48, 67, 72, 0.28)) drop-shadow(0 0 14px rgba(255, 234, 0, 0.7)) drop-shadow(0 0 24px rgba(255, 0, 153, 0.75)) drop-shadow(0 0 34px rgba(102, 0, 255, 0.62)) drop-shadow(0 0 40px rgba(0, 255, 255, 0.5));
+      hue-rotate(360deg) saturate(6) contrast(1.8) brightness(2)
+      drop-shadow(0 0 22px rgba(255, 234, 0, 1))
+      drop-shadow(0 0 36px rgba(255, 0, 153, 1))
+      drop-shadow(0 0 50px rgba(102, 0, 255, 0.9))
+      drop-shadow(0 0 60px rgba(0, 255, 255, 0.8));
   }
 }
 
@@ -716,73 +823,6 @@ button:focus-visible {
     0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
-/* =========================================================
-     BOTTOM NAVIGATION - Material Design
-     ========================================================= */
-
-.bottom-nav {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(100% - 32px, var(--layout-max-width));
-  background: rgba(255, 255, 255, 0.94);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 18px;
-  border-radius: 28px;
-  box-shadow: 0 18px 40px rgba(48, 67, 72, 0.15);
-  backdrop-filter: blur(14px);
-  z-index: 1100;
-  border: 1px solid rgba(48, 67, 72, 0.08);
-}
-
-
-.bottom-nav button {
-  flex: 1;
-  background: none;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--colors-gray);
-  cursor: pointer;
-  transition: color var(--transition-base), background-color var(--transition-base), transform var(--transition-base);
-  padding: 10px 12px;
-  border-radius: 16px;
-  margin: 0 6px;
-  font-family: var(--font-family);
-}
-
-.bottom-nav button .icon {
-  font-size: 26px;
-  transition: transform var(--transition-base);
-}
-
-.bottom-nav button:hover {
-  background-color: rgba(66, 171, 199, 0.12);
-  color: var(--colors-turquoise);
-  transform: translateY(-2px);
-}
-
-.bottom-nav button:hover .icon {
-  transform: scale(1.1);
-}
-
-.bottom-nav button.active {
-  color: var(--colors-turquoise);
-  font-weight: 600;
-  background: rgba(66, 171, 199, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(66, 171, 199, 0.25);
-}
-
-.bottom-nav button.active .icon {
-  transform: scale(1.1);
-}
 
 /* =========================================================
      HELP SECTION - Material Design
@@ -961,18 +1001,30 @@ button:focus-visible {
 }
 
 /* =========================================================
+    TOUCH & MOBILE GLOBALS
+    ========================================================= */
+
+/* Eliminate double-tap zoom delay on all interactive elements */
+button, [role="button"], input, select, textarea, a {
+  touch-action: manipulation;
+}
+
+/* Ensure all buttons have a minimum touch target */
+button {
+  min-height: 44px;
+}
+
+/* =========================================================
     RESPONSIVE ADJUSTMENTS
     ========================================================= */
 
 @media (max-width: 992px) {
   .app-container {
-    padding: 48px 0 160px;
+    padding: 48px 0 80px;
   }
 
-  .bottom-nav {
-    width: min(100% - 24px, 680px);
-  }
 }
+
 
 @media (max-width: 768px) {
   .content-area {
@@ -992,24 +1044,14 @@ button:focus-visible {
   }
 
   .traffic-light .light {
-    width: 44px;
-    height: 44px;
-  }
-
-  .bottom-nav {
-    bottom: 16px;
-    padding: 10px 12px;
-    border-radius: 22px;
+    width: 48px;
+    height: 48px;
   }
 
 
-  .bottom-nav button {
-    font-size: 12px;
-    margin: 0 4px;
-  }
 
   .reset-button {
-    bottom: 112px;
+    bottom: 24px;
     inset-inline-end: 18px;
   }
 
@@ -1024,11 +1066,57 @@ button:focus-visible {
   .welcome-hero p {
     max-width: 100%;
   }
+
+  /* Centered screens: reduce top margin on tablet */
+  .age-screen,
+  .microphone-permission-screen,
+  .session-complete,
+  .advanced-choice,
+  .question-loading-screen {
+    margin-top: 40px;
+    margin-bottom: 24px;
+  }
+}
+
+@media (max-width: 600px) {
+  /* Centered screens: compact on mobile */
+  .age-screen,
+  .microphone-permission-screen,
+  .session-complete,
+  .advanced-choice,
+  .question-loading-screen {
+    margin: 16px auto;
+    padding: 28px 20px;
+    max-width: calc(100% - 32px);
+  }
+
+  /* Mic buttons: stack vertically on small screens */
+  .allowMic,
+  .skipMic {
+    display: block;
+    width: 100%;
+    margin-inline-start: 0;
+    margin-top: 10px;
+    text-align: center;
+  }
+
+  /* Voice identifier screen: reduce padding */
+  .voice-identifier-screen {
+    padding: 24px 16px;
+  }
+
+  /* Advanced choice buttons: wrap and fill */
+  .advanced-choice button {
+    min-width: 100px;
+    padding: 14px 20px;
+    margin: 6px 4px;
+    flex: 1;
+  }
 }
 
 @media (max-width: 520px) {
   .app-container {
-    padding: 36px 0 170px;
+    padding: 36px 0 80px;
   }
 
   .page-content {
@@ -1041,23 +1129,34 @@ button:focus-visible {
   }
 
   .images-container {
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 14px;
   }
 
   .image {
     max-width: 150px;
   }
 
-  .bottom-nav {
-    width: min(100% - 16px, 360px);
-  }
-
-
   .reset-button {
-    bottom: 108px;
+    bottom: 20px;
     inset-inline-end: 16px;
     padding: 10px 22px;
+  }
+
+  /* Hint text: narrower on small screens */
+  .hint-text {
+    max-width: 180px;
+    font-size: 13px;
+  }
+
+  /* Top header: smaller logo */
+  .top-header__logo {
+    height: 42px;
+  }
+
+  /* Age screen inputs: fill width */
+  .age-screen input {
+    width: 90px;
   }
 }
 
@@ -1150,7 +1249,7 @@ button:focus-visible {
 
 .reset-button {
   position: fixed;
-  bottom: 132px;
+  bottom: 32px;
   inset-inline-end: 32px;
   padding: 12px 26px;
   background: linear-gradient(135deg, var(--status-res-error), #7a1f42);
@@ -1306,6 +1405,27 @@ button:focus-visible {
   font-family: var(--font-family);
 }
 
+.session-complete__nav {
+  width: 100%;
+  margin-bottom: 20px;
+}
+
+.session-complete__nav .test-navbar {
+  width: 100%;
+}
+
+/* Completion: bunny overlapping carrot (sitting on it) */
+.session-complete__bunny-carrot {
+  position: relative;
+}
+.session-complete__carrot {
+  z-index: 1;
+}
+.session-complete__bunny {
+  z-index: 2;
+  margin-left: -20px; /* overlap so bunny sits on carrot */
+}
+
 .session-complete h2 {
   color: var(--status-green-success);
   font-size: 28px;
@@ -1449,13 +1569,91 @@ button:focus-visible {
 
 /* Demo has a fixed progress bar at the top */
 
-
-.progress-bar-container {
+/* Test navbar (home, reset, dev, languages) */
+.test-navbar {
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(48, 67, 72, 0.12);
+  box-shadow: 0 2px 12px rgba(48, 67, 72, 0.08);
+  z-index: 1300;
+  padding: 8px 12px;
+}
+
+.test-navbar__inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--layout-max-width);
+  margin: 0 auto;
+}
+
+.test-navbar__logo {
+  height: 32px;
+  width: auto;
+  object-fit: contain;
+  margin-inline-end: 8px;
+}
+
+.test-navbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  font-size: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(48, 67, 72, 0.15);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--transition-base), transform var(--transition-base), box-shadow var(--transition-base);
+  line-height: 1;
+}
+
+.test-navbar__btn:hover {
+  background: rgba(255, 255, 255, 1);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(48, 67, 72, 0.12);
+}
+
+.test-navbar__btn--dev-on {
+  background: rgba(255, 87, 34, 0.12);
+  border-color: rgba(255, 87, 34, 0.4);
+}
+
+.test-navbar__btn--pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.test-navbar__btn--pause.is-paused {
+  background: rgba(76, 175, 80, 0.15);
+  border-color: rgba(76, 175, 80, 0.5);
+}
+
+.test-navbar__lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(48, 67, 72, 0.08);
+  box-shadow: 0 12px 26px rgba(48, 67, 72, 0.1);
+  margin-inline-start: auto;
+}
+
+.progress-bar-container {
+  position: fixed;
+  top: 64px; /* Below test-navbar — extra gap so back button isn’t covered */
+  left: 0;
+  right: 0;
   background: rgba(255, 255, 255, 0.92);
-  margin-bottom: 15px;
+  margin-bottom: 0;
   padding: 8px 12px;
   box-shadow: 0 10px 30px rgba(48, 67, 72, 0.12);
   z-index: 1200;
@@ -1517,6 +1715,35 @@ button:focus-visible {
       rgba(255, 255, 255, 0.55) 22px);
   opacity: 0.28;
   pointer-events: none;
+}
+
+/* Back button — whole area (icon + text) clickable, above pseudo-elements */
+.traffic-popup__back {
+  position: absolute;
+  top: 6px;
+  left: 4px;
+  right: auto;
+  padding: 2px 5px;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  font-family: var(--font-family);
+  font-size: 12px;
+  z-index: 10;
+  border-radius: 5px;
+  transition: background-color 0.2s;
+}
+[dir="rtl"] .traffic-popup__back {
+  left: auto;
+  right: 10px;
+}
+.traffic-popup__back:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .traffic-popup__kicker {
@@ -1662,26 +1889,73 @@ button:focus-visible {
   }
 }
 
-.progress-bar {
+/* Bunny progress track */
+.bunny-track-wrapper {
+  position: relative;
   width: 100%;
-  height: 10px;
-  background-color: rgba(176, 192, 196, 0.35);
-  border-radius: 999px;
-  overflow: hidden;
-  margin-bottom: 4px;
+  padding-top: 14px;
 }
 
-.progress-fill {
-  height: 100%;
-  background: var(--brand-gradient);
+.bunny-track {
+  position: relative;
+  width: 100%;
+  height: 22px;
+  background: linear-gradient(135deg, #d4f5a8 0%, #b8e87a 100%);
   border-radius: 999px;
-  transition: width 0.3s ease;
+  border: 2px solid rgba(100, 180, 40, 0.35);
+  overflow: visible;
+  margin-bottom: 3px;
+  direction: ltr;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
 }
+
+.bunny-track-fill {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(to left, #7ed957, #4caf50);
+  border-radius: 999px;
+  transition: width 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.bunny-avatar {
+  position: absolute;
+  top: 50%;
+  font-size: 22px;
+  line-height: 1;
+  transition: left 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform: translate(-50%, -60%);
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.18));
+  z-index: 2;
+  animation: bunny-hop 0.45s ease-in-out infinite alternate;
+  pointer-events: none;
+  user-select: none;
+}
+
+.bunny-carrot {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-58%);
+  font-size: 20px;
+  line-height: 1;
+  z-index: 2;
+  pointer-events: none;
+  user-select: none;
+}
+
+@keyframes bunny-hop {
+  from { transform: translate(-50%, -60%); }
+  to   { transform: translate(-50%, -78%); }
+}
+
 
 .progress-text {
   font-size: 12px;
   color: var(--colors-dark-gray);
   font-weight: 600;
+  text-align: center;
 }
 
 .pause-button {
@@ -1693,16 +1967,112 @@ button:focus-visible {
   transform: translateY(-1px);
 }
 
-/* Voice identifier flow (demo) */
+/* ── Test control bar ─────────────────────────────────────── */
+.test-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  font-size: 14px;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid rgba(48,67,72,0.14);
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background var(--transition-base), transform var(--transition-base);
+  line-height: 1;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255,255,255,1);
+  transform: translateY(-1px);
+}
+
+.ctrl-btn--placeholder {
+  visibility: hidden;
+  pointer-events: none;
+  width: 34px;
+}
+
+.ctrl-btn--pause {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ctrl-btn--pause.is-paused {
+  background: rgba(76, 175, 80, 0.15);
+  border-color: rgba(76, 175, 80, 0.5);
+}
+
+.ctrl-btn--dev-on {
+  background: rgba(255, 87, 34, 0.15);
+  border-color: rgba(255, 87, 34, 0.5);
+}
+
+/* Recording dot */
+.rec-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e53935;
+  box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.55);
+  animation: rec-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.rec-dot--off {
+  background: #aaa;
+  animation: none;
+  box-shadow: none;
+}
+
+.rec-dot--paused {
+  background: #ff9800;
+  animation: none;
+  box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.35);
+}
+
+@keyframes rec-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.55); }
+  50%       { box-shadow: 0 0 0 5px rgba(229, 57, 53, 0); }
+}
+
+/* Dev mode indicator strip */
+.dev-mode-indicator {
+  background: rgba(255, 87, 34, 0.08);
+  border-bottom: 1px solid rgba(255, 87, 34, 0.25);
+  padding: 4px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Voice identifier flow (demo) – card similar to completion screen */
 .voice-identifier-screen {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
-  max-width: 680px;
-  margin: 0 auto;
+  padding: 32px 28px;
+  max-width: 620px;
+  margin: 40px auto;
   gap: 16px;
+  background: var(--bg-white);
+  border-radius: 16px;
+  box-shadow:
+    0px 2px 4px -1px rgba(0, 0, 0, 0.2),
+    0px 4px 5px 0px rgba(0, 0, 0, 0.14),
+    0px 1px 10px 0px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(66, 171, 199, 0.18);
 }
 
 .hebrew-text {
@@ -1760,15 +2130,24 @@ button:focus-visible {
 .two-row-layout {
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 6px;
   width: 100%;
 }
 
+/* image-row is turned into a proper grid via inline style in test.js */
+/* CSS here only provides fallback display */
 .image-row {
-  display: flex;
-  justify-content: center;
-  gap: 20px;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  align-items: center;
+  justify-items: center;
+}
+
+/* image-wrapper fills its grid cell */
+.image-row .image-wrapper {
+  width: 100%;
+  max-width: 180px;
 }
 
 .top-row-big {
@@ -1794,8 +2173,8 @@ button:focus-visible {
 }
 
 .hint-chest {
-  width: 44px;
-  height: 44px;
+  width: 64px;
+  height: 64px;
   cursor: pointer;
   transition: transform var(--transition-base), filter var(--transition-base);
   filter:
@@ -1831,6 +2210,33 @@ button:focus-visible {
 
 .hint-container[data-open="true"]::after {
   animation: sparkle-pop 700ms ease-out both;
+}
+
+/* Hint trigger (🔍) — icon only, no background */
+.hint-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  box-shadow: none;
+  cursor: pointer;
+  transition: transform var(--transition-base), opacity var(--transition-base);
+}
+
+.hint-trigger-btn:hover {
+  transform: scale(1.1);
+  opacity: 0.9;
+}
+
+.hint-inline-container[data-open="true"] .hint-trigger-btn {
+  opacity: 0.85;
 }
 
 .hint-text {
@@ -1963,28 +2369,132 @@ button:focus-visible {
   width: min(420px, 90vw);
 }
 
-/* Replay question audio button (demo) */
+/* Replay question audio button — icon only, no background */
 .replay-audio-btn {
-  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 700;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: none;
+  transition: transform var(--transition-base), opacity var(--transition-base);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.replay-audio-btn__icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.replay-audio-btn__label {
+  white-space: nowrap;
+}
+
+.replay-audio-btn__label:empty {
+  display: none;
+}
+
+/* Expression: traffic light in its own column on the left, question centered in the rest.
+   Using normal flex layout (no overlay) so the replay icon stays fully clickable and
+   the two never overlap even on very wide screens with long text. */
+.question-section--expression {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  column-gap: 18px;
+}
+.question-section--expression .question-section__evaluate-wrap {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+[dir="rtl"] .question-section--expression {
+  flex-direction: row-reverse;
+}
+.question-section--expression .question-section__center {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 60px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  align-content: center;
+  gap: 10px 12px;
+}
+
+/* Evaluate (traffic light) — expression + other uses keep margin */
+.question-section__evaluate-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0; /* no space between icon and word */
+  flex: 0 0 auto;
+}
+.question-section:not(.question-section--expression) .question-section__evaluate-wrap {
+  margin-inline-end: auto;
+}
+[dir="rtl"] .question-section:not(.question-section--expression) .question-section__evaluate-wrap {
+  margin-inline-end: 0;
+  margin-inline-start: auto;
+}
+
+.question-section__evaluate-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 12px 18px;
-  font-size: 14px;
-  font-weight: 800;
-  background: var(--brand-gradient);
-  color: white;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  font-size: 34px;
+  line-height: 1;
+  background: transparent;
   border: none;
-  border-radius: 999px;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
   cursor: pointer;
-  box-shadow: 0 14px 30px rgba(48, 67, 72, 0.18);
-  transition: transform var(--transition-base), opacity var(--transition-base), filter var(--transition-base);
+  transition: transform var(--transition-base), opacity var(--transition-base);
+  pointer-events: auto; /* keep button clickable even when wrapper has pointer-events: none */
+}
+
+.question-section__evaluate-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--colors-dark-gray);
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.question-section__evaluate-icon-btn:focus {
+  outline: none;
+}
+
+.question-section__evaluate-icon-btn:focus-visible {
+  outline: none;
+}
+
+.question-section__evaluate-icon-btn:hover:not(:disabled) {
+  transform: scale(1.1);
+  opacity: 0.9;
+}
+
+.question-section__evaluate-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .replay-audio-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: saturate(1.15) contrast(1.1);
+  transform: scale(1.08);
+  opacity: 0.9;
 }
 
 .replay-audio-btn:disabled {
@@ -1992,24 +2502,69 @@ button:focus-visible {
   cursor: not-allowed;
 }
 
-.replay-audio-btn--inline {
-  align-self: center;
-  padding: 8px 12px;
-  font-size: 12px;
-  min-width: auto;
+/* Evaluate button (expression – below images) */
+.evaluate-btn {
+  display: block;
+  margin: 10px auto 0;
+  padding: 10px 22px;
+  font-size: 15px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #ff9800, #ff5722);
+  color: white;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(255, 87, 34, 0.35);
+  transition: transform var(--transition-base), opacity var(--transition-base);
+}
+
+.evaluate-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.evaluate-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Expected-answer box (expression – inside question section) */
+.expected-answer-box {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 6px 14px;
+  background: #fffbea;
+  border: 1px solid #f0c040;
+  border-radius: 10px;
+  font-size: 14px;
+  color: #333;
+  line-height: 1.5;
+  text-align: center;
+  flex: 0 1 auto;
   max-width: 100%;
+  box-sizing: border-box;
 }
 
-/* Make the replay button float inside the question card without affecting layout */
-.question-row {
-  position: relative;
+.expected-answer-box__icon {
+  font-size: 16px;
+  flex-shrink: 0;
 }
 
-.question-row .replay-audio-btn--inline {
-  position: absolute;
-  top: 14px;
-  inset-inline-end: 14px;
-  z-index: 5;
+.expected-answer-box__label {
+  font-weight: 700;
+}
+
+/* Hint inline container (comprehension – inside question section) */
+.hint-inline-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 /* =========================================================
@@ -2019,18 +2574,22 @@ button:focus-visible {
 /* Differentiate attachments by question type */
 .images-container--comprehension {
   position: relative;
-  padding: 10px;
+  padding: 8px;
   border-radius: 18px;
   background: rgba(66, 171, 199, 0.08);
   border: 1px solid rgba(66, 171, 199, 0.18);
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .images-container--expression {
   position: relative;
-  padding: 12px;
+  padding: 8px;
   border-radius: 18px;
   background: rgba(102, 0, 255, 0.08);
   border: 1px solid rgba(102, 0, 255, 0.2);
+  box-sizing: border-box;
+  width: 100%;
 }
 
 /* Big single image layout */
@@ -2045,6 +2604,47 @@ button:focus-visible {
   max-width: min(86vw, 520px);
   width: 100%;
   border-radius: 20px;
+}
+
+/* ── Many-image questions: shrink images to fit one screen ── */
+/* With aspect-ratio:1, capping max-height constrains both dimensions */
+.images-container[data-count="10"] .image,
+.images-container[data-count="9"] .image {
+  max-width: min(16vw, 110px) !important;
+  max-height: min(16vw, 110px);
+}
+
+.images-container[data-count="8"] .image,
+.images-container[data-count="7"] .image {
+  max-width: min(19vw, 130px) !important;
+  max-height: min(19vw, 130px);
+}
+
+.images-container[data-count="6"] .image {
+  max-width: min(22vw, 150px) !important;
+  max-height: min(22vw, 150px);
+}
+
+/* In landscape (the recommended test orientation) – allow slightly more height */
+@media (orientation: landscape) {
+  .images-container[data-count="10"] .image,
+  .images-container[data-count="9"] .image {
+    max-width: min(18vh, 120px) !important;
+    max-height: min(18vh, 120px);
+  }
+
+  .images-container[data-count="8"] .image,
+  .images-container[data-count="7"] .image {
+    max-width: min(22vh, 140px) !important;
+    max-height: min(22vh, 140px);
+  }
+
+  /* Landscape: even tighter for many images */
+  .images-container[data-count="10"] .two-row-layout,
+  .images-container[data-count="9"] .two-row-layout,
+  .images-container[data-count="8"] .two-row-layout {
+    gap: 4px;
+  }
 }
 
 /* Expression attachments: present as "reference" (slightly different feel) */
@@ -2068,7 +2668,7 @@ button:focus-visible {
   }
 
   .query-text {
-    font-size: 28px;
+    font-size: clamp(22px, 6vw, 32px);
   }
 
   .traffic-light {
@@ -2078,58 +2678,63 @@ button:focus-visible {
   }
 
   .traffic-light .light {
-    width: 58px;
-    height: 58px;
+    width: 56px;
+    height: 56px;
   }
 
   .images-container {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 12px;
   }
 
   .image {
-    max-width: min(70vw, 240px);
+    max-width: min(42vw, 200px);
   }
 
   .images-container--single .image {
     max-width: min(95vw, 620px);
   }
 
-  .bottom-nav button .icon {
-    font-size: 30px;
-  }
-
-  .bottom-nav button {
-    font-size: 14px;
-    padding: 12px 12px;
-  }
-
   .reset-button {
     padding: 14px 28px;
     font-size: 15px;
   }
+
+  /* Question row tighter on small phones */
+  .question-row {
+    padding: 16px 14px;
+    gap: 12px;
+    border-radius: 20px;
+  }
+
+  /* Hebrew nikud text */
+  .hebrew-text {
+    font-size: 20px;
+    padding: 14px;
+  }
 }
 
 @media (max-width: 480px) {
-  html {
-    font-size: 18px;
-  }
-
   .app-container {
-    padding: 20px 0 140px;
+    padding: 16px 0 70px;
   }
 
   .page-content {
-    gap: 18px;
+    gap: 14px;
+    padding-inline: 10px;
   }
 
   .welcome-screen {
-    gap: 16px;
+    gap: 14px;
   }
 
   .welcome-hero h1 {
-    font-size: 26px;
+    font-size: clamp(22px, 7vw, 30px);
     line-height: 1.25;
+  }
+
+  .welcome-hero p {
+    font-size: 15px;
   }
 
   .welcome-card {
@@ -2137,35 +2742,566 @@ button:focus-visible {
   }
 
   .welcome-card h3 {
-    font-size: 18px;
+    font-size: 17px;
   }
 
   .welcome-card p {
-    font-size: 15px;
+    font-size: 14px;
   }
 
   .content-area {
-    padding: 22px 16px;
+    padding: 18px 14px;
+    border-radius: 16px;
   }
 
   .progress-bar-container {
     padding-inline: 6px;
   }
 
-  .bottom-nav {
-    width: calc(100% - 16px);
-    padding: 12px;
-  }
-
-  .bottom-nav button {
-    font-size: 13px;
-  }
-
   .image {
-    max-width: min(78vw, 240px);
+    max-width: min(42vw, 180px);
   }
 
   .images-container {
-    gap: 12px;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
   }
+
+  /* Traffic light buttons bigger for fat fingers */
+  .traffic-light .light {
+    width: 52px;
+    height: 52px;
+  }
+
+  /* Popup traffic options more touch-friendly */
+  .traffic-option {
+    padding: 14px 12px;
+  }
+
+  .traffic-option__icon {
+    width: 42px;
+    height: 42px;
+    font-size: 20px;
+  }
+}
+
+/* Very small phones (iPhone SE, Galaxy A series) */
+@media (max-width: 380px) {
+  .image {
+    max-width: min(44vw, 160px);
+  }
+
+  .images-container {
+    gap: 8px;
+  }
+
+  .query-text {
+    font-size: clamp(20px, 5.5vw, 26px);
+  }
+}
+
+/* =========================================================
+   LANDING PAGE (single-scroll, replaces 3-tab Welcome+Help)
+   ========================================================= */
+
+/* Remove bottom padding from app-container on landing */
+[data-page="home"] .app-container,
+.app-container[data-page="home"] {
+  padding-bottom: 0;
+}
+
+.landing-wrapper {
+  width: 100%;
+  flex: 1;
+}
+
+.landing-page {
+  width: 100%;
+  scroll-behavior: smooth;
+}
+
+/* ── Sticky section nav (sticks right below the top-header) ── */
+.landing-nav {
+  position: sticky;
+  top: 85px; /* top-header height: 56px logo + 14px*2 padding + 1px border */
+  left: 0;
+  right: 0;
+  z-index: 1250;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(247, 250, 251, 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(48, 67, 72, 0.08);
+}
+
+.landing-nav button {
+  background: transparent;
+  border: 1px solid rgba(66, 171, 199, 0.3);
+  border-radius: 999px;
+  padding: 6px 18px;
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--colors-dark-gray);
+  cursor: pointer;
+  transition: background var(--transition-base), color var(--transition-base);
+  min-height: 36px;
+}
+
+.landing-nav button:hover {
+  background: rgba(66, 171, 199, 0.12);
+  color: var(--colors-turquoise);
+}
+
+/* ── Sections ── */
+/* scroll-margin-top: header (85px) + sticky nav (~56px) = 141px */
+.landing-section {
+  scroll-margin-top: 148px;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(48px, 8vh, 80px) clamp(20px, 5vw, 60px);
+}
+
+#landing-intro {
+  min-height: auto;
+  padding-top: clamp(16px, 3vh, 32px);
+  padding-bottom: clamp(32px, 5vh, 56px);
+}
+
+#landing-start {
+  scroll-margin-top: 148px;
+}
+
+
+.landing-section--alt {
+  background: linear-gradient(135deg, rgba(66, 171, 199, 0.06), rgba(73, 203, 149, 0.05));
+}
+
+.landing-section--start {
+  background: linear-gradient(135deg, rgba(102, 0, 255, 0.06), rgba(66, 171, 199, 0.08));
+  min-height: auto;
+  padding-top: clamp(40px, 6vh, 72px);
+  padding-bottom: clamp(120px, 20vh, 240px);
+}
+
+.landing-section__inner {
+  max-width: 900px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: clamp(20px, 4vh, 36px);
+}
+
+/* ── Typography ── */
+.landing-title {
+  font-size: clamp(28px, 5vw, 52px);
+  font-weight: 700;
+  line-height: 1.18;
+  color: var(--colors-text);
+  margin: 0;
+}
+
+.landing-section-title {
+  font-size: clamp(22px, 3.5vw, 38px);
+  font-weight: 700;
+  color: var(--colors-text);
+  margin: 0;
+}
+
+.landing-desc {
+  font-size: clamp(15px, 1.8vw, 19px);
+  color: var(--colors-dark-gray);
+  max-width: 680px;
+  line-height: 1.65;
+  margin: 0;
+}
+
+/* ── Intro text box (Section 1) ── */
+.intro-textbox {
+  max-width: 680px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(66, 171, 199, 0.25);
+  border-radius: 18px;
+  padding: clamp(20px, 4vw, 36px) clamp(22px, 4vw, 40px);
+  box-shadow: 0 8px 32px rgba(48, 67, 72, 0.09);
+  text-align: start;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.intro-textbox p {
+  font-size: clamp(15px, 1.7vw, 18px);
+  color: var(--colors-dark-gray);
+  line-height: 1.75;
+  margin: 0;
+}
+
+.intro-textbox__note {
+  font-size: clamp(12px, 1.3vw, 14px) !important;
+  color: rgba(48, 67, 72, 0.58) !important;
+  border-top: 1px solid rgba(66, 171, 199, 0.18);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+.how-tips-box {
+  background: rgba(255, 248, 220, 0.7);
+  border-color: rgba(255, 190, 50, 0.3);
+}
+
+.how-tips-list {
+  margin: 0;
+  padding-inline-start: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.how-tips-list li {
+  font-size: clamp(14px, 1.6vw, 17px);
+  color: var(--colors-dark-gray);
+  line-height: 1.65;
+}
+
+.how-traffic-box {
+  background: rgba(240, 248, 255, 0.8);
+  border-color: rgba(66, 171, 199, 0.3);
+  max-width: 680px;
+  width: 100%;
+}
+
+.how-traffic-title {
+  font-size: clamp(15px, 1.6vw, 18px);
+  font-weight: 700;
+  color: var(--colors-text);
+  margin: 0 0 10px;
+}
+
+.how-traffic-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.how-traffic-list li {
+  font-size: clamp(14px, 1.5vw, 16px);
+  color: var(--colors-dark-gray);
+  line-height: 1.6;
+}
+
+/* ── Feature cards (Section 1) ── */
+.landing-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 18px;
+  width: 100%;
+}
+
+.landing-card {
+  background: rgba(255, 255, 255, 0.82);
+  border-radius: 20px;
+  padding: 22px 18px;
+  border: 1px solid rgba(48, 67, 72, 0.08);
+  box-shadow: 0 12px 28px rgba(48, 67, 72, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: start;
+}
+
+.landing-card__icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.landing-card h3 {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--colors-text);
+  margin: 0;
+}
+
+.landing-card p {
+  font-size: 14px;
+  color: var(--colors-dark-gray);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* ── How-to grid (Section 2) ── */
+.landing-how-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  width: 100%;
+  text-align: start;
+}
+
+.landing-how-card {
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 18px;
+  padding: 20px 18px;
+  border: 1px solid rgba(66, 171, 199, 0.14);
+  box-shadow: 0 10px 22px rgba(48, 67, 72, 0.09);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+}
+
+.landing-how-card__num {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--brand-gradient);
+  color: white;
+  font-size: 15px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.landing-how-card h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--colors-text);
+  margin: 0;
+}
+
+.landing-how-card ul {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--colors-dark-gray);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Scroll hint button ── */
+.landing-scroll-btn {
+  background: transparent;
+  border: 1px solid rgba(66, 171, 199, 0.35);
+  border-radius: 999px;
+  padding: 10px 26px;
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--colors-turquoise);
+  cursor: pointer;
+  transition: background var(--transition-base), transform var(--transition-base);
+  min-height: 44px;
+}
+
+.landing-scroll-btn:hover {
+  background: rgba(66, 171, 199, 0.1);
+  transform: translateY(2px);
+}
+
+/* ── Start section (Section 3) ── */
+.landing-start-inner {
+  gap: clamp(18px, 3vh, 30px);
+}
+
+.landing-rotate-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(66, 171, 199, 0.1);
+  border: 1px solid rgba(66, 171, 199, 0.24);
+  border-radius: 14px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--colors-turquoise);
+  max-width: 480px;
+}
+
+.landing-rotate-icon {
+  font-size: 22px;
+}
+
+.landing-cta-btn {
+  background: var(--brand-gradient);
+  color: white;
+  border: none;
+  border-radius: 999px;
+  padding: 18px 48px;
+  font-family: var(--font-family);
+  font-size: clamp(18px, 2.5vw, 22px);
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 18px 40px rgba(48, 67, 72, 0.22);
+  transition: transform var(--transition-base), box-shadow var(--transition-base), filter var(--transition-base);
+  min-height: 60px;
+  letter-spacing: 0.02em;
+}
+
+.landing-cta-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 24px 50px rgba(48, 67, 72, 0.28);
+  filter: saturate(1.12) brightness(1.04);
+}
+
+.landing-cta-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 12px 24px rgba(48, 67, 72, 0.2);
+}
+
+/* =========================================================
+   ROTATE OVERLAY — portrait + test mode
+   ========================================================= */
+
+.rotate-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(14, 20, 22, 0.97);
+  backdrop-filter: blur(8px);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px;
+  gap: 16px;
+  color: white;
+}
+
+.rotate-overlay__icon {
+  font-size: 56px;
+  animation: rotate-bounce 1.4s ease-in-out infinite;
+}
+
+.rotate-overlay__arrow {
+  font-size: 40px;
+}
+
+.rotate-overlay__msg {
+  font-size: clamp(18px, 4vw, 22px);
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 320px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+@keyframes rotate-bounce {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  25%       { transform: rotate(90deg) scale(1.1); }
+  75%       { transform: rotate(90deg) scale(1.05); }
+}
+
+/* Show overlay ONLY when: test page + portrait + mobile/tablet */
+@media (orientation: portrait) and (max-width: 1024px) {
+  [data-page="test"] .rotate-overlay {
+    display: flex;
+  }
+}
+
+/* =========================================================
+   LANDING PAGE — RESPONSIVE
+   ========================================================= */
+
+@media (max-width: 768px) {
+  .landing-section {
+    padding: clamp(36px, 6vh, 60px) clamp(16px, 4vw, 28px);
+  }
+
+  .landing-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-how-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-nav {
+    gap: 6px;
+    padding: 8px 12px;
+  }
+
+  .landing-nav button {
+    font-size: 13px;
+    padding: 6px 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .landing-section {
+    min-height: 100svh;
+    padding: 28px 14px;
+  }
+
+  .landing-cta-btn {
+    padding: 16px 32px;
+    font-size: 18px;
+    width: 100%;
+    max-width: 320px;
+  }
+
+  .landing-rotate-hint {
+    font-size: 13px;
+    padding: 10px 14px;
+  }
+
+  .landing-nav {
+    flex-wrap: wrap;
+    top: 70px; /* smaller header on mobile (42px logo + 14px*2 padding) */
+  }
+
+  #landing-intro {
+    padding-top: calc(70px + 50px + 20px);
+  }
+
+  .landing-section {
+    scroll-margin-top: 120px;
+  }
+}
+
+/* =========================================================
+   FIREWORKS FIX - override the broken inset:0 rule above
+   ========================================================= */
+/* The image-wrapper uses display:flex which centers the image.
+   Fireworks must also be centered and sized like the image. */
+.fireworks {
+  position: absolute !important;
+  inset: unset !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: 100% !important;
+  max-width: 180px !important;  /* same as .image max-width */
+  height: auto !important;
+  aspect-ratio: 1 !important;
+  object-fit: contain !important;
+}
+
+/* In 2-row grid the cells can be smaller than 180px - let fireworks fill them */
+.image-row .fireworks {
+  max-width: 100% !important;
+}
+
+/* Restore vibrant colors (filter was not changed, but ensure it stays) */
+.fireworks {
+  filter:
+    saturate(5) contrast(1.5) brightness(1.8)
+    drop-shadow(0 0 12px rgba(255, 234, 0, 1))
+    drop-shadow(0 0 20px rgba(255, 0, 153, 1))
+    drop-shadow(0 0 28px rgba(102, 0, 255, 0.9))
+    drop-shadow(0 0 36px rgba(0, 255, 255, 0.8)) !important;
 }
