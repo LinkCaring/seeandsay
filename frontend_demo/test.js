@@ -1,4 +1,4 @@
-function Test({ allQuestions, lang, t }) {
+function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) {
   const tr = function (key, vars) {
     return t ? t(key, vars) : key;
   };
@@ -51,6 +51,7 @@ function Test({ allQuestions, lang, t }) {
   const [target, setTarget] = React.useState("");
   const [showContinue, setShowContinue] = React.useState(false);
   const [clickedCorrect, setClickedCorrect] = React.useState(false);
+  const [fireworksVisible, setFireworksVisible] = React.useState(false);
   const [sessionCompleted, setSessionCompleted] = usePersistentState("sessionCompleted", false);
   const [questionType, setQuestionType] = React.useState("C");
 
@@ -69,6 +70,8 @@ function Test({ allQuestions, lang, t }) {
   const [answerType, setAnswerType] = React.useState("single"); // "single", "multi", "ordered", "mask"
   const [multiAnswers, setMultiAnswers] = React.useState([]); // Array of correct answer indices
   const [clickedMultiAnswers, setClickedMultiAnswers] = React.useState([]); // Array of clicked correct answers
+  const [allClickedAnswers, setAllClickedAnswers] = React.useState([]); // Array of all clicked answers (for multi)
+  const [minCorrectAnswers, setMinCorrectAnswers] = React.useState(null); // Minimum number of correct answers required (for multi with minimum)
   const [orderedAnswers, setOrderedAnswers] = React.useState([]); // Array of answer indices in order
   const [orderedClickSequence, setOrderedClickSequence] = React.useState([]); // Sequence of clicks
 
@@ -94,6 +97,12 @@ function Test({ allQuestions, lang, t }) {
   const [currentQuestionImagesLoaded, setCurrentQuestionImagesLoaded] = React.useState(false);
 
   const isMountedRef = React.useRef(true);
+
+  // Mobile detection - must be before any early returns
+  const isMobile = React.useMemo(function () {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(max-width: 640px)").matches;
+  }, []);
 
   // Adjust counts helpers
   function adjustCountsForResult(resultString, delta) {
@@ -136,8 +145,23 @@ function Test({ allQuestions, lang, t }) {
 
   const skipReadingAppliedRef = React.useRef(false);
 
-
-
+  // Report current test phase to App so it can show top navbar on age/mic/voice screens
+  React.useEffect(function () {
+    if (!onTestPhase) return;
+    var phase =
+      !ageConfirmed && !ageInvalid
+        ? "age"
+        : ageInvalid
+          ? "ageInvalid"
+          : !permission && !microphoneSkipped
+            ? "mic"
+            : (permission || microphoneSkipped) && !voiceIdentifierConfirmed
+              ? "voice"
+              : sessionCompleted
+                ? "complete"
+                : "questions";
+    onTestPhase(phase);
+  }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
 
   // =============================================================================
   // DEVELOPER MODE FUNCTIONS
@@ -383,7 +407,6 @@ function Test({ allQuestions, lang, t }) {
 
     setVoiceIdentifierConfirmed(true);
     setReadingValidated(true);
-    playQuestionOne();
   };
 
   const handleReadingValidationRetry = async function () {
@@ -503,14 +526,15 @@ function Test({ allQuestions, lang, t }) {
   }
 
   function cancelTrafficPopup() {
+    if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
+    setFireworksVisible(false);
     setShowContinue(false);
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
     setClickedCorrect(false);
     setClickedMultiAnswers([]);
+    setAllClickedAnswers([]);
     setOrderedClickSequence([]);
-    setMaskImage(null);
-    setMaskCanvas(null);
   }
 
   function goToPreviousQuestion() {
@@ -522,11 +546,14 @@ function Test({ allQuestions, lang, t }) {
       removeResultForQuestion(currentQuestion.query_number);
     }
 
+    if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
+    setFireworksVisible(false);
     setShowContinue(false);
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
     setClickedCorrect(false);
     setClickedMultiAnswers([]);
+    setAllClickedAnswers([]);
     setOrderedClickSequence([]);
     setMaskImage(null);
     setMaskCanvas(null);
@@ -534,18 +561,22 @@ function Test({ allQuestions, lang, t }) {
     updateCurrentQuestionIndex(currentIdx - 1);
   }
 
+  const trafficChoiceInProgressRef = React.useRef(false);
+  const fireworksTimerRef = React.useRef(null);
+
   function handleTrafficPopupChoice(result) {
-    if (trafficPopupChoice) return;
-    setTrafficPopupChoice(result);
+    // Prevent double-invocation (double-click)
+    if (trafficChoiceInProgressRef.current) return;
+    trafficChoiceInProgressRef.current = true;
+
     playTrafficFeedback(result);
-    setTimeout(function () {
-      // Prevent the popup from immediately re-opening during the next-question transition.
-      // The popup is driven by `showContinue`, which may still be true when `currentIndex` changes.
-      setShowContinue(false);
-      setTrafficPopupOpen(false);
-      setTrafficPopupChoice(null);
-      handleContinue(result);
-    }, 650);
+    setShowContinue(false);
+    setTrafficPopupOpen(false);
+    setTrafficPopupChoice(null);
+
+    // All three buttons (green/orange/red) advance to next question
+    handleContinue(result);
+    trafficChoiceInProgressRef.current = false;
   }
 
   // Start AFK timer when test begins
@@ -677,29 +708,17 @@ function Test({ allQuestions, lang, t }) {
 
 
 
-  const playQuestionOne = function () {
-    // Load and play question audio
-    const audioUrl = "resources/questions_audio/audio_1.mp3";
-    const audio = new Audio(audioUrl);
-    audio.onended = function () {
-      setIsAudioPlaying(false);
-    };
-    audio.onerror = function () {
-      console.warn('Audio file not found for question:', q.query_number);
-    };
-    setQuestionAudio(audio);
-    // Play audio automatically when question loads
-    setTimeout(function () {
-      audio.play().catch(function (err) {
-        console.warn('Audio autoplay failed:', err);
-      });
-      setIsAudioPlaying(true);
-    }, 100);
+
+
+
+  // Show fireworks immediately, open popup after 1s
+  function showCorrectFeedback() {
+    setFireworksVisible(true);
+    if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
+    fireworksTimerRef.current = setTimeout(function () {
+      setShowContinue(true);
+    }, 1000);
   }
-
-
-
-
 
   const handleClick = function (img, event) {
     // Reset AFK timer on user interaction
@@ -717,32 +736,76 @@ function Test({ allQuestions, lang, t }) {
       if (answerType === "single") {
         // Original single-answer behavior
         const correct = img === target;
-        if (correct) setClickedCorrect(true);
-        setShowContinue(true);
+        if (correct) {
+          setClickedCorrect(true);
+          showCorrectFeedback(); // 1s delay → fireworks → 1s delay → popup
+        } else {
+          setShowContinue(true);
+        }
       } else if (answerType === "multi") {
-        // Multi-answer: check if this is a correct answer
-        if (multiAnswers.includes(imgIndex)) {
-          // Add to clicked answers if not already clicked
-          if (!clickedMultiAnswers.includes(imgIndex)) {
-            const newClicked = [...clickedMultiAnswers, imgIndex];
-            setClickedMultiAnswers(newClicked);
+        // Multi-answer: track all clicked answers
+        if (!allClickedAnswers.includes(imgIndex)) {
+          const newAllClicked = [...allClickedAnswers, imgIndex];
+          setAllClickedAnswers(newAllClicked);
 
-            // Check if all correct answers have been clicked
-            if (newClicked.length === multiAnswers.length) {
+          // Check if this is a correct answer
+          let updatedClickedCorrect = clickedMultiAnswers;
+          if (multiAnswers.includes(imgIndex)) {
+            // Add to clicked correct answers if not already clicked
+            if (!clickedMultiAnswers.includes(imgIndex)) {
+              updatedClickedCorrect = [...clickedMultiAnswers, imgIndex];
+              setClickedMultiAnswers(updatedClickedCorrect);
+              setFireworksVisible(true); // show fireworks immediately on each correct click
+            }
+          }
+
+          // If minCorrectAnswers is set, check if we have enough correct answers
+          // Otherwise, mark as correct if all correct answers have been clicked
+          let isNowCorrect = false;
+          if (minCorrectAnswers !== null) {
+            if (updatedClickedCorrect.length >= minCorrectAnswers) {
               setClickedCorrect(true);
+              isNowCorrect = true;
+            }
+          } else {
+            if (updatedClickedCorrect.length === multiAnswers.length) {
+              setClickedCorrect(true);
+              isNowCorrect = true;
+            }
+          }
+
+          // Show continue after selecting required number of total answers
+          const requiredTotal = minCorrectAnswers !== null ? multiAnswers.length : multiAnswers.length;
+          if (newAllClicked.length >= requiredTotal) {
+            if (isNowCorrect) {
+              // Fireworks already visible; just delay the popup
+              if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
+              fireworksTimerRef.current = setTimeout(function () { setShowContinue(true); }, 1000);
+            } else {
               setShowContinue(true);
             }
           }
         }
       } else if (answerType === "ordered") {
         // Ordered answer: check if this matches the next expected answer
-
         if (orderedClickSequence.length > 0 && orderedClickSequence.at(-1) != imgIndex) {
           const newSequence = [orderedClickSequence.at(-1), imgIndex]
           setOrderedClickSequence(newSequence)
-          setShowContinue(true);
-          if (newSequence[0] === 2 && newSequence[1] === 1) {
+          
+          // Check if the sequence matches the expected ordered answers
+          let isNowCorrect = false;
+          if (newSequence.length === orderedAnswers.length && 
+              newSequence.every(function(val, idx) { return val === orderedAnswers[idx]; })) {
             setClickedCorrect(true);
+            isNowCorrect = true;
+          }
+          // Show continue after selecting required number of answers (2 answers for ordered)
+          if (newSequence.length === orderedAnswers.length) {
+            if (isNowCorrect) {
+              showCorrectFeedback();
+            } else {
+              setShowContinue(true);
+            }
           }
         }
         else {
@@ -750,15 +813,16 @@ function Test({ allQuestions, lang, t }) {
           setOrderedClickSequence(newSequence)
         }
       } else if (answerType === "mask") {
-        // CHANGE A: Fixed mask detection
         // Mask-based answer: check if click is on green pixel
         if (maskCanvas) {
           const isGreen = checkMaskClick(event);
           if (isGreen) {
             setClickedCorrect(true);
+            showCorrectFeedback(); // 1s delay → fireworks → 1s delay → popup
+          } else {
+            setShowContinue(true);
           }
         }
-        setShowContinue(true);
       }
     }
   };
@@ -843,11 +907,10 @@ function Test({ allQuestions, lang, t }) {
       console.log("Recorded result for question", questionNumber, ":", resultString);
     }
 
-    // Simply move to next question or complete session
+    // All results (success, partial, failure) advance to the next question
     if (currentIdx < questions.length - 1) {
       updateCurrentQuestionIndex(currentIdx + 1);
     } else {
-      // Pass updated results to avoid sync issues with state
       completeSession(updatedQuestionResults);
     }
   };
@@ -1016,9 +1079,12 @@ function Test({ allQuestions, lang, t }) {
       SessionRecorder.markQuestionStart(q.query_number);
     }
 
+    if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
+    setFireworksVisible(false);
     setShowContinue(false);
     setClickedCorrect(false);
     setClickedMultiAnswers([]);
+    setAllClickedAnswers([]);
     setOrderedClickSequence([]);
     setMaskImage(null);
     setMaskCanvas(null);
@@ -1067,6 +1133,7 @@ function Test({ allQuestions, lang, t }) {
 
       setTarget("");
       setMultiAnswers([]);
+      setMinCorrectAnswers(null);
       setOrderedAnswers([]);
     } else if (answerStr.startsWith("x") && answerStr.includes("|")) {
       // Non-clickable image format: "xn|m" where n is non-clickable, m is correct
@@ -1080,12 +1147,23 @@ function Test({ allQuestions, lang, t }) {
       setMultiAnswers([]);
       setOrderedAnswers([]);
     } else if (answerStr.includes(",")) {
-      // Multi-answer type: "1,2,3,4,10"
+      // Multi-answer type: "1,2,3,4,10" or "3,4,6,7,8|4" (with minimum)
       setAnswerType("multi");
-      const answers = answerStr.split(",").map(function (a) {
+      let answersStr = answerStr;
+      let minRequired = null;
+      
+      // Check if there's a minimum requirement (format: "answers|min")
+      if (answerStr.includes("|")) {
+        const parts = answerStr.split("|");
+        answersStr = parts[0];
+        minRequired = parseInt(parts[1].trim(), 10);
+      }
+      
+      const answers = answersStr.split(",").map(function (a) {
         return parseInt(a.trim(), 10);
       });
       setMultiAnswers(answers);
+      setMinCorrectAnswers(minRequired); // Set minimum if specified, otherwise null
       setTarget(""); // Not used for multi-answer
     } else if (answerStr.includes("->")) {
       // Ordered answer type: "2->1"
@@ -1107,7 +1185,7 @@ function Test({ allQuestions, lang, t }) {
 
     setImages(imgs);
     setQuestionType(q.query_type === "הבנה" ? "C" : "E");
-    if (permission || microphoneSkipped) { //check if the microphone permission stage is over
+    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed) { //check if the microphone permission stage is over
       //play the audio
 
       // Load and play question audio
@@ -1152,7 +1230,6 @@ function Test({ allQuestions, lang, t }) {
   }
 
   function completeSession(updatedQuestionResults) {
-    setSessionCompleted(true);
     setImages([]);
 
     // If test is paused, unpause it first
@@ -1184,7 +1261,7 @@ function Test({ allQuestions, lang, t }) {
               console.log("✅ Audio combined successfully");
             }
 
-            // Store final audio (combined or test-only) for download
+            // Store final audio (combined or test-only) for download, then show completion screen
             const reader2 = new FileReader();
             reader2.onloadend = function () {
               const base64data = reader2.result;
@@ -1195,6 +1272,7 @@ function Test({ allQuestions, lang, t }) {
               }));
               const url = URL.createObjectURL(finalBlob);
               localStorage.setItem("sessionRecordingUrl", url);
+              setSessionCompleted(true);
             };
             reader2.readAsDataURL(finalBlob);
 
@@ -1214,8 +1292,9 @@ function Test({ allQuestions, lang, t }) {
             // Not ready yet, check again in 100ms
             setTimeout(checkRecordingReady, 100);
           } else {
-            // Timeout - send without recording
+            // Timeout - send without recording, then show completion
             console.warn("⚠️ Recording conversion timeout after " + maxAttempts + " attempts= " + (maxAttempts * 100) + "ms");
+            setSessionCompleted(true);
             const fullArray = formatQuestionResultsArray(updatedQuestionResults);
             setWaitingForTranscription(true);
             updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
@@ -1231,6 +1310,7 @@ function Test({ allQuestions, lang, t }) {
           }
         }).catch(function (err) {
           console.error("❌ Error checking recording:", err);
+          setSessionCompleted(true);
           const fullArray = formatQuestionResultsArray(updatedQuestionResults);
           setWaitingForTranscription(true);
           updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
@@ -1249,7 +1329,8 @@ function Test({ allQuestions, lang, t }) {
       // Start polling after a small initial delay
       setTimeout(checkRecordingReady, 200);
     } else {
-      // No recording, send immediately
+      // No recording, show completion and send immediately
+      setSessionCompleted(true);
       const fullArray = formatQuestionResultsArray(updatedQuestionResults);
       setWaitingForTranscription(true);
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
@@ -1309,7 +1390,7 @@ function Test({ allQuestions, lang, t }) {
         checkCurrentQuestionImages();
       }
     },
-    [ageConfirmed, questions, currentIndex, sessionCompleted]
+    [ageConfirmed, questions, currentIndex, sessionCompleted, voiceIdentifierConfirmed]
   );
 
   // Monitor if current question images are loaded
@@ -1329,81 +1410,85 @@ function Test({ allQuestions, lang, t }) {
   // RENDER
   // =============================================================================
 
+  function TestNavbar() {
+    const isRecording = permission && sessionRecordingStarted;
+    const showControls = voiceIdentifierConfirmed && !sessionCompleted;
+    const AppNavbar = window.AppNavbar;
+    if (!AppNavbar) {
+      return React.createElement("div", { className: "test-navbar" }, null);
+    }
+    return React.createElement(
+      "div",
+      { className: "test-navbar" },
+      React.createElement(AppNavbar, {
+        variant: "test",
+        lang: lang,
+        t: t,
+        onHome: onHome,
+        onReset: onReset,
+        setLang: setLang,
+        showDev: true,
+        showPause: showControls,
+        isPaused: isPaused,
+        pauseTest: pauseTest,
+        resumeTest: resumeTest,
+        devMode: devMode,
+        setDevMode: setDevMode,
+        isRecording: !!isRecording,
+      })
+    );
+  }
+
   function ProgressBar() {
     const currentIdx = getCurrentQuestionIndex();
     const totalQuestions = questions.length;
     const progressPercentage = totalQuestions > 0 ? (currentIdx / totalQuestions) * 100 : 0;
+    const isRecording = permission && sessionRecordingStarted;
+    const showControls = voiceIdentifierConfirmed && !sessionCompleted;
 
     return React.createElement(
       "div",
       { className: "progress-bar-container" },
       React.createElement(
         "div",
-        { style: { display: "flex", alignItems: "center", gap: "10px", width: "100%" } },
-        // Pause/Resume button on the left (only show during active test)
-        voiceIdentifierConfirmed && !sessionCompleted
-          ? React.createElement(
-            "button",
-            {
-              className: "pause-button",
-              onClick: isPaused ? resumeTest : pauseTest,
-              style: {
-                padding: "8px 16px",
-                fontSize: "14px",
-                backgroundColor: isPaused ? "#4CAF50" : "#FF9800",
-                color: "white",
-                border: "none",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontWeight: "bold",
-                flexShrink: 0,
-                minWidth: "100px"
-              }
-            },
-            isPaused ? tr("test.resume") : tr("test.pause")
-          )
-          : null,
-        currentIdx > 0 && voiceIdentifierConfirmed && !sessionCompleted
-          ? React.createElement(
-            "button",
-            {
-              type: "button",
-              onClick: goToPreviousQuestion,
-              "aria-label": tr("test.nav.back.aria"),
-              style: {
-                padding: "8px 12px",
-                fontSize: "13px",
-                backgroundColor: "#e9f9fe",
-                color: "#304348",
-                border: "1px solid rgba(66,171,199,0.35)",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontWeight: 600,
-                flexShrink: 0
-              }
-            },
-            tr("test.nav.back")
-          )
-          : null,
-        // Progress bar and text in the remaining space
+        { className: "test-controls-row" },
+
+        // Back button
+        currentIdx > 0 && showControls
+          ? React.createElement("button", {
+            type: "button",
+            className: "ctrl-btn",
+            onClick: goToPreviousQuestion,
+            title: tr("test.nav.back"),
+            "aria-label": tr("test.nav.back.aria")
+          }, lang === "en" ? "←" : "→")
+          : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" }),
+
+        // Bunny track (flex: 1)
         React.createElement(
           "div",
-          { style: { flex: 1 } },
+          { style: { flex: 1, minWidth: 0 } },
           React.createElement(
             "div",
-            { className: "progress-bar" },
+            { className: "bunny-track-wrapper" },
             React.createElement(
               "div",
-              {
-                className: "progress-fill",
+              { className: "bunny-track" },
+              React.createElement("div", {
+                className: "bunny-track-fill",
                 style: { width: progressPercentage + "%" }
-              }
+              }),
+              React.createElement("span", {
+                className: "bunny-avatar",
+                style: { left: Math.max(4, 100 - progressPercentage) + "%" }
+              }, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")),
+              React.createElement("span", { className: "bunny-carrot" }, "🥕")
+            ),
+            React.createElement(
+              "div",
+              { className: "progress-text" },
+              tr("test.progress", { current: currentIdx + 1, total: totalQuestions })
             )
-          ),
-          React.createElement(
-            "div",
-            { className: "progress-text" },
-            tr("test.progress", { current: currentIdx, total: totalQuestions })
           )
         )
       )
@@ -1467,12 +1552,20 @@ function Test({ allQuestions, lang, t }) {
         tr("test.mic.allow")
       ),
       React.createElement(
-        "button",
+        "p",
         {
-          className: "skipMic",
-          onClick: skipMicrophone,
+          style: {
+            marginTop: "24px",
+            fontSize: "14px",
+            color: "rgba(0, 7, 8, 0.55)",
+            maxWidth: "340px",
+            lineHeight: "1.6",
+            textAlign: "center"
+          }
         },
-        tr("test.mic.skip")
+        lang === "en"
+          ? "Note: The system records the assessment for future development and improvement purposes. Currently, the recording is not used for the language assessment of the child."
+          : "שים לב! המערכת מקליטה את ההערכה לשם פיתוח וטיוב עתידי. בתוצאות הערכה כרגע אין שימוש בהקלטה לצורכי הערכה השפתית של הילד."
       )
     );
   }
@@ -1873,7 +1966,76 @@ function Test({ allQuestions, lang, t }) {
     return React.createElement(
       "div",
       { className: "session-complete" },
+      // Navigation bar for completion screen — same AppNavbar (logo, home, reset, languages)
+      (function () {
+        var AppNavbar = window.AppNavbar;
+        if (!AppNavbar) return React.createElement("div", { className: "session-complete__nav" }, null);
+        return React.createElement(
+          "div",
+          { className: "session-complete__nav", style: { width: "100%", marginBottom: "20px" } },
+          React.createElement("div", { className: "test-navbar" },
+            React.createElement(AppNavbar, {
+              variant: "complete",
+              lang: lang,
+              t: t,
+              onHome: onHome,
+              onReset: onReset,
+              setLang: setLang,
+            })
+          )
+        );
+      })(),
       React.createElement("h2", null, tr("test.done.title")),
+      // Completed bunny track — same track the user saw throughout, now 100% full
+      React.createElement(
+        "div",
+        { style: { width: "100%", padding: "18px 0 6px", direction: "ltr" } },
+        React.createElement(
+          "div",
+          { className: "bunny-track", style: { height: "28px" } },
+          // Full green fill
+          React.createElement("div", {
+            className: "bunny-track-fill",
+            style: { width: "100%" }
+          }),
+          // Bunny on top of carrot — carrot at left, bunny overlapping it (sitting on carrot)
+          React.createElement(
+            "div",
+            {
+              className: "session-complete__bunny-carrot",
+              style: {
+                position: "absolute",
+                left: "6px",
+                top: "50%",
+                transform: "translateY(-62%)",
+                display: "flex",
+                alignItems: "flex-end",
+                zIndex: 2,
+                lineHeight: 1
+              }
+            },
+            React.createElement("span", {
+              className: "session-complete__carrot",
+              style: { fontSize: "42px", display: "block", animation: "bunny-hop-victory 0.5s ease-in-out 0.15s infinite alternate" }
+            }, "🥕"),
+            React.createElement("span", {
+              className: "session-complete__bunny",
+              style: { fontSize: "46px", display: "block", animation: "bunny-hop-victory 0.5s ease-in-out infinite alternate" }
+            }, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰"))
+          )
+        ),
+        React.createElement("style", null, `
+          @keyframes bunny-hop-victory {
+            from { transform: translateY(0); }
+            to   { transform: translateY(-40%); }
+          }
+        `),
+        React.createElement(
+          "div",
+          { style: { textAlign: "center", fontSize: "13px", fontWeight: 600, color: "var(--colors-dark-gray)", marginTop: "4px" } },
+          lang === "en" ? "🎉 All done!" : "!🎉 סיימנו"
+        )
+      ),
       React.createElement("p", null,
         tr("test.done.body", { correct: correctAnswers, partial: partialAnswers, wrong: wrongAnswers })
       ),
@@ -1971,15 +2133,14 @@ function Test({ allQuestions, lang, t }) {
   const currentQuestion = questions[currentIdx];
   const currentQuestionAgeGroup = currentQuestion ? currentQuestion.age_group : "";
   const currentImageCount = images.length;
-  const isMobile = React.useMemo(function () {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia("(max-width: 640px)").matches;
-  }, []);
   const maxRows = 2;
-  const gridColumns = Math.max(1, Math.ceil(currentImageCount / maxRows));
+  // For ≤4 images put all in ONE row; for more, split into 2 rows
+  const gridColumns = currentImageCount <= 4
+    ? currentImageCount
+    : Math.max(1, Math.ceil(currentImageCount / maxRows));
   const compactImages = currentImageCount > 6;
   const minImgWidth = compactImages ? (isMobile ? 140 : 120) : (isMobile ? 160 : 140);
-  const imagesGridStyle = { gridTemplateColumns: "repeat(" + gridColumns + ", minmax(" + minImgWidth + "px, 1fr))", gap: isMobile ? "12px" : "16px" };
+  const imagesGridStyle = { gridTemplateColumns: "repeat(" + gridColumns + ", 1fr)", gap: "8px" };
   const imagesContainerClassName =
     "images-container" +
     (currentImageCount === 1 ? " images-container--single" : "") +
@@ -1995,54 +2156,11 @@ function Test({ allQuestions, lang, t }) {
     devMode
       ? React.createElement(
         "div",
-        { className: "dev-mode-indicator", style: { padding: "10px", textAlign: "center" } },
-        React.createElement("button", {
-          style: {
-            backgroundColor: "#ff6b6b",
-            color: "white",
-            padding: "10px 20px",
-            border: "none",
-            borderRadius: "5px",
-            cursor: "pointer",
-            fontWeight: "bold"
-          },
-          onClick: function () {
-            setDevMode(false)
-          }
-        }, tr("dev.off")),  // <-- Added comma here
+        { className: "dev-mode-indicator" },
         React.createElement("input", {
           type: "number",
           className: "dev-mode-input"
-
         })
-      )
-
-      : null,
-    // DevMode entry button (shown when devMode is off)
-    !devMode
-      ? React.createElement(
-        "button",
-        {
-          onClick: function () {
-            setDevMode(true);
-          },
-          style: {
-            position: "fixed",
-            top: "10px",
-            right: "10px",
-            zIndex: 10000,
-            backgroundColor: "#4CAF50",
-            color: "white",
-            padding: "8px 16px",
-            border: "none",
-            borderRadius: "5px",
-            cursor: "pointer",
-            fontWeight: "bold",
-            fontSize: "14px",
-            boxShadow: "0 2px 5px rgba(0,0,0,0.2)"
-          }
-        },
-        "Dev Mode"
       )
       : null,
     // Paused overlay
@@ -2143,6 +2261,7 @@ function Test({ allQuestions, lang, t }) {
         )
       )
       : null,
+    React.createElement(TestNavbar),
     React.createElement(ProgressBar),
     trafficPopupOpen
       ? React.createElement(
@@ -2179,17 +2298,8 @@ function Test({ allQuestions, lang, t }) {
               "button",
               {
                 type: "button",
+                className: "traffic-popup__back",
                 onClick: cancelTrafficPopup,
-                style: {
-                  position: "absolute",
-                  top: "6px",
-                  left: lang === "en" ? "6px" : "auto",
-                  right: lang === "en" ? "auto" : "6px",
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontWeight: 700
-                },
                 "aria-label": backAria
               },
               backLabel
@@ -2204,12 +2314,12 @@ function Test({ allQuestions, lang, t }) {
               "button",
               {
                 type: "button",
-                className: "traffic-option traffic-option--red",
-                onClick: function () { handleTrafficPopupChoice("failure"); },
+                className: "traffic-option traffic-option--green",
+                onClick: function () { handleTrafficPopupChoice("success"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--red", "aria-hidden": "true" }, "✖"),
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title")),
+              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--green", "aria-hidden": "true" }, "✓"),
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title")),
 
             ),
             React.createElement(
@@ -2227,12 +2337,12 @@ function Test({ allQuestions, lang, t }) {
               "button",
               {
                 type: "button",
-                className: "traffic-option traffic-option--green",
-                onClick: function () { handleTrafficPopupChoice("success"); },
+                className: "traffic-option traffic-option--red",
+                onClick: function () { handleTrafficPopupChoice("failure"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--green", "aria-hidden": "true" }, "✓"),
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title")),
+              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--red", "aria-hidden": "true" }, "✖"),
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title")),
 
             )
           ),
@@ -2250,24 +2360,102 @@ function Test({ allQuestions, lang, t }) {
         )
       )
       : null,
+    // ── Question section (speaker + text; expression: centered question + traffic left) ──────────
     React.createElement(
       "div",
-      { className: "question-row" },
-      questionAudio
-        ? React.createElement(
-          "button",
-          {
-            type: "button",
-            className: "replay-audio-btn replay-audio-btn--inline",
-            onClick: replayQuestionAudio,
-            disabled: isAudioPlaying,
-            "aria-label": tr("test.audio.playQuestion"),
-          },
-          isAudioPlaying ? tr("test.audio.playingQuestion") : tr("test.audio.playQuestion")
-        )
-        : null,
-      React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || ""),
-      null
+      { className: "question-section" + (questionType === "E" ? " question-section--expression" : "") },
+      questionType === "E"
+        ? (function () {
+            return [
+              React.createElement("div", { key: "eval", className: "question-section__evaluate-wrap" },
+                React.createElement("button", {
+                  type: "button",
+                  className: "question-section__evaluate-icon-btn",
+                  onClick: function () { setShowContinue(true); },
+                  disabled: trafficPopupOpen || showContinue,
+                  title: tr("test.evaluate.label"),
+                  "aria-label": tr("test.evaluate.label"),
+                }, "🚦"),
+                React.createElement("span", { className: "question-section__evaluate-label" }, tr("test.evaluate.label"))
+              ),
+              React.createElement(
+                "div",
+                { key: "center", className: "question-section__center" },
+                React.createElement(
+                  "div",
+                  { className: "question-section__query-row" },
+                  questionAudio
+                    ? React.createElement(
+                      "button",
+                      {
+                        type: "button",
+                        className: "replay-audio-btn",
+                        onClick: replayQuestionAudio,
+                        disabled: isAudioPlaying,
+                        "aria-label": tr("test.audio.playQuestion"),
+                      },
+                      React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
+                      React.createElement("span", { className: "replay-audio-btn__label" }, "")
+                    )
+                    : null,
+                  React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
+                ),
+                commentText && commentText.trim() !== ""
+                  ? React.createElement(
+                    "div",
+                    { className: "question-section__notes expected-answer-box" },
+                    React.createElement("span", { className: "expected-answer-box__icon" }, "🔍"),
+                    React.createElement("strong", { className: "expected-answer-box__label" },
+                      lang === "en" ? "Expected answer: " : "תשובה מצופה: "
+                    ),
+                    commentText
+                  )
+                  : null
+              ),
+            ];
+          })()
+        : (function () {
+            return [
+              React.createElement(
+                "div",
+                { key: "query", className: "question-section__query-row" },
+                questionAudio
+                  ? React.createElement(
+                    "button",
+                    {
+                      type: "button",
+                      className: "replay-audio-btn",
+                      onClick: replayQuestionAudio,
+                      disabled: isAudioPlaying,
+                      "aria-label": tr("test.audio.playQuestion"),
+                    },
+                    React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
+                    React.createElement("span", { className: "replay-audio-btn__label" }, "")
+                  )
+                  : null,
+                React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
+              ),
+              hintText && hintText.trim() !== ""
+                ? React.createElement(
+                  "div",
+                  {
+                    key: "hint",
+                    className: "question-section__notes hint-inline-container",
+                    "data-open": showHint ? "true" : "false",
+                  },
+                  React.createElement("button", {
+                    type: "button",
+                    className: "hint-trigger-btn",
+                    "aria-label": lang === "en" ? "Hint" : "רמז",
+                    "aria-expanded": showHint,
+                    onClick: function () { setShowHint(!showHint); },
+                    style: { display: "flex", alignItems: "center", gap: "6px", width: "auto", padding: "6px 10px" },
+                  }, React.createElement("span", null, "🧰"), React.createElement("span", { style: { fontSize: "10px", fontWeight: 500 } }, tr("test.hint.needHint"))),
+                  showHint ? React.createElement("div", { className: "hint-text" }, hintText) : null
+                )
+                : null,
+            ];
+          })()
     ),
 
     questionType === "C"
@@ -2275,7 +2463,7 @@ function Test({ allQuestions, lang, t }) {
         "div",
         {
           className: imagesContainerClassName,
-          style: isTwoRow ? { display: "flex", flexDirection: "column", gap: isMobile ? "10px" : "12px" } : imagesGridStyle,
+          style: isTwoRow ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle,
           "data-count": currentImageCount,
           "data-question-type": "C",
         },
@@ -2289,13 +2477,26 @@ function Test({ allQuestions, lang, t }) {
               { className: "two-row-layout" },
               React.createElement(
                 "div",
-                { className: "image-row top-row" },
+                {
+                  className: "image-row top-row",
+                  style: { gridTemplateColumns: "repeat(" + topCountDynamic + ", 1fr)", gap: "6px" }
+                },
                 images.slice(0, topCountDynamic).map(function (img, i) {
                   const imgIndex = i + 1;
                   const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
                   const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                  const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
-                    (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
+                  const isOrderedCorrect = answerType === "ordered" && 
+                    orderedAnswers.length > 0 &&
+                    imgIndex === orderedAnswers[0] &&
+                    orderedClickSequence.length > 0 &&
+                    orderedClickSequence[0] === orderedAnswers[0];
+                  const showFireworks = fireworksVisible && (
+                    (answerType === "single" && img === target && clickedCorrect) ||
+                    (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
+                    isOrderedCorrect ||
+                    (answerType === "mask" && clickedCorrect));
+                  const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
+                    (answerType === "mask" && clickedCorrect);
                   const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
 
                   return React.createElement(
@@ -2305,9 +2506,7 @@ function Test({ allQuestions, lang, t }) {
                       className: "image-wrapper",
                       style: {
                         position: "relative",
-                        border: isCorrectMulti ? "4px solid #00ff00" : "none",
-                        borderRadius: isCorrectMulti ? "8px" : "0",
-                        boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
+                        width: "100%",
                         opacity: isNonClickable ? 0.5 : 1,
                         cursor: isNonClickable ? "not-allowed" : "pointer"
                       }
@@ -2323,9 +2522,14 @@ function Test({ allQuestions, lang, t }) {
                       src: img,
                       alt: "option " + (i + 1),
                       className: topRowBigger ? "image top-row-big" : "image",
-                      style: compactImages
-                        ? { maxWidth: isMobile ? "42vw" : "120px" }
-                        : (isMobile ? { maxWidth: "48vw" } : undefined),
+                      style: Object.assign(
+                        { width: "100%", maxWidth: "100%" },
+                        showGreenBorder ? {
+                          border: "4px solid #00ff00",
+                          borderRadius: "16px",
+                          boxShadow: "0 0 20px rgba(0,255,0,0.8)"
+                        } : {}
+                      ),
                       onClick: function (e) { handleClick(img, e); },
                     })
                   );
@@ -2334,13 +2538,26 @@ function Test({ allQuestions, lang, t }) {
               bottomImages.length > 0
                 ? React.createElement(
                   "div",
-                  { className: "image-row bottom-row" },
+                  {
+                    className: "image-row bottom-row",
+                    style: { gridTemplateColumns: "repeat(" + bottomImages.length + ", 1fr)", gap: "6px" }
+                  },
                   bottomImages.map(function (img, i) {
                     const imgIndex = topCountDynamic + i + 1;
                     const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
                     const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                    const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
-                      (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
+                    const isOrderedCorrect = answerType === "ordered" && 
+                      orderedAnswers.length > 0 &&
+                      imgIndex === orderedAnswers[0] &&
+                      orderedClickSequence.length > 0 &&
+                      orderedClickSequence[0] === orderedAnswers[0];
+                    const showFireworks = fireworksVisible && (
+                      (answerType === "single" && img === target && clickedCorrect) ||
+                      (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
+                      isOrderedCorrect ||
+                      (answerType === "mask" && clickedCorrect));
+                    const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
+                      (answerType === "mask" && clickedCorrect);
                     const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
 
                     return React.createElement(
@@ -2350,9 +2567,7 @@ function Test({ allQuestions, lang, t }) {
                         className: "image-wrapper",
                         style: {
                           position: "relative",
-                          border: isCorrectMulti ? "4px solid #00ff00" : "none",
-                          borderRadius: isCorrectMulti ? "8px" : "0",
-                          boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
+                          width: "100%",
                           opacity: isNonClickable ? 0.5 : 1,
                           cursor: isNonClickable ? "not-allowed" : "pointer"
                         }
@@ -2368,9 +2583,14 @@ function Test({ allQuestions, lang, t }) {
                         src: img,
                         alt: "option " + (topCountDynamic + i + 1),
                         className: "image",
-                        style: compactImages
-                          ? { maxWidth: isMobile ? "42vw" : "120px" }
-                          : (isMobile ? { maxWidth: "48vw" } : undefined),
+                        style: Object.assign(
+                          { width: "100%", maxWidth: "100%" },
+                          showGreenBorder ? {
+                            border: "4px solid #00ff00",
+                            borderRadius: "16px",
+                            boxShadow: "0 0 20px rgba(0,255,0,0.8)"
+                          } : {}
+                        ),
                         onClick: function (e) { handleClick(img, e); },
                       })
                     );
@@ -2385,8 +2605,19 @@ function Test({ allQuestions, lang, t }) {
             const imgIndex = i + 1;
             const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
             const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-            const showFireworks = (isTargetSingle || (answerType === "multi" && clickedCorrect) || (answerType === "mask" && clickedCorrect)) ||
-              (answerType === "ordered" && clickedCorrect && orderedAnswers[orderedAnswers.length - 1] === imgIndex);
+            // Show fireworks only on the first answer in the ordered sequence when clicked correctly
+            const isOrderedCorrect = answerType === "ordered" && 
+              orderedAnswers.length > 0 &&
+              imgIndex === orderedAnswers[0] &&
+              orderedClickSequence.length > 0 &&
+              orderedClickSequence[0] === orderedAnswers[0];
+            const showFireworks = fireworksVisible && (
+              (answerType === "single" && img === target && clickedCorrect) ||
+              (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
+              isOrderedCorrect ||
+              (answerType === "mask" && clickedCorrect));
+            const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
+              (answerType === "mask" && clickedCorrect);
             const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
 
             return React.createElement(
@@ -2396,9 +2627,6 @@ function Test({ allQuestions, lang, t }) {
                 className: "image-wrapper",
                 style: {
                   position: "relative",
-                  border: isCorrectMulti ? "4px solid #00ff00" : "none",
-                  borderRadius: isCorrectMulti ? "8px" : "0",
-                  boxShadow: isCorrectMulti ? "0 0 15px rgba(0,255,0,0.6)" : "none",
                   opacity: isNonClickable ? 0.5 : 1,
                   cursor: isNonClickable ? "not-allowed" : "pointer"
                 }
@@ -2414,34 +2642,22 @@ function Test({ allQuestions, lang, t }) {
                 src: img,
                 alt: "option " + (i + 1),
                 className: "image",
-                style: compactImages
-                  ? { maxWidth: isMobile ? "42vw" : "120px" }
-                  : (isMobile ? { maxWidth: "48vw" } : undefined),
+                style: Object.assign(
+                  {},
+                  compactImages
+                    ? { maxWidth: isMobile ? "42vw" : "120px" }
+                    : (isMobile ? { maxWidth: "48vw" } : {}),
+                  showGreenBorder ? {
+                    border: "4px solid #00ff00",
+                    borderRadius: "16px",
+                    boxShadow: "0 0 20px rgba(0,255,0,0.8)"
+                  } : {}
+                ),
                 onClick: function (e) { handleClick(img, e); },
               })
             );
           });
         })(),
-        // Hint chest (if hint text exists)
-        hintText && hintText.trim() !== ""
-          ? React.createElement(
-            "div",
-            { className: "hint-container", "data-open": showHint ? "true" : "false" },
-            React.createElement("img", {
-              src: "resources/test_assets/general/chest.webp",
-              className: "hint-chest" + (showHint ? " hint-chest--open" : ""),
-              alt: "hint",
-              onClick: function () { setShowHint(!showHint); },
-            }),
-            showHint
-              ? React.createElement(
-                "div",
-                { className: "hint-text" },
-                hintText
-              )
-              : null
-          )
-          : null,
       )
       : null,
 
@@ -2449,18 +2665,6 @@ function Test({ allQuestions, lang, t }) {
       ? React.createElement(
         "div",
         { className: "expression-container" },
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            className: "replay-audio-btn replay-audio-btn--inline",
-            onClick: function () { setShowContinue(true); },
-            disabled: trafficPopupOpen || showContinue,
-            "aria-label": tr("test.trafficLight.aria"),
-            style: { marginBottom: "10px" }
-          },
-          lang === "en" ? "Evaluate (traffic light)" : "הערכה (רמזור)"
-        ),
         // !microphoneSkipped && countdown > 0
         //   ? React.createElement("h3", null, "Recording starts in " + countdown + "...")
         //   : null,
@@ -2469,26 +2673,8 @@ function Test({ allQuestions, lang, t }) {
         //       "div",
         //       { className: "rec-controls" },
         //       !recPaused
-        //         ? React.createElement("button", { className: "rec-btn pause", onClick: pauseRecording }, "Pause")
-        //         : React.createElement("button", { className: "rec-btn resume", onClick: pauseRecording }, "Resume"),
-        //       React.createElement("button", { className: "rec-btn stop", onClick: stopRecording }, "Stop")
-        //     )
-        //   : null,
-        // !microphoneSkipped && recordingStopped
-        //   ? React.createElement(
-        //       "div",
-        //       { className: "audio-replay" },
-        //       React.createElement("audio", { src: audioUrl, controls: true }),
-        //       React.createElement("div", { className: "rec-controls" },
-        //         React.createElement("button", { className: "rec-btn redo", onClick: redoRecording }, "Redo recording")
-        //       )
-        //     )
-        //   : null,
-        // microphoneSkipped
-        //   ? React.createElement("p", { className : "skippedText" }, "Recording skipped - please evaluate the response")
-        //   : null,
         (function () {
-          const useTwoRows = currentImageCount > 2;
+          const useTwoRows = currentImageCount > 4;
           const topCountDynamic = Math.ceil(currentImageCount / 2);
           const bottomImages = images.slice(topCountDynamic);
 
@@ -2496,7 +2682,7 @@ function Test({ allQuestions, lang, t }) {
             "div",
             {
               className: imagesContainerClassName,
-              style: useTwoRows ? { display: "flex", flexDirection: "column", gap: isMobile ? "10px" : "12px" } : imagesGridStyle,
+              style: useTwoRows ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle,
               "data-count": currentImageCount,
               "data-question-type": "E",
             },
@@ -2506,18 +2692,19 @@ function Test({ allQuestions, lang, t }) {
                 { className: "two-row-layout" },
                 React.createElement(
                   "div",
-                  { className: "image-row top-row" },
+                  {
+                    className: "image-row top-row",
+                    style: { gridTemplateColumns: "repeat(" + topCountDynamic + ", 1fr)", gap: "6px" }
+                  },
                   images.slice(0, topCountDynamic).map(function (img, i) {
                     return React.createElement(
                       "div",
-                      { key: i, className: "image-wrapper" },
+                      { key: i, className: "image-wrapper", style: { width: "100%" } },
                       React.createElement("img", {
                         src: img,
                         alt: "option " + (i + 1),
                         className: "image",
-                        style: compactImages
-                          ? { maxWidth: isMobile ? "42vw" : "120px" }
-                          : (isMobile ? { maxWidth: "48vw" } : undefined)
+                        style: { width: "100%", maxWidth: "100%" }
                       })
                     );
                   })
@@ -2525,18 +2712,19 @@ function Test({ allQuestions, lang, t }) {
                 bottomImages.length > 0
                   ? React.createElement(
                     "div",
-                    { className: "image-row bottom-row" },
+                    {
+                      className: "image-row bottom-row",
+                      style: { gridTemplateColumns: "repeat(" + bottomImages.length + ", 1fr)", gap: "6px" }
+                    },
                     bottomImages.map(function (img, i) {
                       return React.createElement(
                         "div",
-                        { key: topCountDynamic + i, className: "image-wrapper" },
+                        { key: topCountDynamic + i, className: "image-wrapper", style: { width: "100%" } },
                         React.createElement("img", {
                           src: img,
                           alt: "option " + (topCountDynamic + i + 1),
                           className: "image",
-                          style: compactImages
-                            ? { maxWidth: isMobile ? "42vw" : "120px" }
-                            : (isMobile ? { maxWidth: "48vw" } : undefined)
+                          style: { width: "100%", maxWidth: "100%" }
                         })
                       );
                     })
@@ -2550,36 +2738,12 @@ function Test({ allQuestions, lang, t }) {
                   React.createElement("img", {
                     src: img,
                     alt: "option " + (i + 1),
-                    className: "image",
-                    style: compactImages
-                      ? { maxWidth: isMobile ? "42vw" : "120px" }
-                      : (isMobile ? { maxWidth: "48vw" } : undefined)
+                    className: "image"
                   })
                 );
               })
           );
         })()
-      )
-      : null,
-    // Comments display (if comment text exists) - shown for both comprehension and expression questions
-    commentText && commentText.trim() !== ""
-      ? React.createElement(
-        "div",
-        {
-          style: {
-            padding: "8px 12px",
-            backgroundColor: "#f0f8ff",
-            border: "1px solid #b0d4ff",
-            borderRadius: "6px",
-            fontSize: "13px",
-            color: "#333",
-            maxWidth: "90%",
-            margin: "10px auto 0",
-            textAlign: "center",
-            lineHeight: "1.4"
-          }
-        },
-        commentText
       )
       : null
   );

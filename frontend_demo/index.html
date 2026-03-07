@@ -3,11 +3,15 @@
 
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>See&Say</title>
-  <link rel="stylesheet" href="css/colors.css" />
-  <link rel="stylesheet" href="css/styles.css" />
+
   <script>
     (function () {
+      // Set language from URL
       try {
         const params = new URLSearchParams(window.location.search);
         const lang = (params.get("lang") || "he").toLowerCase();
@@ -18,8 +22,20 @@
         document.documentElement.lang = "he";
         document.documentElement.dir = "rtl";
       }
+
+      // Auto-busting version — changes on every page load, no manual updates needed
+      window._v = Date.now();
+
+      // Inject CSS with fresh version
+      ["css/colors.css", "css/styles.css"].forEach(function (href) {
+        var link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href + "?v=" + window._v;
+        document.head.appendChild(link);
+      });
     })();
   </script>
+
   <!-- React + Babel -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
@@ -32,16 +48,26 @@
 <body>
   <div id="root"></div>
 
-  <!-- Components -->
-  <script type="text/babel" src="./recording.js"></script>
-  <script type="text/babel" src="./i18n.js"></script>
-  <script type="text/babel" src="./bottomnav.js"></script>
-  <script type="text/babel" src="./test.js"></script>
-  <script type="text/babel" src="./help.js"></script>
-  <script type="text/babel" src="./app.js"></script>
-  <script type="text/babel" src="./welcome.js"></script>
-  <script type="text/babel" src="./loader.js"></script>
-  <script type="text/babel" src="./apiToMongo.js"></script>
+  <!-- Components — version injected automatically via window._v -->
+  <script>
+    (function () {
+      var v = window._v;
+      var files = [
+        "recording.js",
+        "i18n.js",
+        "navbar.js",
+        "test.js",
+        "help.js",
+        "app.js",
+        "welcome.js",
+        "loader.js",
+        "apiToMongo.js"
+      ];
+      files.forEach(function (file) {
+        document.write('<scr' + 'ipt type="text/babel" src="./' + file + '?v=' + v + '"><\/scr' + 'ipt>');
+      });
+    })();
+  </script>
 </body>
 
 </html>
