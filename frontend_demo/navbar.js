@@ -32,6 +32,7 @@
     var devMode = props.devMode;
     var setDevMode = props.setDevMode;
     var isRecording = props.isRecording;
+    var onFinishTest = props.onFinishTest;
 
     var innerClass = isHome ? "top-header__inner" : "test-navbar__inner";
     var logoClass = isHome ? "top-header__logo" : "test-navbar__logo";
@@ -101,6 +102,15 @@
       isPaused ? " \u25B6" : " \u23F8"  // ▶ ⏸
     ) : null;
 
+    var finishBtn = isTest ? React.createElement("button", {
+      type: "button",
+      className: btnClass,
+      onClick: function () { if (onFinishTest) onFinishTest(); },
+      title: lang === "en" ? "Finish test" : "סיים מבחן",
+      "aria-label": lang === "en" ? "Finish test" : "סיים מבחן",
+      style: { fontWeight: 800 }
+    }, lang === "en" ? "Finish" : "סיום") : null;
+
     if (isHome) {
       return React.createElement(
         "div",
@@ -123,6 +133,7 @@
       resetBtn,
       devBtn,
       pauseBtn,
+      finishBtn,
       langGroup
     );
   }
