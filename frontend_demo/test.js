@@ -72,6 +72,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [clickedMultiAnswers, setClickedMultiAnswers] = React.useState([]); // Array of clicked correct answers
   const [allClickedAnswers, setAllClickedAnswers] = React.useState([]); // Array of all clicked answers (for multi)
   const [minCorrectAnswers, setMinCorrectAnswers] = React.useState(null); // Minimum number of correct answers required (for multi with minimum)
+  const [multiAttemptCount, setMultiAttemptCount] = React.useState(0); // Multi clicks in current question (includes repeats)
   const [orderedAnswers, setOrderedAnswers] = React.useState([]); // Array of answer indices in order
   const [orderedClickSequence, setOrderedClickSequence] = React.useState([]); // Sequence of clicks
 
@@ -534,7 +535,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     setClickedCorrect(false);
     setClickedMultiAnswers([]);
     setAllClickedAnswers([]);
+    setMultiAttemptCount(0);
     setOrderedClickSequence([]);
+    setMaskImage(null);
+    setMaskCanvas(null);
   }
 
   function goToPreviousQuestion() {
@@ -554,6 +558,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     setClickedCorrect(false);
     setClickedMultiAnswers([]);
     setAllClickedAnswers([]);
+    setMultiAttemptCount(0);
     setOrderedClickSequence([]);
     setMaskImage(null);
     setMaskCanvas(null);
@@ -743,47 +748,51 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
           setShowContinue(true);
         }
       } else if (answerType === "multi") {
-        // Multi-answer: track all clicked answers
-        if (!allClickedAnswers.includes(imgIndex)) {
-          const newAllClicked = [...allClickedAnswers, imgIndex];
+        // Multi-answer: open traffic popup when:
+        // - all correct answers were chosen, OR
+        // - attempts >= (number of correct answers + 2) to avoid being stuck on repeated mistakes
+        const nextAttempts = multiAttemptCount + 1;
+        setMultiAttemptCount(nextAttempts);
+
+        // Track unique clicked answers (for UI highlights), but attempts count includes repeats
+        const newAllClicked = allClickedAnswers.includes(imgIndex)
+          ? allClickedAnswers
+          : [...allClickedAnswers, imgIndex];
+        if (newAllClicked !== allClickedAnswers) {
           setAllClickedAnswers(newAllClicked);
+        }
 
-          // Check if this is a correct answer
-          let updatedClickedCorrect = clickedMultiAnswers;
-          if (multiAnswers.includes(imgIndex)) {
-            // Add to clicked correct answers if not already clicked
-            if (!clickedMultiAnswers.includes(imgIndex)) {
-              updatedClickedCorrect = [...clickedMultiAnswers, imgIndex];
-              setClickedMultiAnswers(updatedClickedCorrect);
-              setFireworksVisible(true); // show fireworks immediately on each correct click
-            }
+        // Check if this is a correct answer
+        let updatedClickedCorrect = clickedMultiAnswers;
+        if (multiAnswers.includes(imgIndex)) {
+          // Add to clicked correct answers if not already clicked
+          if (!clickedMultiAnswers.includes(imgIndex)) {
+            updatedClickedCorrect = [...clickedMultiAnswers, imgIndex];
+            setClickedMultiAnswers(updatedClickedCorrect);
+            setFireworksVisible(true); // show fireworks immediately on each correct click
           }
+        }
 
-          // If minCorrectAnswers is set, check if we have enough correct answers
-          // Otherwise, mark as correct if all correct answers have been clicked
-          let isNowCorrect = false;
-          if (minCorrectAnswers !== null) {
-            if (updatedClickedCorrect.length >= minCorrectAnswers) {
-              setClickedCorrect(true);
-              isNowCorrect = true;
-            }
+        // If minCorrectAnswers is set, check if we have enough correct answers
+        // Otherwise, mark as correct if all correct answers have been clicked
+        let isNowCorrect = false;
+        const correctTargetCount = minCorrectAnswers !== null ? minCorrectAnswers : multiAnswers.length;
+        const allCorrectSelected = minCorrectAnswers !== null
+          ? (updatedClickedCorrect.length >= minCorrectAnswers)
+          : (updatedClickedCorrect.length === multiAnswers.length);
+        if (allCorrectSelected) {
+          setClickedCorrect(true);
+          isNowCorrect = true;
+        }
+
+        const attemptLimit = correctTargetCount + 2;
+        if (isNowCorrect || nextAttempts >= attemptLimit) {
+          if (isNowCorrect) {
+            // Fireworks already visible; just delay the popup
+            if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
+            fireworksTimerRef.current = setTimeout(function () { setShowContinue(true); }, 1000);
           } else {
-            if (updatedClickedCorrect.length === multiAnswers.length) {
-              setClickedCorrect(true);
-              isNowCorrect = true;
-            }
-          }
-
-          // Show continue after selecting required number of total answers
-          const requiredTotal = minCorrectAnswers !== null ? multiAnswers.length : multiAnswers.length;
-          if (newAllClicked.length >= requiredTotal) {
-            if (isNowCorrect) {
-              // Fireworks already visible; just delay the popup
-              if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
-              fireworksTimerRef.current = setTimeout(function () { setShowContinue(true); }, 1000);
-            } else {
-              setShowContinue(true);
-            }
+            setShowContinue(true);
           }
         }
       } else if (answerType === "ordered") {
@@ -1435,6 +1444,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         devMode: devMode,
         setDevMode: setDevMode,
         isRecording: !!isRecording,
+        onFinishTest: function () {
+          // Finish immediately and navigate to completion (also stops recording inside completeSession)
+          completeSession(questionResults);
+        },
       })
     );
   }
@@ -1852,6 +1865,47 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
 
+    const expectedAgeGroup = (function () {
+      const months = totalMonths();
+      // Age input is validated to [24,72) months in confirmAge()
+      if (months <= 30) return "2:00-2:06";
+      if (months <= 36) return "2:07-3:00";
+      if (months <= 48) return "3:00-4:00";
+      if (months <= 60) return "4:00-5:00";
+      return "5:00-6:00";
+    })();
+
+    const questionByNumber = (function () {
+      const map = {};
+      (questions || []).forEach(function (q) {
+        if (!q) return;
+        const n = parseInt(q.query_number, 10);
+        if (!isNaN(n)) map[n] = q;
+      });
+      return map;
+    })();
+
+    const ageMatchedStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
+    const strengtheningGoals = [];
+    const strengtheningGoalSet = {};
+    questionResults.forEach(function (item) {
+      const qNum = parseInt(item.questionNumber, 10);
+      const q = questionByNumber[qNum];
+      if (!q || q.age_group !== expectedAgeGroup) return;
+      ageMatchedStats.total += 1;
+      if (item.result === "correct") ageMatchedStats.correct += 1;
+      else if (item.result === "partly") ageMatchedStats.partial += 1;
+      else if (item.result === "wrong") {
+        ageMatchedStats.wrong += 1;
+        const goal =
+          (q.test_goal || q.testGoal || q["TEST GOAL"] || q.test_goal_he || q.test_goal_en || "").toString().trim();
+        if (goal && !strengtheningGoalSet[goal]) {
+          strengtheningGoalSet[goal] = true;
+          strengtheningGoals.push(goal);
+        }
+      }
+    });
+
     // Split results by question type
     const compStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
     const exprStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
@@ -1986,65 +2040,160 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         );
       })(),
       React.createElement("h2", null, tr("test.done.title")),
-      // Completed bunny track — same track the user saw throughout, now 100% full
+      // Celebration hero (keep bunny+carrot big; remove progress track)
       React.createElement(
         "div",
-        { style: { width: "100%", padding: "18px 0 6px", direction: "ltr" } },
+        { style: { width: "100%", padding: "12px 0 6px", textAlign: "center" } },
         React.createElement(
           "div",
-          { className: "bunny-track", style: { height: "28px" } },
-          // Full green fill
-          React.createElement("div", {
-            className: "bunny-track-fill",
-            style: { width: "100%" }
-          }),
-          // Bunny on top of carrot — carrot at left, bunny overlapping it (sitting on carrot)
+          { style: { fontSize: "20px", fontWeight: 800, marginBottom: "6px" } },
+          lang === "en"
+            ? "Great job — you finished the test!"
+            : "כל הכבוד! סיימתם בהצלחה!!"
+        ),
+        React.createElement(
+          "div",
+          { style: { fontSize: "34px", lineHeight: 1.1 } },
+          React.createElement("span", { className: "celebrate-icon celebrate-icon--clap" }, "👏"),
+          " ",
+          React.createElement("span", { className: "celebrate-icon celebrate-icon--balloon" }, "🎈"),
+          " ",
+          React.createElement("span", { className: "celebrate-icon celebrate-icon--party" }, "🎉")
+        ),
+        React.createElement(
+          "div",
+          {
+            className: "session-complete__bunny-carrot",
+            style: {
+              display: "inline-flex",
+              alignItems: "flex-end",
+              direction: "ltr",
+              gap: "2px",
+              marginTop: "10px",
+              lineHeight: 1
+            }
+          },
+          React.createElement("span", { className: "bunny-carrot__carrot", style: { fontSize: "64px" } }, "🥕"),
           React.createElement(
-            "div",
+            "span",
             {
-              className: "session-complete__bunny-carrot",
-              style: {
-                position: "absolute",
-                left: "6px",
-                top: "50%",
-                transform: "translateY(-62%)",
-                display: "flex",
-                alignItems: "flex-end",
-                zIndex: 2,
-                lineHeight: 1
-              }
+              className: "bunny-carrot__bunny",
+              style: { fontSize: "72px", marginLeft: "-40px" }
             },
-            React.createElement("span", {
-              className: "session-complete__carrot",
-              style: { fontSize: "42px", display: "block", animation: "bunny-hop-victory 0.5s ease-in-out 0.15s infinite alternate" }
-            }, "🥕"),
-            React.createElement("span", {
-              className: "session-complete__bunny",
-              style: { fontSize: "46px", display: "block", animation: "bunny-hop-victory 0.5s ease-in-out infinite alternate" }
-            }, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰"))
+            (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")
           )
         ),
         React.createElement("style", null, `
-          @keyframes bunny-hop-victory {
-            from { transform: translateY(0); }
-            to   { transform: translateY(-40%); }
+          @keyframes celebrate-pop {
+            0%   { transform: translateY(0) scale(1); filter: saturate(1); }
+            35%  { transform: translateY(-6px) scale(1.08); filter: saturate(1.25); }
+            70%  { transform: translateY(0) scale(1); }
+            100% { transform: translateY(0) scale(1); }
           }
-        `),
-        React.createElement(
-          "div",
-          { style: { textAlign: "center", fontSize: "13px", fontWeight: 600, color: "var(--colors-dark-gray)", marginTop: "4px" } },
-          lang === "en" ? "🎉 All done!" : "!🎉 סיימנו"
-        )
+
+          @keyframes celebrate-float {
+            0%   { transform: translateY(0) rotate(-2deg); }
+            50%  { transform: translateY(-10px) rotate(2deg); }
+            100% { transform: translateY(0) rotate(-2deg); }
+          }
+
+          @keyframes celebrate-twinkle {
+            0%   { transform: rotate(0deg) scale(1); filter: saturate(1.1); }
+            50%  { transform: rotate(10deg) scale(1.08); filter: saturate(1.35) brightness(1.05); }
+            100% { transform: rotate(0deg) scale(1); }
+          }
+
+          @keyframes carrot-nibble {
+            0%   { transform: rotate(-3deg) translateY(0); }
+            50%  { transform: rotate(3deg) translateY(-3px); }
+            100% { transform: rotate(-3deg) translateY(0); }
+          }
+
+          @keyframes bunny-chew {
+            0%   { transform: translateY(0) rotate(0deg); }
+            40%  { transform: translateY(-4px) rotate(-2deg); }
+            80%  { transform: translateY(0) rotate(1deg); }
+            100% { transform: translateY(0) rotate(0deg); }
+          }
+
+          .celebrate-icon {
+            display: inline-block;
+            will-change: transform, filter;
+          }
+
+          .celebrate-icon--clap {
+            animation: celebrate-pop 900ms ease-in-out infinite;
+          }
+
+          .celebrate-icon--balloon {
+            animation: celebrate-float 1400ms ease-in-out infinite;
+          }
+
+          .celebrate-icon--party {
+            animation: celebrate-twinkle 1100ms ease-in-out infinite;
+          }
+
+          .bunny-carrot__carrot {
+            display: inline-block;
+            transform-origin: 70% 60%;
+            animation: carrot-nibble 700ms ease-in-out infinite;
+          }
+
+          .bunny-carrot__bunny {
+            display: inline-block;
+            transform-origin: 50% 80%;
+            animation: bunny-chew 650ms ease-in-out infinite;
+          }
+        `)
       ),
-      React.createElement("p", null,
-        tr("test.done.body", { correct: correctAnswers, partial: partialAnswers, wrong: wrongAnswers })
-      ),
-      React.createElement("p", null,
-        tr("test.done.total", { answered: totalAnswered, total: questions.length })
-      ),
+      // Age-matched summary (parent-facing)
       React.createElement(
         "div",
-        { style: { display: "grid", gap: "6px", marginTop: "6px", textAlign: "center" } },
+        { style: { width: "min(100%, 720px)", margin: "8px auto 0", textAlign: "center" } },
+        React.createElement(
+          "p",
+          { style: { margin: "0 0 6px", fontWeight: 700 } },
+          lang === "en"
+            ? "Age-matched results"
+            : "סיכום לפי גיל הילד"
+        ),
+        React.createElement(
+          "p",
+          { style: { margin: 0 } },
+          lang === "en"
+            ? ("Your child answered " + ageMatchedStats.correct + " correct, " + ageMatchedStats.partial + " with help, and " + ageMatchedStats.wrong + " incorrect out of " + ageMatchedStats.total + " questions matching their age group (" + expectedAgeGroup + ").")
+            : (" ענה נכון על " + ageMatchedStats.correct + " תשובות מהשאלות המתאימות לגילו הכרונולוגי (" + expectedAgeGroup + "). " +
+               ageMatchedStats.partial + " תשובות עם עזרה ו-" + ageMatchedStats.wrong + " תשובות שגויות (מתוך " + ageMatchedStats.total + ").")
+        )
+      ),
+      strengtheningGoals.length > 0
+        ? React.createElement(
+            "div",
+            { style: { width: "min(100%, 720px)", margin: "10px auto 0", textAlign: "center" } },
+            React.createElement(
+              "p",
+              { style: { margin: "0 0 6px", fontWeight: 800 } },
+              lang === "en"
+                ? "It looks like these areas could use strengthening:"
+                : "נראה כי ישנו צורך בחיזוק התחומים הבאים:"
+            ),
+            React.createElement(
+              "div",
+              { style: { display: "grid", gap: "6px" } },
+              strengtheningGoals.map(function (g) {
+                return React.createElement(
+                  "div",
+                  { key: g, style: { padding: "10px 12px", borderRadius: "14px", background: "rgba(66, 171, 199, 0.08)", border: "1px solid rgba(66, 171, 199, 0.18)" } },
+                  g
+                );
+              })
+            )
+          )
+        : null,
+      // Keep detailed breakdown (useful for internal use)
+      React.createElement(
+        "div",
+        { style: { display: "grid", gap: "6px", marginTop: "14px", textAlign: "center" } },
         React.createElement("strong", null, lang === "en" ? "By category:" : "לפי קטגוריה:"),
         React.createElement("span", null, statsLine("הבנה", "Comprehension", compStats)),
         React.createElement("span", null, statsLine("הבעה", "Expression", exprStats)),
@@ -2262,7 +2411,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       )
       : null,
     React.createElement(TestNavbar),
-    React.createElement(ProgressBar),
+    !sessionCompleted ? React.createElement(ProgressBar) : null,
     trafficPopupOpen
       ? React.createElement(
         "div",

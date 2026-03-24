@@ -44,9 +44,37 @@
   /* Content Max Width */
   --layout-max-width: 960px;
 
+  /* Responsive spacing scale (use with gap/padding) */
+  --space-1: clamp(4px, 1vw, 8px);
+  --space-2: clamp(10px, 1.8vw, 16px);
+  --space-3: clamp(14px, 2.6vw, 24px);
+  --space-4: clamp(18px, 3.6vw, 32px);
+
+  /* Test (questions screen) fixed navbar height */
+  --test-navbar-height: 56px;
+
   /* Transitions */
   --transition-base: 180ms ease-in-out;
 
   /* Header */
   --app-header-height: 72px;
+}
+
+@media (max-width: 600px) {
+  :root {
+    --test-navbar-height: 44px;
+  }
+}
+
+/* Wider layouts on large screens to avoid empty gutters */
+@media (min-width: 1100px) {
+  :root {
+    --layout-max-width: 1120px;
+  }
+}
+
+@media (min-width: 1400px) {
+  :root {
+    --layout-max-width: 1280px;
+  }
 }

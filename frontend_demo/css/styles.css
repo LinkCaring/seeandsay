@@ -170,7 +170,7 @@ p {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-3);
   padding-inline: clamp(16px, 4vw, 32px);
 }
 
@@ -180,7 +180,96 @@ p {
 }
 /* Test: when in questions phase — space for TestNavbar + progress bar */
 .app-container[data-page="test"][data-test-phase="questions"] .page-content {
-  padding-top: 158px; /* 64px navbar gap + progress bar height */
+  padding-top: 0; /* don't push progress down; it lives inside page-content */
+  gap: var(--space-2);
+}
+
+/* Tighter spacing on small screens (min scroll, fuller view) */
+@media (max-width: 600px) {
+  .page-content {
+    gap: var(--space-2);
+    padding-inline: 14px;
+  }
+
+  .content-area {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .stack {
+    gap: 14px;
+  }
+
+  .grid-tiles {
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+
+  .app-container[data-page="test"][data-test-phase="questions"] .page-content {
+    padding-top: 0;
+    gap: var(--space-1);
+  }
+
+  /* Make test navbar shorter on mobile */
+  .test-navbar {
+    padding: 6px 10px;
+  }
+
+  .test-navbar__logo {
+    height: 28px;
+  }
+
+  .test-navbar__btn {
+    padding: 5px 8px;
+    font-size: 14px;
+  }
+
+  .question-row {
+    margin: 0 auto 10px;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .question-section {
+    padding: 12px 10px;
+    scroll-margin-top: 64px;
+  }
+}
+
+/* Tablets / medium screens: make images fill the screen better */
+@media (min-width: 601px) and (max-width: 1024px) {
+  .images-container {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+
+  .image {
+    max-width: clamp(170px, 22vw, 260px);
+  }
+}
+
+/* Short-height screens (landscape phones, small tablets): reduce vertical waste */
+@media (max-height: 720px) {
+  .page-content {
+    gap: var(--space-2);
+  }
+
+  .app-container[data-page="test"][data-test-phase="questions"] .page-content {
+    padding-top: 0;
+  }
+
+  .question-section {
+    scroll-margin-top: 64px;
+  }
+
+  .landing-section {
+    min-height: auto;
+    padding: 32px 16px;
+  }
+
+  .landing-section__inner {
+    gap: 18px;
+  }
 }
 
 .mdc-elevation--z2 {
@@ -467,7 +556,7 @@ button:focus-visible {
   margin: 0 auto 0px;
   margin-top: 0;
   padding: clamp(12px, 3vw, 20px) 10px clamp(12px, 3vw, 20px) 0;
-  scroll-margin-top: 158px; /* Ensure question section always visible below fixed navbar + progress bar */
+  scroll-margin-top: 72px; /* Ensure visible below fixed test-navbar */
 
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(66, 171, 199, 0.22);
@@ -641,7 +730,7 @@ button:focus-visible {
 /* Each image */
 .image {
   width: 100%;
-  max-width: 180px;
+  max-width: clamp(160px, 18vw, 280px);
   aspect-ratio: 1;
   border-radius: 16px;
   cursor: pointer;
@@ -1661,6 +1750,18 @@ button {
   border-bottom: 1px solid rgba(48, 67, 72, 0.08);
 }
 
+/* Questions screen: progress bar should scroll away (not fixed) */
+.app-container[data-page="test"][data-test-phase="questions"] .progress-bar-container {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  z-index: auto;
+  width: min(100%, var(--layout-max-width));
+  margin: var(--test-navbar-height) auto var(--space-1);
+  border-radius: 16px;
+}
+
 /* =========================================================
    TRAFFIC POPUP (evaluation)
    ========================================================= */
@@ -2073,6 +2174,141 @@ button {
     0px 4px 5px 0px rgba(0, 0, 0, 0.14),
     0px 1px 10px 0px rgba(0, 0, 0, 0.12);
   border: 1px solid rgba(66, 171, 199, 0.18);
+}
+
+/* Voice identifier: fit in one screen (override inline margins) */
+.voice-identifier-screen h2 {
+  margin: 0 !important;
+}
+
+.voice-identifier-screen p {
+  margin: 0 !important;
+}
+
+.voice-identifier-screen {
+  gap: 8px;
+}
+
+.voice-identifier-screen > * {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.voice-identifier-screen > div {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.voice-identifier-screen .hebrew-text {
+  margin: 6px 0 !important;
+  padding: 12px !important;
+  font-size: clamp(17px, 2.2vw, 20px) !important;
+}
+
+.voice-identifier-screen .continue-button {
+  margin-top: 4px !important;
+}
+
+@media (max-width: 600px) {
+  .voice-identifier-screen {
+    padding: 16px 14px;
+    margin: 10px auto;
+    gap: 6px;
+  }
+
+  .voice-identifier-screen .hebrew-text {
+    margin: 4px 0 !important;
+    padding: 10px !important;
+  }
+}
+
+@media (max-height: 720px) {
+  .voice-identifier-screen {
+    padding: 14px 14px;
+    margin: 8px auto;
+    gap: 6px;
+  }
+
+  .voice-identifier-screen .hebrew-text {
+    margin: 4px 0 !important;
+    padding: 10px !important;
+  }
+}
+
+/* Landscape-first layouts for pre-test screens (age/mic/voice/complete) */
+@media (orientation: landscape) and (max-width: 1024px) {
+  .age-screen,
+  .microphone-permission-screen,
+  .voice-identifier-screen,
+  .session-complete {
+    max-width: min(980px, 96vw);
+    margin: 16px auto;
+    padding: 22px 20px;
+    gap: 14px;
+  }
+
+  /* Age entry: 2-column grid to reduce scrolling */
+  .age-screen {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+    text-align: start;
+  }
+
+  .age-screen h2 {
+    grid-column: 1 / -1;
+    text-align: center;
+    margin: 0 0 4px;
+  }
+
+  .age-screen input {
+    width: 100%;
+    max-width: none;
+  }
+
+  .age-screen button {
+    grid-column: 1 / -1;
+    justify-self: center;
+    min-width: min(420px, 92%);
+  }
+
+  /* Microphone screen: keep content + button visible without vertical waste */
+  .microphone-permission-screen {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    align-items: center;
+    text-align: start;
+  }
+
+  .microphone-permission-screen h2 {
+    grid-column: 1 / -1;
+    text-align: center;
+    margin: 0;
+  }
+
+  .microphone-permission-screen p {
+    margin: 0;
+    text-align: start;
+  }
+
+  .microphone-permission-screen button.allowMic {
+    justify-self: center;
+    align-self: center;
+    min-width: min(360px, 100%);
+  }
+
+  /* Note paragraph spans full width */
+  .microphone-permission-screen p:last-of-type {
+    grid-column: 1 / -1;
+    text-align: center;
+    margin-top: 10px !important;
+    max-width: 900px !important;
+  }
+
+  /* Voice identifier: widen and reduce top/bottom whitespace */
+  .voice-identifier-screen {
+    justify-content: flex-start;
+  }
 }
 
 .hebrew-text {
@@ -2663,7 +2899,7 @@ button {
 /* Mobile: make everything bigger + clearer */
 @media (max-width: 560px) {
   .page-content {
-    gap: 18px;
+    gap: var(--space-2);
     padding-inline: 12px;
   }
 
@@ -2829,8 +3065,8 @@ button {
   z-index: 1250;
   display: flex;
   justify-content: center;
-  gap: 8px;
-  padding: 10px 16px;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   background: rgba(247, 250, 251, 0.95);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(48, 67, 72, 0.08);
@@ -2861,9 +3097,9 @@ button {
   scroll-margin-top: 148px;
   min-height: 100svh;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: clamp(48px, 8vh, 80px) clamp(20px, 5vw, 60px);
+  padding: clamp(28px, 6vh, 56px) clamp(16px, 4vw, 48px);
 }
 
 #landing-intro {
@@ -2895,7 +3131,7 @@ button {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: clamp(20px, 4vh, 36px);
+  gap: var(--space-3);
 }
 
 /* ── Typography ── */
@@ -2929,7 +3165,7 @@ button {
   background: rgba(255, 255, 255, 0.82);
   border: 1px solid rgba(66, 171, 199, 0.25);
   border-radius: 18px;
-  padding: clamp(20px, 4vw, 36px) clamp(22px, 4vw, 40px);
+  padding: var(--space-3) var(--space-3);
   box-shadow: 0 8px 32px rgba(48, 67, 72, 0.09);
   text-align: start;
   display: flex;
@@ -3003,8 +3239,8 @@ button {
 /* ── Feature cards (Section 1) ── */
 .landing-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-2);
   width: 100%;
 }
 
