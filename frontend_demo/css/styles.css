@@ -1779,7 +1779,7 @@ button {
 }
 
 .traffic-popup {
-  width: min(218px, 92vw);
+  width: min(280px, 92vw);
   background: rgba(255, 255, 255, 0.96);
   border-radius: 22px;
   border: 5px solid rgba(0, 0, 0, 0.28);
@@ -2151,10 +2151,73 @@ button {
 .dev-mode-indicator {
   background: rgba(255, 87, 34, 0.08);
   border-bottom: 1px solid rgba(255, 87, 34, 0.25);
-  padding: 4px 12px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+}
+
+.dev-mode-input {
+  min-width: 96px;
+  max-width: 120px;
+  padding: 8px 10px;
+  border: 1px solid rgba(48, 67, 72, 0.18);
+  border-radius: 8px;
+  font-family: var(--font-family);
+  font-size: 14px;
+  text-align: center;
+  background: white;
+  color: var(--colors-text);
+}
+
+.dev-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid rgba(48, 67, 72, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--colors-text);
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dev-mode-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Desktop / wider screens: keep on one line */
+@media (min-width: 601px) {
+  .dev-mode-indicator {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+}
+
+/* Mobile / smaller screens: allow wrapping */
+@media (max-width: 600px) {
+  .dev-mode-indicator {
+    padding: 8px 10px;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .dev-mode-input {
+    min-width: 84px;
+    max-width: 100px;
+  }
+
+  .dev-mode-btn {
+    min-height: 38px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
 }
 
 /* Voice identifier flow (demo) – card similar to completion screen */
@@ -2318,6 +2381,43 @@ button {
     justify-content: flex-start;
   }
 }
+@media (orientation: landscape) and (max-height: 500px) {
+  .question-section {
+    padding: 8px 10px;
+    gap: 6px 8px;
+    border-radius: 14px;
+    box-shadow: 0 8px 20px rgba(48, 67, 72, 0.12);
+  }
+
+  .question-section__query-row {
+    gap: 6px;
+  }
+
+  .query-text {
+    font-size: clamp(14px, 2vw, 20px);
+    line-height: 1.25;
+  }
+
+  .images-container--comprehension,
+  .images-container--expression {
+    padding: 4px;
+    border-radius: 12px;
+  }
+
+  .images-container {
+    gap: 6px;
+  }
+
+  .image {
+    max-width: min(26vh, 180px);
+  }
+
+  .images-container[data-count="3"] .image,
+  .images-container[data-count="2"] .image {
+    max-width: min(30vh, 220px) !important;
+  }
+}
+
 
 .hebrew-text {
   font-size: 24px;
@@ -3486,6 +3586,27 @@ button {
 }
 
 @media (max-width: 480px) {
+  .top-header__inner {
+    padding-inline: 16px;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .top-header__logo {
+    height: 36px;
+  }
+
+  .top-header__lang {
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .lang-pill {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
   .landing-section {
     min-height: 100svh;
     padding: 28px 14px;
@@ -3508,31 +3629,33 @@ button {
     top: 70px; /* smaller header on mobile (42px logo + 14px*2 padding) */
   }
 
-  #landing-intro {
-    padding-top: calc(70px + 50px + 20px);
-  }
+  
 
   .landing-section {
     scroll-margin-top: 120px;
   }
 }
 
+
+
+
 /* =========================================================
    FIREWORKS FIX - override the broken inset:0 rule above
    ========================================================= */
-/* The image-wrapper uses display:flex which centers the image.
-   Fireworks must also be centered and sized like the image. */
+/* The image-wrapper uses display:flex which centers the image. */
 .fireworks {
   position: absolute !important;
-  inset: unset !important;
-  top: 50% !important;
-  left: 50% !important;
-  transform: translate(-50%, -50%) !important;
+  inset: 0 !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
   width: 100% !important;
-  max-width: 180px !important;  /* same as .image max-width */
-  height: auto !important;
-  aspect-ratio: 1 !important;
+  height: 100% !important;
+  max-width: none !important;
+  aspect-ratio: auto !important;
   object-fit: contain !important;
+  pointer-events: none;
+  z-index: 1500;
 }
 
 /* In 2-row grid the cells can be smaller than 180px - let fireworks fill them */
@@ -3548,4 +3671,44 @@ button {
     drop-shadow(0 0 20px rgba(255, 0, 153, 1))
     drop-shadow(0 0 28px rgba(102, 0, 255, 0.9))
     drop-shadow(0 0 36px rgba(0, 255, 255, 0.8)) !important;
+}
+
+/* speaker buttons */
+
+
+.speaker-status-banner {
+  margin: 8px auto;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(66, 171, 199, 0.08);
+  border: 1px solid rgba(66, 171, 199, 0.18);
+  color: #304348;
+  text-align: center;
+  width: min(100%, 720px);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.speaker-status-banner--warning {
+  background: rgba(255, 193, 7, 0.12);
+  border-color: rgba(255, 193, 7, 0.35);
+}
+
+.speaker-status-banner--success {
+  background: rgba(76, 175, 80, 0.12);
+  border-color: rgba(76, 175, 80, 0.35);
+}
+
+.speaker-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 8px auto 0;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 10px;
+  background: #ff6b35;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
 }
