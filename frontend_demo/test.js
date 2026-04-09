@@ -23,7 +23,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [partialAnswers, setPartialAnswers] = usePersistentState("partialAnswers", 0);
   const [wrongAnswers, setWrongAnswers] = usePersistentState("wrongAnswers", 0);
   const [devMode, setDevMode] = usePersistentState("devMode", false)
-
+  const [devJumpValue, setDevJumpValue] = React.useState("");
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -44,6 +44,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   // Store the verification audio blob for combining with test audio
   const [verificationAudioBlob, setVerificationAudioBlob] = React.useState(null);
 
+  const [speakerVerificationStatus, setSpeakerVerificationStatus] = React.useState("idle");
+// idle | processing | success | failed
+
+  const [speakerVerificationAttempts, setSpeakerVerificationAttempts] = React.useState(0);
+  const [pendingVerificationBlob, setPendingVerificationBlob] = React.useState(null);
+  const [mustFinishVerification, setMustFinishVerification] = React.useState(false);
 
 
   // Session-only states
@@ -105,6 +111,68 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return window.matchMedia("(max-width: 640px)").matches;
   }, []);
 
+const runSpeakerVerificationInBackground = async function (recordingBlob) {
+  try {
+    setSpeakerVerificationStatus("processing");
+
+    const audioBase64 = await blobToBase64(recordingBlob);
+    setReadingRecordingBlob(audioBase64);
+
+    const validationResult = await verifySpeaker(idDigits, audioBase64);
+    setSpeakerVerificationAttempts(function (prev) { return prev + 1; });
+
+    if (validationResult === null) {
+      // backend unavailable / no connection
+      setReadingValidationResult(null);
+      setReadingValidated(false);
+      setSpeakerVerificationStatus("failed");
+      return;
+    }
+
+    if (validationResult && validationResult.success === true) {
+      setReadingValidationResult(true);
+      setReadingValidated(true);
+      setVerificationAudioBlob(recordingBlob);
+      setSpeakerVerificationStatus("success");
+      return;
+    }
+
+    if (validationResult && validationResult.success === false) {
+      setReadingValidationResult(false);
+      setReadingValidated(false);
+      setVerificationAudioBlob(null);
+      setSpeakerVerificationStatus("failed");
+      return;
+    }
+
+    setReadingValidationResult(null);
+    setReadingValidated(false);
+    setSpeakerVerificationStatus("failed");
+  } catch (err) {
+    console.error("Background speaker verification failed:", err);
+    setReadingValidationResult(null);
+    setReadingValidated(false);
+    setVerificationAudioBlob(null);
+    setSpeakerVerificationStatus("failed");
+  }
+};
+
+function blobToBase64(blob) {
+  return new Promise(function (resolve, reject) {
+    const reader = new FileReader();
+    reader.onloadend = function () {
+      const result = reader.result;
+      if (!result) {
+        reject(new Error("Failed to convert blob to base64"));
+        return;
+      }
+      resolve(result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
   // Adjust counts helpers
   function adjustCountsForResult(resultString, delta) {
     if (resultString === "correct") setCorrectAnswers(prev => Math.max(0, prev + delta));
@@ -120,6 +188,14 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     const nextResults = questionResults.slice(0, idx).concat(questionResults.slice(idx + 1));
     setQuestionResults(nextResults);
   }
+
+  function goToQuestionByNumber(value) {
+  const targetIndex = Number(value) - 1;
+  if (Number.isNaN(targetIndex)) return;
+  if (targetIndex < 0 || targetIndex >= questions.length) return;
+
+  updateCurrentQuestionIndex(targetIndex);
+}
 
   React.useEffect(function cleanupMount() {
     return function () {
@@ -195,14 +271,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
           });
         } else if (event.key === "Enter") {
           event.preventDefault();
-          const inputElement = document.querySelector('.dev-mode-input');
-          if (inputElement) {
-            const value = Number(inputElement.value) - 1;
-            if (value >= 0 && value < questions.length) {
-              updateCurrentQuestionIndex(value);
-            }
+          goToQuestionByNumber(devJumpValue);
           }
-        }
       }
     }
 
@@ -210,7 +280,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [devMode]);
+  }, [devMode, devJumpValue, questions.length]);
 
 
 
@@ -278,156 +348,103 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   };
 
   const confirmVoiceIdentifier = async function () {
-    // Stop the reading recording
-    if (permission && sessionRecordingStarted) {
-      SessionRecorder.stopContinuousRecording();
-      console.log("🛑 Stopped reading recording, preparing for validation...");
+  if (permission && sessionRecordingStarted) {
+    SessionRecorder.stopContinuousRecording();
+    console.log("🛑 Stopped reading recording, preparing background validation...");
 
+    var pollAttempts = 0;
+    var maxAttempts = 50;
 
-      // Wait for recording to be processed and converted to MP3
-      // Poll until recording is ready (similar to completeSession)
-      var pollAttempts = 0;
-      var maxAttempts = 50; // Max 5 seconds (50 * 100ms)
+    var checkRecordingReady = async function () {
+      pollAttempts++;
 
-      var checkRecordingReady = async function () {
-        pollAttempts++;
+      try {
+        const recordingData = await SessionRecorder.getRecordingAndText();
 
+        if (recordingData && recordingData.recordingBlob) {
+          console.log("✅ Reading recording ready after " + pollAttempts + " attempts");
 
-        try {
-          const recordingData = await SessionRecorder.getRecordingAndText();
-          if (recordingData && recordingData.recordingBlob) {
-            console.log("✅ Reading recording ready after " + pollAttempts + " attempts");
-            // Convert blob to base64
-            const reader = new FileReader();
-            reader.onloadend = async function () {
-              const audioBase64 = reader.result;
-              setReadingRecordingBlob(audioBase64);
+          // Let the user continue immediately
+          setVoiceIdentifierConfirmed(true);
+          setSpeakerVerificationStatus("processing");
+          setReadingValidationInProgress(false);
 
-              // Store the verification blob for later combining with test audio
-              setVerificationAudioBlob(recordingData.recordingBlob);
+          // Start the actual test recording right away
+          if (permission) {
+            SessionRecorder.cleanup();
+            SessionRecorder.resetTimestamps();
 
-              // Show loading screen while waiting for backend
-              setReadingValidationInProgress(true);
+            const started = await SessionRecorder.startContinuousRecording();
+            if (started) {
+              setSessionRecordingStarted(true);
+              console.log("✅ Started test recording after voice step");
 
-
-              // Send to backend for validation
-              const validationResult = await verifySpeaker(idDigits, audioBase64);
-
-              // Hide loading screen
-              setReadingValidationInProgress(false);
-
-
-              // verifySpeaker can return:
-              // - null: no backend connection (for testing)
-              // - {success: true, parentSpeaker: ...}: valid
-              // - {success: false, error: ...}: invalid
-              // Convert to boolean/null format expected by the UI
-              if (validationResult === null) {
-                // No connection - show options
-                setReadingValidationResult(null);
-                setReadingValidated(false);
-              } else if (validationResult && validationResult.success === true) {
-                setReadingValidationResult(true);
-                setReadingValidated(true);
-              } else if (validationResult && validationResult.success === false) {
-                setReadingValidationResult(false);
-                setReadingValidated(false);
-              } else {
-                // Fallback: treat as no connection
-                setReadingValidationResult(null);
-                setReadingValidated(false);
+              setTimeout(function () {
+                if (questions.length > 0) {
+                  const firstQuestion = questions[0];
+                  if (firstQuestion) {
+                    SessionRecorder.markQuestionStart(firstQuestion.query_number);
+                    console.log("📝 Marked question 1 start at test start");
+                  }
+                }
+              }, 100);
+            }
+          } else if (microphoneSkipped) {
+            if (questions.length > 0) {
+              const firstQuestion = questions[0];
+              if (firstQuestion) {
+                SessionRecorder.markQuestionStart(firstQuestion.query_number);
+                console.log("📝 Marked question 1 start at test start (no recording)");
               }
-            };
-            reader.readAsDataURL(recordingData.recordingBlob);
-          } else if (pollAttempts < maxAttempts) {
-            // Not ready yet, check again in 100ms
-            setTimeout(checkRecordingReady, 100);
-          } else {
-            // Timeout - treat as no connection
-            console.warn("⚠️ Reading recording conversion timeout");
-            setReadingValidationResult(null);
-            setReadingValidated(false);
-          }
-        } catch (err) {
-          console.error("Error getting reading recording:", err);
-          if (pollAttempts < maxAttempts) {
-            setTimeout(checkRecordingReady, 100);
-          } else {
-            setReadingValidationResult(null);
-            setReadingValidated(false);
-          }
-        }
-      };
-
-
-      // Start polling after a small initial delay
-      setTimeout(checkRecordingReady, 200);
-    } else {
-      // No recording, skip validation
-      setReadingValidationResult(null);
-      setReadingValidated(true);
-    }
-  };
-
-  const handleReadingValidationContinue = async function () {
-    // Restart recording for the actual test
-    if (permission) {
-      // Clean up old recording data
-      SessionRecorder.cleanup();
-
-      // Reset timestamps so they count from question 1
-      SessionRecorder.resetTimestamps();
-
-      // Start new recording for the test
-      const started = await SessionRecorder.startContinuousRecording();
-      if (started) {
-        setSessionRecordingStarted(true);
-        console.log("✅ Started test recording");
-
-        // Mark question 1 start timestamp after a brief delay to ensure recording is active
-        setTimeout(function () {
-          if (questions.length > 0) {
-            const firstQuestion = questions[0];
-            if (firstQuestion) {
-              SessionRecorder.markQuestionStart(firstQuestion.query_number);
-              console.log("📝 Marked question 1 start at test start");
             }
           }
-        }, 100);
-      }
-    } else {
-      // Even without recording, mark question 1 if microphone was skipped
-      if (questions.length > 0 && microphoneSkipped) {
-        const firstQuestion = questions[0];
-        if (firstQuestion) {
-          SessionRecorder.markQuestionStart(firstQuestion.query_number);
-          console.log("📝 Marked question 1 start at test start (no recording)");
+
+          // Run verification in the background
+          runSpeakerVerificationInBackground(recordingData.recordingBlob);
+        } else if (pollAttempts < maxAttempts) {
+          setTimeout(checkRecordingReady, 100);
+        } else {
+          console.warn("⚠️ Reading recording conversion timeout");
+          setReadingValidationResult(null);
+          setReadingValidated(false);
+          setSpeakerVerificationStatus("failed");
+        }
+      } catch (err) {
+        console.error("Error getting reading recording:", err);
+        if (pollAttempts < maxAttempts) {
+          setTimeout(checkRecordingReady, 100);
+        } else {
+          setReadingValidationResult(null);
+          setReadingValidated(false);
+          setSpeakerVerificationStatus("failed");
         }
       }
-    }
+    };
 
+    setTimeout(checkRecordingReady, 200);
+  } else {
+    // no recording available
     setVoiceIdentifierConfirmed(true);
-    setReadingValidated(true);
-  };
-
-  const handleReadingValidationRetry = async function () {
-    // Reset states and restart recording
     setReadingValidated(false);
     setReadingValidationResult(null);
-    setReadingRecordingBlob(null);
-    setVerificationAudioBlob(null); // Clear verification blob on retry
+    setSpeakerVerificationStatus("failed");
+  }
+};
 
-    // Restart recording
-    if (permission) {
-      SessionRecorder.cleanup();
-      SessionRecorder.resetTimestamps();
-      const started = await SessionRecorder.startContinuousRecording();
-      if (started) {
-        setSessionRecordingStarted(true);
-        console.log("🔄 Restarted reading recording");
-      }
-    }
-  };
+const handleReadingValidationContinue = async function () {
+  setVoiceIdentifierConfirmed(true);
+};
+
+const handleReadingValidationRetry = function () {
+  setReadingValidated(false);
+  setReadingValidationResult(null);
+  setReadingRecordingBlob(null);
+  setVerificationAudioBlob(null);
+  setSpeakerVerificationStatus("idle");
+  setVoiceIdentifierConfirmed(false);
+  setMustFinishVerification(true);
+  setReadingValidationInProgress(false);
+};
 
   // Auto-start recording when voice identifier screen appears (only if not validated yet)
   React.useEffect(function () {
@@ -1237,6 +1254,15 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     // Simplified: just complete the session
     completeSession();
   }
+  function ensureSpeakerVerifiedBeforeFinish() {
+    if (speakerVerificationStatus === "success" && verificationAudioBlob) {
+    return true;
+    }
+
+    setMustFinishVerification(true);
+    setVoiceIdentifierConfirmed(false);
+    return false;
+  }
 
   function completeSession(updatedQuestionResults) {
     setImages([]);
@@ -1244,6 +1270,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     // If test is paused, unpause it first
     if (isPaused) {
       setIsPaused(false);
+    }
+
+    if (!ensureSpeakerVerifiedBeforeFinish()) {
+    return;
     }
 
     // Stop continuous session recording and send data to backend
@@ -1762,6 +1792,17 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       "div",
       { className: "voice-identifier-screen" },
       React.createElement("h2", null, tr("test.reading.title")),
+      mustFinishVerification
+  ? React.createElement(
+      "div",
+      {
+        className: "speaker-status-banner speaker-status-banner--warning"
+      },
+      lang === "en"
+        ? "Before finishing the test, we still need one successful parent reading sample. Please read the sentence below, then press Continue."
+        : "לפני סיום המבחן, עדיין צריך דגימת קריאה תקינה אחת של ההורה. אנא הקריאו את המשפט שלמטה ואז לחצו על המשך."
+    )
+  : null,
       permission && sessionRecordingStarted
         ? React.createElement(
           "div",
@@ -1826,43 +1867,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   }
 
   if (sessionCompleted) {
-    // Show waiting screen while transcription is being processed
-    if (waitingForTranscription) {
-      return React.createElement(
-        "div",
-        {
-          className: "session-complete",
-          style: {
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: "24px",
-            padding: "48px 32px"
-          }
-        },
-        React.createElement("h2", null, tr("test.done.title")),
-        React.createElement("p", { style: { fontSize: "18px", color: "#666" } },
-          lang === "en" ? "Processing transcription, please wait..." : "מעבד תמלול, אנא המתן..."
-        ),
-        React.createElement("div", {
-          style: {
-            width: "50px",
-            height: "50px",
-            border: "4px solid #f3f3f3",
-            borderTop: "4px solid #4CAF50",
-            borderRadius: "50%",
-            animation: "spin 1s linear infinite"
-          }
-        }),
-        React.createElement("style", null, `
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        `)
-      );
-    }
-
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
 
     const expectedAgeGroup = (function () {
@@ -1905,6 +1909,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         }
       }
     });
+
+    
 
     // Split results by question type
     const compStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
@@ -2017,6 +2023,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       }, 500);
     };
 
+    
+
     return React.createElement(
       "div",
       { className: "session-complete" },
@@ -2041,6 +2049,27 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       })(),
       React.createElement("h2", null, tr("test.done.title")),
       // Celebration hero (keep bunny+carrot big; remove progress track)
+
+      waitingForTranscription
+  ? React.createElement(
+      "div",
+      {
+        style: {
+          margin: "8px auto 16px",
+          padding: "10px 14px",
+          borderRadius: "12px",
+          background: "rgba(66, 171, 199, 0.08)",
+          border: "1px solid rgba(66, 171, 199, 0.18)",
+          textAlign: "center",
+          maxWidth: "720px",
+          width: "100%"
+        }
+      },
+      lang === "en"
+        ? "Results are ready. The transcript is still processing in the background..."
+        : "התוצאות מוכנות. התמלול עדיין מעובד ברקע..."
+    )
+  : null,
       React.createElement(
         "div",
         { style: { width: "100%", padding: "12px 0 6px", textAlign: "center" } },
@@ -2205,60 +2234,72 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
         // Download both button (main action) - show if recording exists
         sessionRecordingStarted
-          ? React.createElement(
-            "button",
-            {
-              style: {
-                padding: "12px 24px",
-                fontSize: "18px",
-                backgroundColor: "#FF6B35",
-                color: "white",
-                border: "none",
-                borderRadius: "8px",
-                cursor: "pointer",
-                fontWeight: "bold"
-              },
-              onClick: downloadBoth
-            },
-            tr("test.done.downloadBoth")
-          )
-          : null,
+  ? React.createElement(
+      "button",
+      {
+        style: {
+          padding: "12px 24px",
+          fontSize: "18px",
+          backgroundColor: waitingForTranscription ? "#BFC7CC" : "#FF6B35",
+          color: "white",
+          border: "none",
+          borderRadius: "8px",
+          cursor: waitingForTranscription ? "not-allowed" : "pointer",
+          fontWeight: "bold",
+          opacity: waitingForTranscription ? 0.75 : 1
+        },
+        onClick: downloadBoth,
+        disabled: waitingForTranscription
+      },
+      waitingForTranscription
+        ? (lang === "en"
+            ? "Recording ready, transcript still processing..."
+            : "ההקלטה מוכנה, התמלול עדיין בעיבוד...")
+        : tr("test.done.downloadBoth")
+    )
+  : null,
         // Download button for recording only - show if recording exists
         sessionRecordingStarted
-          ? React.createElement(
-            "button",
-            {
-              style: {
-                padding: "10px 20px",
-                fontSize: "16px",
-                backgroundColor: "#42ABC7",
-                color: "white",
-                border: "none",
-                borderRadius: "8px",
-                cursor: "pointer"
-              },
-              onClick: downloadRecording
-            },
-            tr("test.done.downloadRecording")
-          )
-          : null,
+      ? React.createElement(
+        "button",
+        {
+          style: {
+            padding: "10px 20px",
+            fontSize: "16px",
+            backgroundColor: "#42ABC7",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            cursor: "pointer"
+          },
+          onClick: downloadRecording
+        },
+        tr("test.done.downloadRecording")
+      )
+  : null,
         // Download button for timestamps only - always show on completion screen
         React.createElement(
-          "button",
-          {
-            style: {
-              padding: "10px 20px",
-              fontSize: "16px",
-              backgroundColor: "#4CAF50",
-              color: "white",
-              border: "none",
-              borderRadius: "8px",
-              cursor: "pointer"
-            },
-            onClick: downloadTimestamps
+        "button",
+        {
+          style: {
+            padding: "10px 20px",
+            fontSize: "16px",
+            backgroundColor: waitingForTranscription ? "#BFC7CC" : "#4CAF50",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            cursor: waitingForTranscription ? "not-allowed" : "pointer",
+            opacity: waitingForTranscription ? 0.75 : 1
           },
-          tr("test.done.downloadTimestamps")
-        )
+          onClick: downloadTimestamps,
+            disabled: waitingForTranscription
+        },
+        waitingForTranscription
+          ? (lang === "en"
+              ? "Transcript still processing..."
+              : "התמלול עדיין בעיבוד...")
+          : tr("test.done.downloadTimestamps")
+      )
       )
     );
   }
@@ -2294,7 +2335,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     "images-container" +
     (currentImageCount === 1 ? " images-container--single" : "") +
     (questionType === "C" ? " images-container--comprehension" : " images-container--expression");
-
+const shouldShowSpeakerStatusUi =
+  !sessionCompleted && !trafficPopupOpen && !showContinue;
   // Main UI
   return React.createElement(
     "div",
@@ -2302,16 +2344,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       className: "app-container",
       style: devMode ? { backgroundColor: "#808080" } : {}
     },
-    devMode
-      ? React.createElement(
-        "div",
-        { className: "dev-mode-indicator" },
-        React.createElement("input", {
-          type: "number",
-          className: "dev-mode-input"
-        })
-      )
-      : null,
+ 
     // Paused overlay
     isPaused
       ? React.createElement(
@@ -2412,6 +2445,102 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       : null,
     React.createElement(TestNavbar),
     !sessionCompleted ? React.createElement(ProgressBar) : null,
+      shouldShowSpeakerStatusUi?(
+    speakerVerificationStatus === "processing"
+  ? React.createElement(
+      "div",
+      {
+        className: "speaker-status-banner"
+      },
+      lang === "en"
+        ? "Parent voice verification is processing in the background..."
+        : "אימות קול ההורה מעובד ברקע..."
+    )
+ : speakerVerificationStatus === "failed"
+  ? React.createElement(
+      "div",
+      {
+        className: "speaker-status-banner speaker-status-banner--warning"
+      },
+      lang === "en"
+        ? "Parent voice verification failed. You can continue for now, but you must retry before finishing."
+        : "אימות קול ההורה נכשל. אפשר להמשיך כרגע, אך חייבים לנסות שוב לפני סיום."
+    )
+
+    
+    : speakerVerificationStatus === "success"
+      ? React.createElement(
+          "div",
+          {
+            className: "speaker-status-banner speaker-status-banner--success"
+          },
+          lang === "en"
+            ? "Parent voice verified successfully."
+            : "קול ההורה אומת בהצלחה."
+        ) :null)
+      : null,
+
+   devMode
+  ? React.createElement(
+      "div",
+      { className: "dev-mode-indicator" },
+
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "dev-mode-btn",
+          onClick: goToPreviousQuestion,
+          disabled: currentIdx <= 0
+        },
+        lang === "en" ? "◀ Prev" : "▶ קודם"
+      ),
+
+      React.createElement("input", {
+        type: "number",
+        min: 1,
+        max: questions.length,
+        value: devJumpValue,
+        onChange: function (e) {
+          setDevJumpValue(e.target.value.replace(/\D/g, ""));
+        },
+        className: "dev-mode-input",
+        placeholder: lang === "en" ? "Question #" : "מספר שאלה"
+      }),
+
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "dev-mode-btn",
+          onClick: function () {
+            goToQuestionByNumber(devJumpValue);
+          }
+        },
+        lang === "en" ? "Go" : "עבור"
+      ),
+
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "dev-mode-btn",
+          onClick: function () {
+            updateCurrentQuestionIndex(function (prevIdx) {
+              if (prevIdx < questions.length - 1) {
+                return prevIdx + 1;
+              }
+              return prevIdx;
+            });
+          },
+          disabled: currentIdx >= questions.length - 1
+        },
+        lang === "en" ? "Next ▶" : "הבא ◀"
+      )
+    )
+  : null,
+
+
     trafficPopupOpen
       ? React.createElement(
         "div",
