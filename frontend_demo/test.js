@@ -111,6 +111,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return window.matchMedia("(max-width: 640px)").matches;
   }, []);
 
+  const isPortraitMobile = React.useMemo(function () {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return window.matchMedia("(max-width: 600px) and (orientation: portrait)").matches;
+}, []);
+
 const runSpeakerVerificationInBackground = async function (recordingBlob) {
   try {
     setSpeakerVerificationStatus("processing");
@@ -344,6 +349,12 @@ function blobToBase64(blob) {
   const skipMicrophone = function () {
     // Even if skipping recording, mark that user interacted with microphone prompt
     setMicrophoneSkipped(true);
+    setVoiceIdentifierConfirmed(true);
+    setReadingValidated(false);
+    setReadingValidationResult(null);
+    setSpeakerVerificationStatus("idle");
+    setMustFinishVerification(false);
+    setSessionRecordingStarted(false);
     // sessionRecordingStarted will be set by the useEffect when voice identifier screen appears
   };
 
@@ -478,7 +489,7 @@ const handleReadingValidationRetry = function () {
     if (!skipReading) return;
     if (skipReadingAppliedRef.current) return;
 
-    if ((permission || microphoneSkipped) && !voiceIdentifierConfirmed) {
+    if (permission && !voiceIdentifierConfirmed) {
       skipReadingAppliedRef.current = true;
       console.warn("⚡ skipReading=1 enabled: bypassing voice identifier step (no validation/recording)");
 
@@ -1255,14 +1266,18 @@ const handleReadingValidationRetry = function () {
     completeSession();
   }
   function ensureSpeakerVerifiedBeforeFinish() {
-    if (speakerVerificationStatus === "success" && verificationAudioBlob) {
+  if (microphoneSkipped || !permission) {
     return true;
-    }
-
-    setMustFinishVerification(true);
-    setVoiceIdentifierConfirmed(false);
-    return false;
   }
+
+  if (speakerVerificationStatus === "success" && verificationAudioBlob) {
+    return true;
+  }
+
+  setMustFinishVerification(true);
+  setVoiceIdentifierConfirmed(false);
+  return false;
+}
 
   function completeSession(updatedQuestionResults) {
     setImages([]);
@@ -1488,57 +1503,143 @@ const handleReadingValidationRetry = function () {
     const progressPercentage = totalQuestions > 0 ? (currentIdx / totalQuestions) * 100 : 0;
     const isRecording = permission && sessionRecordingStarted;
     const showControls = voiceIdentifierConfirmed && !sessionCompleted;
-
+    const isRtl = lang !== "en";
+    const bunnyPosition = Math.max(4, isRtl ? (100 - progressPercentage) : progressPercentage);
     return React.createElement(
       "div",
       { className: "progress-bar-container" },
       React.createElement(
+  "div",
+  { className: "test-controls-row" },
+
+  // Previous button
+  currentIdx > 0 && showControls
+    ? React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "ctrl-btn",
+          onClick: goToPreviousQuestion,
+          title: tr("test.nav.back"),
+          "aria-label": tr("test.nav.back.aria")
+        },
+        lang === "en" ? "←" : "→"
+      )
+    : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" }),
+
+  // Bunny track
+  React.createElement(
+    "div",
+    { style: { flex: 1, minWidth: 0 } },
+    React.createElement(
+      "div",
+      { className: "bunny-track-wrapper" },
+      React.createElement(
         "div",
-        { className: "test-controls-row" },
+        { className: "bunny-track" },
+        React.createElement("div", {
+          className: "bunny-track-fill",
+          style: { width: progressPercentage + "%" }
+        }),
+        React.createElement("span", {
+  className: "bunny-avatar",
+  style: { left: bunnyPosition + "%" }
+}, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")),
+        React.createElement("span", { className: "bunny-carrot" }, "🥕")
+      ),
+      React.createElement(
+        "div",
+        { className: "progress-text" },
+        tr("test.progress", { current: currentIdx + 1, total: totalQuestions })
+      )
+    )
+  ),
 
-        // Back button
-        currentIdx > 0 && showControls
-          ? React.createElement("button", {
-            type: "button",
-            className: "ctrl-btn",
-            onClick: goToPreviousQuestion,
-            title: tr("test.nav.back"),
-            "aria-label": tr("test.nav.back.aria")
-          }, lang === "en" ? "←" : "→")
-          : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" }),
+  // Next button
+  currentIdx < totalQuestions - 1 && showControls
+    ? React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "ctrl-btn",
+          onClick: function () {
+            updateCurrentQuestionIndex(currentIdx + 1);
+          },
+          title: lang === "en" ? "Next question" : "השאלה הבאה",
+          "aria-label": lang === "en" ? "Next question" : "השאלה הבאה"
+        },
+        lang === "en" ? "→" : "←"
+      )
+    : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" })
+)
+    );
+  }
 
-        // Bunny track (flex: 1)
-        React.createElement(
-          "div",
-          { style: { flex: 1, minWidth: 0 } },
-          React.createElement(
+function renderBottomActions() {
+  if (questionType === "E") {
+    return React.createElement(
+      "div",
+      { className: "question-bottom-actions" },
+      commentText && commentText.trim() !== ""
+        ? React.createElement(
             "div",
-            { className: "bunny-track-wrapper" },
+            { className: "question-bottom-actions__note expected-answer-box" },
+            React.createElement("span", { className: "expected-answer-box__icon" }, "🔍"),
             React.createElement(
-              "div",
-              { className: "bunny-track" },
-              React.createElement("div", {
-                className: "bunny-track-fill",
-                style: { width: progressPercentage + "%" }
-              }),
-              React.createElement("span", {
-                className: "bunny-avatar",
-                style: { left: Math.max(4, 100 - progressPercentage) + "%" }
-              }, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")),
-              React.createElement("span", { className: "bunny-carrot" }, "🥕")
+              "strong",
+              { className: "expected-answer-box__label" },
+              lang === "en" ? "Expected answer: " : "תשובה מצופה: "
             ),
-            React.createElement(
-              "div",
-              { className: "progress-text" },
-              tr("test.progress", { current: currentIdx + 1, total: totalQuestions })
-            )
+            commentText
           )
-        )
+        : null,
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "question-bottom-actions__eval-btn",
+          onClick: function () { setShowContinue(true); },
+          disabled: trafficPopupOpen || showContinue,
+          title: tr("test.evaluate.label"),
+          "aria-label": tr("test.evaluate.label"),
+        },
+        "🚦 ",
+        tr("test.evaluate.label")
       )
     );
   }
 
+  if (hintText && hintText.trim() !== "") {
+    return React.createElement(
+      "div",
+      {
+        className: "question-bottom-actions",
+        "data-open": showHint ? "true" : "false",
+      },
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "question-bottom-actions__hint-btn",
+          "aria-label": lang === "en" ? "Hint" : "רמז",
+          "aria-expanded": showHint,
+          onClick: function () { setShowHint(!showHint); },
+        },
+        React.createElement("span", null, "🧰"),
+        React.createElement("span", null, tr("test.hint.needHint"))
+      ),
+      showHint
+        ? React.createElement(
+            "div",
+            { className: "question-bottom-actions__note hint-text" },
+            hintText
+          )
+        : null
+    );
+  }
 
+  return null;
+}
   if (!ageConfirmed && !ageInvalid) {
     return React.createElement(
       "div",
@@ -1594,6 +1695,14 @@ const handleReadingValidationRetry = function () {
         },
         tr("test.mic.allow")
       ),
+      React.createElement(
+  "button",
+  {
+    className: "skipMic",
+    onClick: skipMicrophone
+  },
+  lang === "en" ? "Skip microphone for local testing" : "דלג על מיקרופון לבדיקה מקומית"
+),
       React.createElement(
         "p",
         {
@@ -1868,7 +1977,7 @@ const handleReadingValidationRetry = function () {
 
   if (sessionCompleted) {
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
-
+    const hasSessionRecording = !!(permission && sessionRecordingStarted);
     const expectedAgeGroup = (function () {
       const months = totalMonths();
       // Age input is validated to [24,72) months in confirmAge()
@@ -2050,7 +2159,7 @@ const handleReadingValidationRetry = function () {
       React.createElement("h2", null, tr("test.done.title")),
       // Celebration hero (keep bunny+carrot big; remove progress track)
 
-      waitingForTranscription
+      hasSessionRecording && waitingForTranscription
   ? React.createElement(
       "div",
       {
@@ -2070,6 +2179,28 @@ const handleReadingValidationRetry = function () {
         : "התוצאות מוכנות. התמלול עדיין מעובד ברקע..."
     )
   : null,
+
+  !hasSessionRecording
+  ? React.createElement(
+      "div",
+      {
+        style: {
+          margin: "8px auto 0",
+          padding: "10px 14px",
+          borderRadius: "12px",
+          background: "rgba(176, 192, 196, 0.14)",
+          border: "1px solid rgba(48, 67, 72, 0.12)",
+          textAlign: "center",
+          maxWidth: "720px",
+          width: "100%"
+        }
+      },
+      lang === "en"
+        ? "This test was completed without microphone recording, so recording and transcript features are unavailable."
+        : "המבחן הושלם ללא הקלטת מיקרופון, לכן פונקציות ההקלטה והתמלול אינן זמינות."
+    )
+  : null,
+
       React.createElement(
         "div",
         { style: { width: "100%", padding: "12px 0 6px", textAlign: "center" } },
@@ -2079,7 +2210,7 @@ const handleReadingValidationRetry = function () {
           lang === "en"
             ? "Great job — you finished the test!"
             : "כל הכבוד! סיימתם בהצלחה!!"
-        ),
+        ) ,
         React.createElement(
           "div",
           { style: { fontSize: "34px", lineHeight: 1.1 } },
@@ -2233,7 +2364,7 @@ const handleReadingValidationRetry = function () {
         "div",
         { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
         // Download both button (main action) - show if recording exists
-        sessionRecordingStarted
+          hasSessionRecording
   ? React.createElement(
       "button",
       {
@@ -2251,7 +2382,7 @@ const handleReadingValidationRetry = function () {
         onClick: downloadBoth,
         disabled: waitingForTranscription
       },
-      waitingForTranscription
+      hasSessionRecording && waitingForTranscription
         ? (lang === "en"
             ? "Recording ready, transcript still processing..."
             : "ההקלטה מוכנה, התמלול עדיין בעיבוד...")
@@ -2259,7 +2390,7 @@ const handleReadingValidationRetry = function () {
     )
   : null,
         // Download button for recording only - show if recording exists
-        sessionRecordingStarted
+        hasSessionRecording
       ? React.createElement(
         "button",
         {
@@ -2278,6 +2409,7 @@ const handleReadingValidationRetry = function () {
       )
   : null,
         // Download button for timestamps only - always show on completion screen
+        hasSessionRecording?
         React.createElement(
         "button",
         {
@@ -2299,7 +2431,7 @@ const handleReadingValidationRetry = function () {
               ? "Transcript still processing..."
               : "התמלול עדיין בעיבוד...")
           : tr("test.done.downloadTimestamps")
-      )
+      ):null
       )
     );
   }
@@ -2638,119 +2770,124 @@ const shouldShowSpeakerStatusUi =
         )
       )
       : null,
-    // ── Question section (speaker + text; expression: centered question + traffic left) ──────────
-    React.createElement(
-      "div",
-      { className: "question-section" + (questionType === "E" ? " question-section--expression" : "") },
-      questionType === "E"
-        ? (function () {
-            return [
-              React.createElement("div", { key: "eval", className: "question-section__evaluate-wrap" },
-                React.createElement("button", {
-                  type: "button",
-                  className: "question-section__evaluate-icon-btn",
-                  onClick: function () { setShowContinue(true); },
-                  disabled: trafficPopupOpen || showContinue,
-                  title: tr("test.evaluate.label"),
-                  "aria-label": tr("test.evaluate.label"),
-                }, "🚦"),
-                React.createElement("span", { className: "question-section__evaluate-label" }, tr("test.evaluate.label"))
-              ),
-              React.createElement(
-                "div",
-                { key: "center", className: "question-section__center" },
-                React.createElement(
-                  "div",
-                  { className: "question-section__query-row" },
-                  questionAudio
-                    ? React.createElement(
-                      "button",
-                      {
-                        type: "button",
-                        className: "replay-audio-btn",
-                        onClick: replayQuestionAudio,
-                        disabled: isAudioPlaying,
-                        "aria-label": tr("test.audio.playQuestion"),
-                      },
-                      React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
-                      React.createElement("span", { className: "replay-audio-btn__label" }, "")
-                    )
-                    : null,
-                  React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
-                ),
-                commentText && commentText.trim() !== ""
-                  ? React.createElement(
-                    "div",
-                    { className: "question-section__notes expected-answer-box" },
-                    React.createElement("span", { className: "expected-answer-box__icon" }, "🔍"),
-                    React.createElement("strong", { className: "expected-answer-box__label" },
-                      lang === "en" ? "Expected answer: " : "תשובה מצופה: "
-                    ),
-                    commentText
-                  )
-                  : null
-              ),
-            ];
-          })()
-        : (function () {
-            return [
-              React.createElement(
-                "div",
-                { key: "query", className: "question-section__query-row" },
-                questionAudio
-                  ? React.createElement(
-                    "button",
-                    {
-                      type: "button",
-                      className: "replay-audio-btn",
-                      onClick: replayQuestionAudio,
-                      disabled: isAudioPlaying,
-                      "aria-label": tr("test.audio.playQuestion"),
-                    },
-                    React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
-                    React.createElement("span", { className: "replay-audio-btn__label" }, "")
-                  )
-                  : null,
-                React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
-              ),
-              hintText && hintText.trim() !== ""
-                ? React.createElement(
-                  "div",
-                  {
-                    key: "hint",
-                    className: "question-section__notes hint-inline-container",
-                    "data-open": showHint ? "true" : "false",
-                  },
-                  React.createElement("button", {
-                    type: "button",
-                    className: "hint-trigger-btn",
-                    "aria-label": lang === "en" ? "Hint" : "רמז",
-                    "aria-expanded": showHint,
-                    onClick: function () { setShowHint(!showHint); },
-                    style: { display: "flex", alignItems: "center", gap: "6px", width: "auto", padding: "6px 10px" },
-                  }, React.createElement("span", null, "🧰"), React.createElement("span", { style: { fontSize: "10px", fontWeight: 500 } }, tr("test.hint.needHint"))),
-                  showHint ? React.createElement("div", { className: "hint-text" }, hintText) : null
-                )
-                : null,
-            ];
-          })()
-    ),
-
-    questionType === "C"
+    // ── Question section (audio + question only) ──────────
+React.createElement(
+  "div",
+  { className: "question-section" },
+  React.createElement(
+    "div",
+    { className: "question-section__query-row" },
+    questionAudio
       ? React.createElement(
-        "div",
-        {
-          className: imagesContainerClassName,
-          style: isTwoRow ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle,
-          "data-count": currentImageCount,
-          "data-question-type": "C",
-        },
-        (function () {
-          const useTwoRows = isTwoRow;
-          const topCountDynamic = isTwoRow ? topRowCount : Math.ceil(currentImageCount / 2);
+          "button",
+          {
+            type: "button",
+            className: "replay-audio-btn",
+            onClick: replayQuestionAudio,
+            disabled: isAudioPlaying,
+            "aria-label": tr("test.audio.playQuestion"),
+          },
+          React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
+          React.createElement("span", { className: "replay-audio-btn__label" }, "")
+        )
+      : null,
+    React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
+  )
+),
+
+questionType === "C"
+  ? React.createElement(
+      "div",
+      {
+        className:
+          "comprehension-container" +
+          (isPortraitMobile && currentImageCount === 3 ? " comprehension-container--three-up" : "") +
+          (isPortraitMobile && currentImageCount >= 4 ? " comprehension-container--two-col" : "")
+      },
+      (function () {
+        const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
+        const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
+
+        const comprehensionGridStyle = shouldUseThreeUp
+          ? { display: "flex", flexDirection: "column", gap: "12px" }
+          : shouldUseTwoColumnGrid
+            ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
+            : (isTwoRow ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle);
+
+        function renderImage(img, i, extraClassName) {
+          const imgIndex = i + 1;
+          const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
+          const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
+          const isOrderedCorrect =
+            answerType === "ordered" &&
+            orderedAnswers.length > 0 &&
+            imgIndex === orderedAnswers[0] &&
+            orderedClickSequence.length > 0 &&
+            orderedClickSequence[0] === orderedAnswers[0];
+          const showFireworks = fireworksVisible && (
+            (answerType === "single" && img === target && clickedCorrect) ||
+            (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
+            isOrderedCorrect ||
+            (answerType === "mask" && clickedCorrect)
+          );
+          const showGreenBorder =
+            isCorrectMulti ||
+            isTargetSingle ||
+            isOrderedCorrect ||
+            (answerType === "mask" && clickedCorrect);
+          const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
+
+          return React.createElement(
+            "div",
+            {
+              key: i,
+              className: "image-wrapper" + (extraClassName ? " " + extraClassName : ""),
+              style: {
+                position: "relative",
+                width: "100%",
+                opacity: isNonClickable ? 0.5 : 1,
+                cursor: isNonClickable ? "not-allowed" : "pointer"
+              }
+            },
+            showFireworks
+              ? React.createElement("img", {
+                  src: "resources/test_assets/general/fireworks.webp",
+                  className: "fireworks",
+                  alt: "celebration",
+                })
+              : null,
+            React.createElement("img", {
+              src: img,
+              alt: "option " + (i + 1),
+              className: extraClassName === "top-row-big" ? "image top-row-big" : "image",
+              style: Object.assign(
+                { width: "100%", maxWidth: "100%" },
+                showGreenBorder
+                  ? {
+                      border: "4px solid #00ff00",
+                      borderRadius: "16px",
+                      boxShadow: "0 0 20px rgba(0,255,0,0.8)"
+                    }
+                  : {}
+              ),
+              onClick: function (e) { handleClick(img, e); },
+            })
+          );
+        }
+
+        if (!isPortraitMobile && isTwoRow) {
+          const topCountDynamic = topRowCount;
           const bottomImages = images.slice(topCountDynamic);
-          if (useTwoRows) {
-            return React.createElement(
+
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName,
+              style: comprehensionGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "C",
+            },
+            React.createElement(
               "div",
               { className: "two-row-layout" },
               React.createElement(
@@ -2760,269 +2897,143 @@ const shouldShowSpeakerStatusUi =
                   style: { gridTemplateColumns: "repeat(" + topCountDynamic + ", 1fr)", gap: "6px" }
                 },
                 images.slice(0, topCountDynamic).map(function (img, i) {
-                  const imgIndex = i + 1;
-                  const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
-                  const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                  const isOrderedCorrect = answerType === "ordered" && 
-                    orderedAnswers.length > 0 &&
-                    imgIndex === orderedAnswers[0] &&
-                    orderedClickSequence.length > 0 &&
-                    orderedClickSequence[0] === orderedAnswers[0];
-                  const showFireworks = fireworksVisible && (
-                    (answerType === "single" && img === target && clickedCorrect) ||
-                    (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
-                    isOrderedCorrect ||
-                    (answerType === "mask" && clickedCorrect));
-                  const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
-                    (answerType === "mask" && clickedCorrect);
-                  const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
-
-                  return React.createElement(
-                    "div",
-                    {
-                      key: i,
-                      className: "image-wrapper",
-                      style: {
-                        position: "relative",
-                        width: "100%",
-                        opacity: isNonClickable ? 0.5 : 1,
-                        cursor: isNonClickable ? "not-allowed" : "pointer"
-                      }
-                    },
-                    showFireworks
-                      ? React.createElement("img", {
-                        src: "resources/test_assets/general/fireworks.webp",
-                        className: "fireworks",
-                        alt: "celebration",
-                      })
-                      : null,
-                    React.createElement("img", {
-                      src: img,
-                      alt: "option " + (i + 1),
-                      className: topRowBigger ? "image top-row-big" : "image",
-                      style: Object.assign(
-                        { width: "100%", maxWidth: "100%" },
-                        showGreenBorder ? {
-                          border: "4px solid #00ff00",
-                          borderRadius: "16px",
-                          boxShadow: "0 0 20px rgba(0,255,0,0.8)"
-                        } : {}
-                      ),
-                      onClick: function (e) { handleClick(img, e); },
-                    })
-                  );
+                  return renderImage(img, i, topRowBigger ? "top-row-big" : "");
                 })
               ),
               bottomImages.length > 0
                 ? React.createElement(
-                  "div",
-                  {
-                    className: "image-row bottom-row",
-                    style: { gridTemplateColumns: "repeat(" + bottomImages.length + ", 1fr)", gap: "6px" }
-                  },
-                  bottomImages.map(function (img, i) {
-                    const imgIndex = topCountDynamic + i + 1;
-                    const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
-                    const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-                    const isOrderedCorrect = answerType === "ordered" && 
-                      orderedAnswers.length > 0 &&
-                      imgIndex === orderedAnswers[0] &&
-                      orderedClickSequence.length > 0 &&
-                      orderedClickSequence[0] === orderedAnswers[0];
-                    const showFireworks = fireworksVisible && (
-                      (answerType === "single" && img === target && clickedCorrect) ||
-                      (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
-                      isOrderedCorrect ||
-                      (answerType === "mask" && clickedCorrect));
-                    const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
-                      (answerType === "mask" && clickedCorrect);
-                    const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
-
-                    return React.createElement(
-                      "div",
-                      {
-                        key: topCountDynamic + i,
-                        className: "image-wrapper",
-                        style: {
-                          position: "relative",
-                          width: "100%",
-                          opacity: isNonClickable ? 0.5 : 1,
-                          cursor: isNonClickable ? "not-allowed" : "pointer"
-                        }
-                      },
-                      showFireworks
-                        ? React.createElement("img", {
-                          src: "resources/test_assets/general/fireworks.webp",
-                          className: "fireworks",
-                          alt: "celebration",
-                        })
-                        : null,
-                      React.createElement("img", {
-                        src: img,
-                        alt: "option " + (topCountDynamic + i + 1),
-                        className: "image",
-                        style: Object.assign(
-                          { width: "100%", maxWidth: "100%" },
-                          showGreenBorder ? {
-                            border: "4px solid #00ff00",
-                            borderRadius: "16px",
-                            boxShadow: "0 0 20px rgba(0,255,0,0.8)"
-                          } : {}
-                        ),
-                        onClick: function (e) { handleClick(img, e); },
-                      })
-                    );
-                  })
-                )
-                : null
-            );
-          }
-
-          // Single row fallback for 1–2 images
-          return images.map(function (img, i) {
-            const imgIndex = i + 1;
-            const isCorrectMulti = answerType === "multi" && clickedMultiAnswers.includes(imgIndex);
-            const isTargetSingle = answerType === "single" && img === target && clickedCorrect;
-            // Show fireworks only on the first answer in the ordered sequence when clicked correctly
-            const isOrderedCorrect = answerType === "ordered" && 
-              orderedAnswers.length > 0 &&
-              imgIndex === orderedAnswers[0] &&
-              orderedClickSequence.length > 0 &&
-              orderedClickSequence[0] === orderedAnswers[0];
-            const showFireworks = fireworksVisible && (
-              (answerType === "single" && img === target && clickedCorrect) ||
-              (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
-              isOrderedCorrect ||
-              (answerType === "mask" && clickedCorrect));
-            const showGreenBorder = isCorrectMulti || isTargetSingle || isOrderedCorrect ||
-              (answerType === "mask" && clickedCorrect);
-            const isNonClickable = nonClickableImage && imgIndex === nonClickableImage;
-
-            return React.createElement(
-              "div",
-              {
-                key: i,
-                className: "image-wrapper",
-                style: {
-                  position: "relative",
-                  opacity: isNonClickable ? 0.5 : 1,
-                  cursor: isNonClickable ? "not-allowed" : "pointer"
-                }
-              },
-              showFireworks
-                ? React.createElement("img", {
-                  src: "resources/test_assets/general/fireworks.webp",
-                  className: "fireworks",
-                  alt: "celebration",
-                })
-                : null,
-              React.createElement("img", {
-                src: img,
-                alt: "option " + (i + 1),
-                className: "image",
-                style: Object.assign(
-                  {},
-                  compactImages
-                    ? { maxWidth: isMobile ? "42vw" : "120px" }
-                    : (isMobile ? { maxWidth: "48vw" } : {}),
-                  showGreenBorder ? {
-                    border: "4px solid #00ff00",
-                    borderRadius: "16px",
-                    boxShadow: "0 0 20px rgba(0,255,0,0.8)"
-                  } : {}
-                ),
-                onClick: function (e) { handleClick(img, e); },
-              })
-            );
-          });
-        })(),
-      )
-      : null,
-
-    questionType === "E"
-      ? React.createElement(
-        "div",
-        { className: "expression-container" },
-        // !microphoneSkipped && countdown > 0
-        //   ? React.createElement("h3", null, "Recording starts in " + countdown + "...")
-        //   : null,
-        // !microphoneSkipped && recording
-        //   ? React.createElement(
-        //       "div",
-        //       { className: "rec-controls" },
-        //       !recPaused
-        (function () {
-          const useTwoRows = currentImageCount > 4;
-          const topCountDynamic = Math.ceil(currentImageCount / 2);
-          const bottomImages = images.slice(topCountDynamic);
-
-          return React.createElement(
-            "div",
-            {
-              className: imagesContainerClassName,
-              style: useTwoRows ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle,
-              "data-count": currentImageCount,
-              "data-question-type": "E",
-            },
-            useTwoRows
-              ? React.createElement(
-                "div",
-                { className: "two-row-layout" },
-                React.createElement(
-                  "div",
-                  {
-                    className: "image-row top-row",
-                    style: { gridTemplateColumns: "repeat(" + topCountDynamic + ", 1fr)", gap: "6px" }
-                  },
-                  images.slice(0, topCountDynamic).map(function (img, i) {
-                    return React.createElement(
-                      "div",
-                      { key: i, className: "image-wrapper", style: { width: "100%" } },
-                      React.createElement("img", {
-                        src: img,
-                        alt: "option " + (i + 1),
-                        className: "image",
-                        style: { width: "100%", maxWidth: "100%" }
-                      })
-                    );
-                  })
-                ),
-                bottomImages.length > 0
-                  ? React.createElement(
                     "div",
                     {
                       className: "image-row bottom-row",
                       style: { gridTemplateColumns: "repeat(" + bottomImages.length + ", 1fr)", gap: "6px" }
                     },
                     bottomImages.map(function (img, i) {
-                      return React.createElement(
-                        "div",
-                        { key: topCountDynamic + i, className: "image-wrapper", style: { width: "100%" } },
-                        React.createElement("img", {
-                          src: img,
-                          alt: "option " + (topCountDynamic + i + 1),
-                          className: "image",
-                          style: { width: "100%", maxWidth: "100%" }
-                        })
-                      );
+                      return renderImage(img, topCountDynamic + i, "");
                     })
                   )
-                  : null
-              )
-              : images.map(function (img, i) {
-                return React.createElement(
-                  "div",
-                  { key: i, className: "image-wrapper" },
-                  React.createElement("img", {
-                    src: img,
-                    alt: "option " + (i + 1),
-                    className: "image"
-                  })
-                );
-              })
+                : null
+            )
           );
-        })()
-      )
-      : null
+        }
+
+        if (shouldUseThreeUp) {
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName + " images-container--three-up",
+              style: comprehensionGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "C",
+            },
+            React.createElement(
+              "div",
+              { className: "images-container--three-up-top" },
+              images.slice(0, 2).map(function (img, i) {
+                return renderImage(img, i, "");
+              })
+            ),
+            React.createElement(
+              "div",
+              { className: "images-container--three-up-bottom" },
+              images.slice(2, 3).map(function (img, i) {
+                return renderImage(img, 2 + i, "");
+              })
+            )
+          );
+        }
+
+        return React.createElement(
+          "div",
+          {
+            className:
+              imagesContainerClassName +
+              (shouldUseTwoColumnGrid ? " images-container--two-col" : ""),
+            style: comprehensionGridStyle,
+            "data-count": currentImageCount,
+            "data-question-type": "C",
+          },
+          images.map(function (img, i) {
+            return renderImage(img, i, "");
+          })
+        );
+      })()
+    )
+  : null,
+
+questionType === "E"
+  ? React.createElement(
+      "div",
+      { className: "expression-container" },
+      (function () {
+        const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
+        const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
+
+        const expressionGridStyle = shouldUseThreeUp
+          ? { display: "flex", flexDirection: "column", gap: "12px" }
+          : shouldUseTwoColumnGrid
+            ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
+            : imagesGridStyle;
+
+        function renderExpressionImage(img, i) {
+          return React.createElement(
+            "div",
+            {
+              key: i,
+              className: "image-wrapper",
+              style: { width: "100%" }
+            },
+            React.createElement("img", {
+              src: img,
+              alt: "option " + (i + 1),
+              className: "image",
+              style: { width: "100%", maxWidth: "100%" }
+            })
+          );
+        }
+
+        if (shouldUseThreeUp) {
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName + " images-container--three-up",
+              style: expressionGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "E",
+            },
+            React.createElement(
+              "div",
+              { className: "images-container--three-up-top" },
+              images.slice(0, 2).map(function (img, i) {
+                return renderExpressionImage(img, i);
+              })
+            ),
+            React.createElement(
+              "div",
+              { className: "images-container--three-up-bottom" },
+              images.slice(2, 3).map(function (img, i) {
+                return renderExpressionImage(img, 2 + i);
+              })
+            )
+          );
+        }
+
+        return React.createElement(
+          "div",
+          {
+            className:
+              imagesContainerClassName +
+              (shouldUseTwoColumnGrid ? " images-container--two-col" : ""),
+            style: expressionGridStyle,
+            "data-count": currentImageCount,
+            "data-question-type": "E",
+          },
+          images.map(function (img, i) {
+            return renderExpressionImage(img, i);
+          })
+        );
+      })()
+    )
+  : null,
+      renderBottomActions(),
   );
 }
