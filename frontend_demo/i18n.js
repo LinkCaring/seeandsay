@@ -17,8 +17,8 @@ window.I18N = (function () {
             "app.reset.yes": "כן, לאפס",
             "app.reset.no": "ביטול",
             "app.brandAlt": "לוגו",
-            "app.lang.he": "עברית",
-            "app.lang.en": "English",
+            "app.lang.he": "עב",
+            "app.lang.en": "EN",
 
             "nav.home": "בית",
             "nav.test": "מבחן",
@@ -121,8 +121,8 @@ window.I18N = (function () {
             "app.reset.yes": "Yes, reset",
             "app.reset.no": "Cancel",
             "app.brandAlt": "Logo",
-            "app.lang.he": "עברית",
-            "app.lang.en": "English",
+            "app.lang.he": "עב",
+            "app.lang.en": "EN",
 
             "nav.home": "Home",
             "nav.test": "Test",

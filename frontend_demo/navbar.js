@@ -103,13 +103,12 @@
     ) : null;
 
     var finishBtn = isTest ? React.createElement("button", {
-      type: "button",
-      className: btnClass,
-      onClick: function () { if (onFinishTest) onFinishTest(); },
-      title: lang === "en" ? "Finish test" : "סיים מבחן",
-      "aria-label": lang === "en" ? "Finish test" : "סיים מבחן",
-      style: { fontWeight: 800 }
-    }, lang === "en" ? "Finish" : "סיום") : null;
+    type: "button",
+    className: btnClass + " test-navbar__btn--finish",
+    onClick: function () { if (onFinishTest) onFinishTest(); },
+    title: lang === "en" ? "Finish test" : "סיים מבחן",
+    "aria-label": lang === "en" ? "Finish test" : "סיים מבחן"
+    }, "🏁") : null;
 
     if (isHome) {
       return React.createElement(
