@@ -33,7 +33,10 @@
     var setDevMode = props.setDevMode;
     var isRecording = props.isRecording;
     var onFinishTest = props.onFinishTest;
-
+    var currentQuestionIndex = props.currentQuestionIndex || 0;
+    var totalQuestions = props.totalQuestions || 0;
+    var onPrevQuestion = props.onPrevQuestion;
+    var onNextQuestion = props.onNextQuestion;
     var innerClass = isHome ? "top-header__inner" : "test-navbar__inner";
     var logoClass = isHome ? "top-header__logo" : "test-navbar__logo";
     var langClass = isHome ? "top-header__lang" : "test-navbar__lang";
@@ -89,6 +92,34 @@
       "aria-label": "Dev mode",
     }, "\uD83D\uDEE0") : null; // 🛠
 
+
+      var questionNav = isTest ? React.createElement(
+  "div",
+  { className: "test-navbar__question-nav" },
+  React.createElement("button", {
+    type: "button",
+    className: "test-navbar__btn test-navbar__btn--qnav",
+    onClick: function () { if (onPrevQuestion) onPrevQuestion(); },
+    title: lang === "en" ? "Previous question" : "שאלה קודמת",
+    "aria-label": lang === "en" ? "Previous question" : "שאלה קודמת",
+    disabled: currentQuestionIndex <= 0
+  }, "<"),
+  React.createElement(
+    "span",
+    { className: "test-navbar__question-count" },
+    (currentQuestionIndex + 1) + "/" + totalQuestions
+  ),
+  React.createElement("button", {
+    type: "button",
+    className: "test-navbar__btn test-navbar__btn--qnav",
+    onClick: function () { if (onNextQuestion) onNextQuestion(); },
+    title: lang === "en" ? "Next question" : "השאלה הבאה",
+    "aria-label": lang === "en" ? "Next question" : "השאלה הבאה",
+    disabled: currentQuestionIndex >= totalQuestions - 1
+  }, ">")
+) : null;
+
+
     var pauseBtn = showPause ? React.createElement("button", {
       type: "button",
       className: btnClass + " test-navbar__btn--pause" + (isPaused ? " is-paused" : ""),
@@ -110,6 +141,7 @@
     "aria-label": lang === "en" ? "Finish test" : "סיים מבחן"
     }, "🏁") : null;
 
+  
     if (isHome) {
       return React.createElement(
         "div",
@@ -130,7 +162,7 @@
       logoEl,
       homeBtn,
       resetBtn,
-      devBtn,
+      questionNav,
       pauseBtn,
       finishBtn,
       langGroup
