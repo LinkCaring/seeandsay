@@ -24,6 +24,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [wrongAnswers, setWrongAnswers] = usePersistentState("wrongAnswers", 0);
   const [devMode, setDevMode] = usePersistentState("devMode", false)
   const [devJumpValue, setDevJumpValue] = React.useState("");
+  const [evaluationEnabled, setEvaluationEnabled] = React.useState(false);
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -244,6 +245,25 @@ function blobToBase64(blob) {
                 : "questions";
     onTestPhase(phase);
   }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
+
+
+  // evaulation enabling effect - enables the traffic light popup after 15 seconds 
+  React.useEffect(function () {
+  if (sessionCompleted || questionType !== "E") {
+    setEvaluationEnabled(false);
+    return;
+  }
+
+  setEvaluationEnabled(false);
+
+  const timer = setTimeout(function () {
+    setEvaluationEnabled(true);
+  }, 15000);
+
+  return function () {
+    clearTimeout(timer);
+  };
+}, [currentIndex, questionType, sessionCompleted]);
 
   // =============================================================================
   // DEVELOPER MODE FUNCTIONS
@@ -1489,6 +1509,15 @@ const handleReadingValidationRetry = function () {
         devMode: devMode,
         setDevMode: setDevMode,
         isRecording: !!isRecording,
+        currentQuestionIndex: getCurrentQuestionIndex(),
+        totalQuestions: questions.length,
+        onPrevQuestion: goToPreviousQuestion,
+        onNextQuestion: function () {
+        var currentIdx = getCurrentQuestionIndex();
+        if (currentIdx < questions.length - 1) {
+      updateCurrentQuestionIndex(currentIdx + 1);
+    }
+  },
         onFinishTest: function () {
           // Finish immediately and navigate to completion (also stops recording inside completeSession)
           completeSession(questionResults);
@@ -1579,32 +1608,40 @@ function renderBottomActions() {
   if (questionType === "E") {
     return React.createElement(
       "div",
-      { className: "question-bottom-actions" },
+      { className: "question-bottom-actions question-bottom-actions--expression" },
+
       commentText && commentText.trim() !== ""
         ? React.createElement(
             "div",
-            { className: "question-bottom-actions__note expected-answer-box" },
-            React.createElement("span", { className: "expected-answer-box__icon" }, "🔍"),
+            { className: "question-bottom-actions__note question-bottom-actions__note--plain" },
             React.createElement(
               "strong",
-              { className: "expected-answer-box__label" },
+              { className: "question-bottom-actions__note-label" },
               lang === "en" ? "Expected answer: " : "תשובה מצופה: "
             ),
             commentText
           )
         : null,
+
       React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "question-bottom-actions__eval-btn",
-          onClick: function () { setShowContinue(true); },
-          disabled: trafficPopupOpen || showContinue,
-          title: tr("test.evaluate.label"),
-          "aria-label": tr("test.evaluate.label"),
-        },
-        "🚦 ",
-        tr("test.evaluate.label")
+        "div",
+        { className: "question-bottom-actions__row" },
+        React.createElement("div", { className: "question-bottom-actions__spacer" }),
+        React.createElement(
+          "button",
+          {
+            type: "button",
+           className: "question-bottom-actions__eval-btn question-bottom-actions__btn--plain" +     
+           (evaluationEnabled ? " question-bottom-actions__eval-btn--signaled" : ""),
+            onClick: function () { setTrafficPopupOpen(true); },
+            disabled: trafficPopupOpen || showContinue,
+
+            title: tr("test.evaluate.label"),
+            "aria-label": tr("test.evaluate.label"),
+          },
+          React.createElement("span", { className: "question-bottom-actions__emoji" }, "🚦"),
+          React.createElement("span", null, tr("test.evaluate.label"))
+        )
       )
     );
   }
@@ -1613,25 +1650,30 @@ function renderBottomActions() {
     return React.createElement(
       "div",
       {
-        className: "question-bottom-actions",
+        className: "question-bottom-actions question-bottom-actions--comprehension",
         "data-open": showHint ? "true" : "false",
       },
       React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "question-bottom-actions__hint-btn",
-          "aria-label": lang === "en" ? "Hint" : "רמז",
-          "aria-expanded": showHint,
-          onClick: function () { setShowHint(!showHint); },
-        },
-        React.createElement("span", null, "🧰"),
-        React.createElement("span", null, tr("test.hint.needHint"))
+        "div",
+        { className: "question-bottom-actions__row" },
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            className: "question-bottom-actions__hint-btn question-bottom-actions__btn--plain",
+            "aria-label": lang === "en" ? "Hint" : "רמז",
+            "aria-expanded": showHint,
+            onClick: function () { setShowHint(!showHint); },
+          },
+          React.createElement("span", { className: "question-bottom-actions__emoji" }, "🧰"),
+          React.createElement("span", null, tr("test.hint.needHint"))
+        ),
+        React.createElement("div", { className: "question-bottom-actions__spacer" })
       ),
       showHint
         ? React.createElement(
             "div",
-            { className: "question-bottom-actions__note hint-text" },
+            { className: "question-bottom-actions__note question-bottom-actions__note--plain" },
             hintText
           )
         : null
@@ -1640,6 +1682,7 @@ function renderBottomActions() {
 
   return null;
 }
+
   if (!ageConfirmed && !ageInvalid) {
     return React.createElement(
       "div",
@@ -2135,29 +2178,54 @@ function renderBottomActions() {
     
 
     return React.createElement(
+  React.Fragment,
+  null,
+
+  // Navigation bar for completion screen — outside the summary card
+  (function () {
+    var AppNavbar = window.AppNavbar;
+    if (!AppNavbar) {
+      return React.createElement("div", { className: "session-complete__nav" }, null);
+    }
+
+    return React.createElement(
       "div",
-      { className: "session-complete" },
-      // Navigation bar for completion screen — same AppNavbar (logo, home, reset, languages)
-      (function () {
-        var AppNavbar = window.AppNavbar;
-        if (!AppNavbar) return React.createElement("div", { className: "session-complete__nav" }, null);
-        return React.createElement(
-          "div",
-          { className: "session-complete__nav", style: { width: "100%", marginBottom: "20px" } },
-          React.createElement("div", { className: "test-navbar" },
-            React.createElement(AppNavbar, {
-              variant: "complete",
-              lang: lang,
-              t: t,
-              onHome: onHome,
-              onReset: onReset,
-              setLang: setLang,
-            })
-          )
-        );
-      })(),
-      React.createElement("h2", null, tr("test.done.title")),
-      // Celebration hero (keep bunny+carrot big; remove progress track)
+      { className: "session-complete__nav" },
+      React.createElement(
+        "div",
+        { className: "test-navbar" },
+        React.createElement(AppNavbar, {
+          variant: "complete",
+          lang: lang,
+          t: t,
+          onHome: onHome,
+          onReset: onReset,
+          setLang: setLang,
+        })
+      )
+    );
+  })(),
+
+  React.createElement(
+    "div",
+    { className: "session-complete" },
+
+    React.createElement(
+      "div",
+      { style: { width: "100%", padding: "8px 0 2px", textAlign: "center" } },
+      React.createElement(
+        "div",
+        {
+          style: {
+            fontSize: "28px",
+            fontWeight: 800,
+            marginBottom: "6px",
+            color: "#20364a"
+          }
+        },
+        lang === "en" ? "Great job! 🏁" : "כל הכבוד! 🏁"
+      )
+    ),
 
       hasSessionRecording && waitingForTranscription
   ? React.createElement(
@@ -2201,111 +2269,6 @@ function renderBottomActions() {
     )
   : null,
 
-      React.createElement(
-        "div",
-        { style: { width: "100%", padding: "12px 0 6px", textAlign: "center" } },
-        React.createElement(
-          "div",
-          { style: { fontSize: "20px", fontWeight: 800, marginBottom: "6px" } },
-          lang === "en"
-            ? "Great job — you finished the test!"
-            : "כל הכבוד! סיימתם בהצלחה!!"
-        ) ,
-        React.createElement(
-          "div",
-          { style: { fontSize: "34px", lineHeight: 1.1 } },
-          React.createElement("span", { className: "celebrate-icon celebrate-icon--clap" }, "👏"),
-          " ",
-          React.createElement("span", { className: "celebrate-icon celebrate-icon--balloon" }, "🎈"),
-          " ",
-          React.createElement("span", { className: "celebrate-icon celebrate-icon--party" }, "🎉")
-        ),
-        React.createElement(
-          "div",
-          {
-            className: "session-complete__bunny-carrot",
-            style: {
-              display: "inline-flex",
-              alignItems: "flex-end",
-              direction: "ltr",
-              gap: "2px",
-              marginTop: "10px",
-              lineHeight: 1
-            }
-          },
-          React.createElement("span", { className: "bunny-carrot__carrot", style: { fontSize: "64px" } }, "🥕"),
-          React.createElement(
-            "span",
-            {
-              className: "bunny-carrot__bunny",
-              style: { fontSize: "72px", marginLeft: "-40px" }
-            },
-            (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")
-          )
-        ),
-        React.createElement("style", null, `
-          @keyframes celebrate-pop {
-            0%   { transform: translateY(0) scale(1); filter: saturate(1); }
-            35%  { transform: translateY(-6px) scale(1.08); filter: saturate(1.25); }
-            70%  { transform: translateY(0) scale(1); }
-            100% { transform: translateY(0) scale(1); }
-          }
-
-          @keyframes celebrate-float {
-            0%   { transform: translateY(0) rotate(-2deg); }
-            50%  { transform: translateY(-10px) rotate(2deg); }
-            100% { transform: translateY(0) rotate(-2deg); }
-          }
-
-          @keyframes celebrate-twinkle {
-            0%   { transform: rotate(0deg) scale(1); filter: saturate(1.1); }
-            50%  { transform: rotate(10deg) scale(1.08); filter: saturate(1.35) brightness(1.05); }
-            100% { transform: rotate(0deg) scale(1); }
-          }
-
-          @keyframes carrot-nibble {
-            0%   { transform: rotate(-3deg) translateY(0); }
-            50%  { transform: rotate(3deg) translateY(-3px); }
-            100% { transform: rotate(-3deg) translateY(0); }
-          }
-
-          @keyframes bunny-chew {
-            0%   { transform: translateY(0) rotate(0deg); }
-            40%  { transform: translateY(-4px) rotate(-2deg); }
-            80%  { transform: translateY(0) rotate(1deg); }
-            100% { transform: translateY(0) rotate(0deg); }
-          }
-
-          .celebrate-icon {
-            display: inline-block;
-            will-change: transform, filter;
-          }
-
-          .celebrate-icon--clap {
-            animation: celebrate-pop 900ms ease-in-out infinite;
-          }
-
-          .celebrate-icon--balloon {
-            animation: celebrate-float 1400ms ease-in-out infinite;
-          }
-
-          .celebrate-icon--party {
-            animation: celebrate-twinkle 1100ms ease-in-out infinite;
-          }
-
-          .bunny-carrot__carrot {
-            display: inline-block;
-            transform-origin: 70% 60%;
-            animation: carrot-nibble 700ms ease-in-out infinite;
-          }
-
-          .bunny-carrot__bunny {
-            display: inline-block;
-            transform-origin: 50% 80%;
-            animation: bunny-chew 650ms ease-in-out infinite;
-          }
-        `)
-      ),
       // Age-matched summary (parent-facing)
       React.createElement(
         "div",
@@ -2433,6 +2396,7 @@ function renderBottomActions() {
           : tr("test.done.downloadTimestamps")
       ):null
       )
+    )
     );
   }
 
@@ -2576,7 +2540,7 @@ const shouldShowSpeakerStatusUi =
       )
       : null,
     React.createElement(TestNavbar),
-    !sessionCompleted ? React.createElement(ProgressBar) : null,
+    (!sessionCompleted && !isPortraitMobile) ? React.createElement(ProgressBar) : null,
       shouldShowSpeakerStatusUi?(
     speakerVerificationStatus === "processing"
   ? React.createElement(
@@ -2807,9 +2771,11 @@ questionType === "C"
       (function () {
         const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
         const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
+        const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
 
-        const comprehensionGridStyle = shouldUseThreeUp
-          ? { display: "flex", flexDirection: "column", gap: "12px" }
+        const comprehensionGridStyle = shouldUseSingleColumn?
+         { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }
+          :shouldUseThreeUp? { display: "flex", flexDirection: "column", gap: "12px" }
           : shouldUseTwoColumnGrid
             ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
             : (isTwoRow ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle);
@@ -2947,6 +2913,7 @@ questionType === "C"
           {
             className:
               imagesContainerClassName +
+              (shouldUseSingleColumn ? " images-container--single-column" : "") +
               (shouldUseTwoColumnGrid ? " images-container--two-col" : ""),
             style: comprehensionGridStyle,
             "data-count": currentImageCount,
@@ -2965,11 +2932,13 @@ questionType === "E"
       "div",
       { className: "expression-container" },
       (function () {
+        const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
         const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
         const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
 
-        const expressionGridStyle = shouldUseThreeUp
-          ? { display: "flex", flexDirection: "column", gap: "12px" }
+        const expressionGridStyle = shouldUseSingleColumn?
+         { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }
+          : shouldUseThreeUp? { display: "flex", flexDirection: "column", gap: "12px" }
           : shouldUseTwoColumnGrid
             ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
             : imagesGridStyle;
@@ -3022,6 +2991,7 @@ questionType === "E"
           {
             className:
               imagesContainerClassName +
+              (shouldUseSingleColumn ? " images-container--single-column" : "") +
               (shouldUseTwoColumnGrid ? " images-container--two-col" : ""),
             style: expressionGridStyle,
             "data-count": currentImageCount,
