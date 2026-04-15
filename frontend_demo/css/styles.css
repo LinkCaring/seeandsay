@@ -1166,7 +1166,10 @@ button {
     margin-bottom: 24px;
   }
 }
+.kkk{
+      padding: 28px 20px;
 
+}
 @media (max-width: 600px) {
   /* Centered screens: compact on mobile */
   .age-screen,
