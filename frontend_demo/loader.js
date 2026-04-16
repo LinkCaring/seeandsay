@@ -5,7 +5,7 @@ const ImageLoader = (function() {
   let allQuestions = [];
 
   function getImageUrl(queryNumber, imageIndex) {
-    return "resources/test_assets/" + queryNumber + "/image_" + imageIndex + ".webp";
+    return "resources/test_assets/" + queryNumber + "/image_" + imageIndex + ".png";
   }
 
   function preloadImage(url) {
