@@ -11,8 +11,12 @@
   var React = global.React;
   if (!React) return;
 
-  var RESET_ICON = "\uD83D\uDD03"; // 🔃 counterclockwise – start over / restart
+  var RESET_ICON = "replay";
   var BUNNY_PROGRESS_ICON = "\uD83D\uDC07"; // 🐇 full rabbit (walking) for progress bar
+  var HOME_ICON_NAME = "home";
+  var FINISH_ICON_NAME = "outlined_flag";
+  var PAUSE_ACTIVE_ICON_NAME = "pause_circle";
+  var PAUSE_PAUSED_ICON_NAME = "play_circle";
 
   function AppNavbar(props) {
     var variant = props.variant || "home";
@@ -46,11 +50,26 @@
     var homeTitle = lang === "en" ? "Home" : "בית";
     var pauseTitle = isPaused ? (lang === "en" ? "Resume" : "המשך") : (lang === "en" ? "Pause" : "השהה");
 
-    var logoEl = React.createElement("img", {
-      className: logoClass,
-      src: "resources/test_assets/general/LogoHeader.png",
-      alt: t("app.brandAlt"),
-    });
+    var logoEl = React.createElement(
+      "span",
+      { className: "top-header__brand-wrap" },
+      React.createElement("img", {
+        className: logoClass,
+        src: "resources/test_assets/general/LogoHeader.png",
+        alt: t("app.brandAlt"),
+        onError: function (e) {
+          if (!e || !e.currentTarget) return;
+          e.currentTarget.style.display = "none";
+          var fallback = e.currentTarget.parentElement && e.currentTarget.parentElement.querySelector(".top-header__brand-fallback");
+          if (fallback) fallback.style.display = "inline-flex";
+        }
+      }),
+      React.createElement(
+        "span",
+        { className: "top-header__brand-fallback", style: { display: "none" } },
+        lang === "en" ? "Walking in Language" : "צועדים בשפה"
+      )
+    );
 
     var resetBtn = React.createElement("button", {
       type: "button",
@@ -58,7 +77,10 @@
       onClick: function () { if (onReset) onReset(); },
       title: resetTitle,
       "aria-label": resetTitle,
-    }, RESET_ICON);
+    }, React.createElement("span", {
+      className: "material-symbols-outlined navbar-icon",
+      "aria-hidden": "true"
+    }, RESET_ICON));
 
     var langGroup = React.createElement(
       "div",
@@ -82,7 +104,10 @@
       title: homeTitle,
       "aria-label": homeTitle,
       style: isHome ? { fontSize: "16px", padding: "6px 10px", minWidth: "36px" } : undefined,
-    }, "\uD83C\uDFE0") : null; // 🏠
+    }, React.createElement("span", {
+      className: "material-symbols-outlined navbar-icon",
+      "aria-hidden": "true"
+    }, HOME_ICON_NAME)) : null;
 
     var devBtn = showDev ? React.createElement("button", {
       type: "button",
@@ -130,7 +155,10 @@
       React.createElement("span", {
         className: "rec-dot" + (!isRecording ? " rec-dot--off" : "") + (isPaused ? " rec-dot--paused" : ""),
       }),
-      isPaused ? " \u25B6" : " \u23F8"  // ▶ ⏸
+      React.createElement("span", {
+        className: "material-symbols-outlined navbar-icon navbar-icon--pause",
+        "aria-hidden": "true"
+      }, isPaused ? PAUSE_PAUSED_ICON_NAME : PAUSE_ACTIVE_ICON_NAME)
     ) : null;
 
     var finishBtn = isTest ? React.createElement("button", {
@@ -139,20 +167,17 @@
     onClick: function () { if (onFinishTest) onFinishTest(); },
     title: lang === "en" ? "Finish test" : "סיים מבחן",
     "aria-label": lang === "en" ? "Finish test" : "סיים מבחן"
-    }, "🏁") : null;
+    }, React.createElement("span", {
+      className: "material-symbols-outlined navbar-icon",
+      "aria-hidden": "true"
+    }, FINISH_ICON_NAME)) : null;
 
   
     if (isHome) {
       return React.createElement(
         "div",
-        { className: innerClass },
-        logoEl,
-        React.createElement(
-          "div",
-          { style: { display: "flex", alignItems: "center", gap: "8px" } },
-          resetBtn,
-          langGroup
-        )
+        { className: innerClass + " top-header__inner--logo-only" },
+        logoEl
       );
     }
 

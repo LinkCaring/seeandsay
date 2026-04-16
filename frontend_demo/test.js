@@ -1,4 +1,6 @@
 function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) {
+  const PRIVACY_POLICY_URL = "https://www.heb.linkcaring.com/privacy-policy";
+  const TERMS_OF_USE_URL = "https://www.heb.linkcaring.com/terms-of-use";
   const tr = function (key, vars) {
     return t ? t(key, vars) : key;
   };
@@ -15,7 +17,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   // Persistent states
   const [ageYears, setAgeYears] = usePersistentState("ageYears", "");
   const [ageMonths, setAgeMonths] = usePersistentState("ageMonths", "");
-  const [idDigits, setId] = usePersistentState("idDigits", "")
+  const [idDigits, setId] = usePersistentState("idDigits", "");
+  const [childName, setChildName] = usePersistentState("childName", "");
+  const [childGender, setChildGender] = usePersistentState("childGender", "");
+  const [childDob, setChildDob] = usePersistentState("childDob", "");
+  const [recordingConsent, setRecordingConsent] = usePersistentState("recordingConsent", false);
+  const [legalConfirmation, setLegalConfirmation] = usePersistentState("legalConfirmation", false);
   const [ageConfirmed, setAgeConfirmed] = usePersistentState("ageConfirmed", false);
   const [ageInvalid, setAgeInvalid] = usePersistentState("ageInvalid", false);
   const [currentIndex, setCurrentIndex] = usePersistentState("currentIndex", 0);
@@ -100,6 +107,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [showAfkWarning, setShowAfkWarning] = React.useState(false);
   const afkTimerRef = React.useRef(null);
   const afkWarningTimerRef = React.useRef(null);
+  const dobInputRef = React.useRef(null);
 
   // Image loading state
   const [currentQuestionImagesLoaded, setCurrentQuestionImagesLoaded] = React.useState(false);
@@ -178,6 +186,29 @@ function blobToBase64(blob) {
     reader.readAsDataURL(blob);
   });
 }
+
+  function getImageFallbackUrls(url) {
+    if (!url) return [];
+    if (/\.png$/i.test(url)) {
+      return [url, url.replace(/\.png$/i, ".webp")];
+    }
+    if (/\.webp$/i.test(url)) {
+      return [url.replace(/\.webp$/i, ".png"), url];
+    }
+    return [url];
+  }
+
+  function handleImageFallbackError(event) {
+    const imgEl = event && event.currentTarget;
+    if (!imgEl) return;
+    const baseSrc = imgEl.getAttribute("data-base-src") || imgEl.getAttribute("src") || "";
+    const candidates = getImageFallbackUrls(baseSrc);
+    const tried = Number(imgEl.getAttribute("data-fallback-index") || 0);
+    const nextIdx = tried + 1;
+    if (nextIdx >= candidates.length) return;
+    imgEl.setAttribute("data-fallback-index", String(nextIdx));
+    imgEl.src = candidates[nextIdx];
+  }
 
   // Adjust counts helpers
   function adjustCountsForResult(resultString, delta) {
@@ -318,6 +349,44 @@ function blobToBase64(blob) {
     return y * 12 + m;
   }
 
+  function deriveAgeFromDob(dobValue) {
+    if (!dobValue) return null;
+    const dob = new Date(dobValue + "T00:00:00");
+    if (Number.isNaN(dob.getTime())) return null;
+    const today = new Date();
+    let years = today.getFullYear() - dob.getFullYear();
+    let months = today.getMonth() - dob.getMonth();
+    if (today.getDate() < dob.getDate()) {
+      months -= 1;
+    }
+    if (months < 0) {
+      years -= 1;
+      months += 12;
+    }
+    if (years < 0) return null;
+    return { years: years, months: months, totalMonths: years * 12 + months };
+  }
+
+  function ensureInternalUserId() {
+    if (idDigits && String(idDigits).trim() !== "") {
+      return String(idDigits).trim();
+    }
+    const generatedId = "demo-" + Date.now() + "-" + Math.floor(Math.random() * 10000);
+    setId(generatedId);
+    return generatedId;
+  }
+
+  function formatDobDisplay(dobValue) {
+    if (!dobValue) return tr("test.start.dob");
+    try {
+      const parsed = new Date(dobValue + "T00:00:00");
+      if (Number.isNaN(parsed.getTime())) return tr("test.start.dob");
+      return parsed.toLocaleDateString(lang === "en" ? "en-US" : "he-IL");
+    } catch (e) {
+      return tr("test.start.dob");
+    }
+  }
+
   function getCurrentQuestionIndex() {
     return currentIndex;
   }
@@ -331,22 +400,44 @@ function blobToBase64(blob) {
   // EVENT HANDLERS
   // =============================================================================
   function confirmAge() {
-    const y = parseInt(ageYears, 10);
-    const m = parseInt(ageMonths, 10);
-    const id = idDigits
-    if (isNaN(y) || isNaN(m) || m < 0 || m > 11) {
+    if (!childName || !String(childName).trim()) {
+      alert(tr("test.start.invalidName"));
+      return;
+    }
+    if (!childGender) {
+      alert(tr("test.start.invalidGender"));
+      return;
+    }
+    if (!childDob) {
       alert(tr("test.age.invalidInput"));
       return;
     }
-    const months = totalMonths();
-    if (months < 24 || months >= 72) {
+    if (!recordingConsent) {
+      alert(tr("test.start.invalidConsent"));
+      return;
+    }
+    if (!legalConfirmation) {
+      alert(tr("test.start.invalidLegal"));
+      return;
+    }
+
+    const derivedAge = deriveAgeFromDob(childDob);
+    if (!derivedAge) {
+      alert(tr("test.age.invalidInput"));
+      return;
+    }
+    if (derivedAge.totalMonths < 24 || derivedAge.totalMonths >= 72) {
       setAgeInvalid(true);
       return;
     }
- 
-    // Simply confirm age and start with all questions
+
+    setAgeYears(String(derivedAge.years));
+    setAgeMonths(String(derivedAge.months));
+    const internalUserId = ensureInternalUserId();
+
+    // Confirm start form and keep downstream flow unchanged.
     setAgeConfirmed(true);
-    createUser(idDigits, 'SomeUserName') //MongoDB
+    createUser(internalUserId, String(childName).trim() || "SomeUserName"); // MongoDB
   }
 
   const getMicrophonePermission = async function () {
@@ -764,7 +855,7 @@ const handleReadingValidationRetry = function () {
 
 
 
-  // Show fireworks immediately, open popup after 1s
+  // Show full-screen confetti, open popup after 1s
   function showCorrectFeedback() {
     setFireworksVisible(true);
     if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
@@ -791,7 +882,7 @@ const handleReadingValidationRetry = function () {
         const correct = img === target;
         if (correct) {
           setClickedCorrect(true);
-          showCorrectFeedback(); // 1s delay → fireworks → 1s delay → popup
+          showCorrectFeedback(); // 1s delay → confetti → popup
         } else {
           setShowContinue(true);
         }
@@ -817,7 +908,6 @@ const handleReadingValidationRetry = function () {
           if (!clickedMultiAnswers.includes(imgIndex)) {
             updatedClickedCorrect = [...clickedMultiAnswers, imgIndex];
             setClickedMultiAnswers(updatedClickedCorrect);
-            setFireworksVisible(true); // show fireworks immediately on each correct click
           }
         }
 
@@ -836,7 +926,8 @@ const handleReadingValidationRetry = function () {
         const attemptLimit = correctTargetCount + 2;
         if (isNowCorrect || nextAttempts >= attemptLimit) {
           if (isNowCorrect) {
-            // Fireworks already visible; just delay the popup
+            // Show confetti and delay popup
+            setFireworksVisible(true);
             if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
             fireworksTimerRef.current = setTimeout(function () { setShowContinue(true); }, 1000);
           } else {
@@ -875,7 +966,7 @@ const handleReadingValidationRetry = function () {
           const isGreen = checkMaskClick(event);
           if (isGreen) {
             setClickedCorrect(true);
-            showCorrectFeedback(); // 1s delay → fireworks → 1s delay → popup
+            showCorrectFeedback(); // 1s delay → confetti → popup
           } else {
             setShowContinue(true);
           }
@@ -1170,6 +1261,8 @@ const handleReadingValidationRetry = function () {
       // Mask answer type: load A.webp as mask
       setAnswerType("mask");
       const maskUrl = "resources/test_assets/" + q.query_number + "/A.webp";
+      const maskUrlCandidates = getImageFallbackUrls(maskUrl);
+      let maskUrlIdx = 0;
 
       // Load mask image and draw to canvas for pixel detection
       const mask = new Image();
@@ -1184,9 +1277,14 @@ const handleReadingValidationRetry = function () {
         setMaskImage(mask);
       };
       mask.onerror = function () {
-        console.error('Failed to load mask image:', maskUrl);
+        maskUrlIdx += 1;
+        if (maskUrlIdx < maskUrlCandidates.length) {
+          mask.src = maskUrlCandidates[maskUrlIdx];
+          return;
+        }
+        console.error('Failed to load mask image:', maskUrlCandidates[0]);
       };
-      mask.src = maskUrl;
+      mask.src = maskUrlCandidates[0];
 
       setTarget("");
       setMultiAnswers([]);
@@ -1606,27 +1704,34 @@ const handleReadingValidationRetry = function () {
 
 function renderBottomActions() {
   if (questionType === "E") {
+    var hasExpressionHint = !!(hintText && hintText.trim() !== "");
     return React.createElement(
       "div",
       { className: "question-bottom-actions question-bottom-actions--expression" },
-
-      commentText && commentText.trim() !== ""
-        ? React.createElement(
-            "div",
-            { className: "question-bottom-actions__note question-bottom-actions__note--plain" },
-            React.createElement(
-              "strong",
-              { className: "question-bottom-actions__note-label" },
-              lang === "en" ? "Expected answer: " : "תשובה מצופה: "
-            ),
-            commentText
-          )
-        : null,
-
       React.createElement(
         "div",
         { className: "question-bottom-actions__row" },
-        React.createElement("div", { className: "question-bottom-actions__spacer" }),
+        hasExpressionHint
+          ? React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "question-bottom-actions__hint-btn question-bottom-actions__btn--plain",
+                "aria-label": lang === "en" ? "Hint" : "רמז",
+                "aria-expanded": showHint,
+                onClick: function () { setShowHint(!showHint); },
+              },
+              React.createElement("span", { className: "question-bottom-actions__emoji question-bottom-actions__emoji--hint" }, "💡"),
+              React.createElement("span", null, tr("test.hint.needHint")),
+          showHint && hasExpressionHint
+            ? React.createElement(
+                "span",
+                { className: "hint-text hint-text--bottombar" },
+                hintText
+              )
+            : null
+            )
+          : React.createElement("span", { className: "question-bottom-actions__slot", "aria-hidden": true }),
         React.createElement(
           "button",
           {
@@ -1665,53 +1770,184 @@ function renderBottomActions() {
             "aria-expanded": showHint,
             onClick: function () { setShowHint(!showHint); },
           },
-          React.createElement("span", { className: "question-bottom-actions__emoji" }, "🧰"),
-          React.createElement("span", null, tr("test.hint.needHint"))
+          React.createElement("span", { className: "question-bottom-actions__emoji question-bottom-actions__emoji--hint" }, "💡"),
+          React.createElement("span", null, tr("test.hint.needHint")),
+          showHint
+            ? React.createElement(
+                "span",
+                { className: "hint-text hint-text--bottombar" },
+                hintText
+              )
+            : null
         ),
         React.createElement("div", { className: "question-bottom-actions__spacer" })
       ),
-      showHint
-        ? React.createElement(
-            "div",
-            { className: "question-bottom-actions__note question-bottom-actions__note--plain" },
-            hintText
-          )
-        : null
+      null
     );
   }
 
   return null;
 }
 
+function renderExpectedAnswerToggle() {
+  return null;
+}
+
+function renderConfettiOverlay() {
+  if (!fireworksVisible) return null;
+  var pieceCount = 72;
+  var palette = ["#ff5f6d", "#ffb347", "#ffd166", "#7bd389", "#43c6ac", "#4facfe", "#b983ff"];
+  return React.createElement(
+    "div",
+    { className: "confetti-overlay", "aria-hidden": "true" },
+    Array.from({ length: pieceCount }).map(function (_, i) {
+      var left = (i * 11 + (i % 5) * 7) % 100;
+      var delay = (i % 9) * 0.06;
+      var duration = 2.2 + (i % 8) * 0.25;
+      var drift = ((i % 9) - 4) * 28;
+      var pieceWidth = 10 + (i % 4) * 3;
+      var pieceHeight = 16 + (i % 5) * 3;
+      var color = palette[i % palette.length];
+      return React.createElement("span", {
+        key: "confetti-" + i,
+        className: "confetti-overlay__piece",
+        style: {
+          left: left + "%",
+          width: pieceWidth + "px",
+          height: pieceHeight + "px",
+          backgroundColor: color,
+          animationDelay: delay + "s",
+          animationDuration: duration + "s",
+          "--confetti-drift": drift + "px",
+          transform: "translateY(-14vh) rotate(" + ((i * 31) % 360) + "deg)"
+        }
+      });
+    })
+  );
+}
+
+function renderExpectedAnswerNote() {
+  if (questionType !== "E" || !commentText || commentText.trim() === "") return null;
+  return React.createElement(
+    "div",
+    { className: "question-bottom-actions__note question-bottom-actions__note--plain question-expected-answer-above" },
+    React.createElement(
+      "strong",
+      { className: "question-bottom-actions__note-label" },
+      lang === "en" ? "Expected answer: " : "הכוונה להורה: "
+    ),
+    commentText
+  );
+}
+
   if (!ageConfirmed && !ageInvalid) {
     return React.createElement(
       "div",
       { className: "age-screen" },
-      React.createElement("h2", null, tr("test.age.title")),
       React.createElement("input", {
-        type: "number",
-        placeholder: tr("test.age.years"),
-        value: ageYears,
+        type: "text",
+        placeholder: tr("test.start.childName"),
+        value: childName,
         onChange: function (e) {
-          setAgeYears(e.target.value.replace(/\D/g, ""));
+          setChildName(e.target.value);
         },
       }),
-      React.createElement("input", {
-        type: "number",
-        placeholder: tr("test.age.months"),
-        value: ageMonths,
-        onChange: function (e) {
-          setAgeMonths(e.target.value.replace(/\D/g, ""));
+      React.createElement(
+        "select",
+        {
+          value: childGender,
+          onChange: function (e) {
+            setChildGender(e.target.value);
+          }
         },
-      }),
-      React.createElement("input", {
-        type: "number",
-        placeholder: tr("test.age.id"),
-        value: idDigits,
-        onChange: function (e) {
-          setId(e.target.value.replace(/\D/g, ""));
+        React.createElement("option", { value: "", disabled: true }, tr("test.start.gender.placeholder")),
+        React.createElement("option", { value: "female" }, tr("test.start.gender.female")),
+        React.createElement("option", { value: "male" }, tr("test.start.gender.male"))
+      ),
+      React.createElement(
+        "label",
+        {
+          className: "start-date-field",
+          onClick: function () {
+            if (!dobInputRef.current) return;
+            try {
+              if (typeof dobInputRef.current.showPicker === "function") {
+                dobInputRef.current.showPicker();
+              } else {
+                dobInputRef.current.focus();
+                dobInputRef.current.click();
+              }
+            } catch (err) {
+              dobInputRef.current.focus();
+              dobInputRef.current.click();
+            }
+          }
         },
-      }),
+        React.createElement("span", { className: "start-date-icon", "aria-hidden": true }, "📅"),
+        React.createElement("span", { className: "start-date-value" }, formatDobDisplay(childDob)),
+        React.createElement("input", {
+          ref: dobInputRef,
+          type: "date",
+          value: childDob,
+          "aria-label": tr("test.start.dob"),
+          onChange: function (e) {
+            setChildDob(e.target.value);
+          },
+        })
+      ),
+      React.createElement(
+        "label",
+        { className: "start-consent-row" },
+        React.createElement("input", {
+          type: "checkbox",
+          checked: recordingConsent,
+          onChange: function (e) {
+            setRecordingConsent(!!e.target.checked);
+          }
+        }),
+        React.createElement("span", null, tr("test.start.recordingConsent"))
+      ),
+      React.createElement(
+        "label",
+        { className: "start-consent-row start-consent-row--legal" },
+        React.createElement("input", {
+          type: "checkbox",
+          checked: legalConfirmation,
+          onChange: function (e) {
+            setLegalConfirmation(!!e.target.checked);
+          }
+        }),
+        React.createElement(
+          "span",
+          null,
+          tr("test.start.legalConfirmation"),
+          lang === "en" ? " " : "",
+          React.createElement(
+            "a",
+            {
+              href: TERMS_OF_USE_URL,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              onClick: function (e) { e.stopPropagation(); }
+            },
+            tr("test.start.termsOfUseLink")
+          ),
+          " ",
+          tr("test.start.and"),
+          lang === "en" ? " " : "",
+          React.createElement(
+            "a",
+            {
+              href: PRIVACY_POLICY_URL,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              onClick: function (e) { e.stopPropagation(); }
+            },
+            tr("test.start.privacyPolicyLink")
+          ),
+          "."
+        )
+      ),
       React.createElement(
         "button",
         { onClick: confirmAge },
@@ -2248,27 +2484,6 @@ function renderBottomActions() {
     )
   : null,
 
-  !hasSessionRecording
-  ? React.createElement(
-      "div",
-      {
-        style: {
-          margin: "8px auto 0",
-          padding: "10px 14px",
-          borderRadius: "12px",
-          background: "rgba(176, 192, 196, 0.14)",
-          border: "1px solid rgba(48, 67, 72, 0.12)",
-          textAlign: "center",
-          maxWidth: "720px",
-          width: "100%"
-        }
-      },
-      lang === "en"
-        ? "This test was completed without microphone recording, so recording and transcript features are unavailable."
-        : "המבחן הושלם ללא הקלטת מיקרופון, לכן פונקציות ההקלטה והתמלול אינן זמינות."
-    )
-  : null,
-
       // Age-matched summary (parent-facing)
       React.createElement(
         "div",
@@ -2440,6 +2655,7 @@ const shouldShowSpeakerStatusUi =
       className: "app-container",
       style: devMode ? { backgroundColor: "#808080" } : {}
     },
+    renderConfettiOverlay(),
  
     // Paused overlay
     isPaused
@@ -2676,11 +2892,9 @@ const shouldShowSpeakerStatusUi =
                 onClick: cancelTrafficPopup,
                 "aria-label": backAria
               },
-              backLabel
+              fallbackBack.charAt(0) // keep only the icon/arrow portion
             );
           })(),
-          React.createElement("div", { className: "traffic-popup__kicker" }, "🚦"),
-          React.createElement("h3", { className: "traffic-popup__title" }, tr("test.trafficPopup.title")),
           React.createElement(
             "div",
             { className: "traffic-popup__grid" },
@@ -2692,7 +2906,6 @@ const shouldShowSpeakerStatusUi =
                 onClick: function () { handleTrafficPopupChoice("success"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--green", "aria-hidden": "true" }, "✓"),
               React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title")),
 
             ),
@@ -2704,7 +2917,6 @@ const shouldShowSpeakerStatusUi =
                 onClick: function () { handleTrafficPopupChoice("partial"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--orange", "aria-hidden": "true" }, "≈"),
               React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.orange.title")),
             ),
             React.createElement(
@@ -2715,7 +2927,6 @@ const shouldShowSpeakerStatusUi =
                 onClick: function () { handleTrafficPopupChoice("failure"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("span", { className: "traffic-option__icon traffic-option__icon--red", "aria-hidden": "true" }, "✖"),
               React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title")),
 
             )
@@ -2725,10 +2936,10 @@ const shouldShowSpeakerStatusUi =
               "div",
               { className: "traffic-popup__feedback" },
               trafficPopupChoice === "success"
-                ? (lang === "en" ? "✓ Great!" : "✓ כל הכבוד!")
+                ? (lang === "en" ? "Great!" : "כל הכבוד!")
                 : trafficPopupChoice === "partial"
-                  ? (lang === "en" ? "≈ Noted." : "≈ רשמנו.")
-                  : (lang === "en" ? "✖ We'll practice." : "✖ נתרגל שוב.")
+                  ? (lang === "en" ? "Noted." : "רשמנו.")
+                  : (lang === "en" ? "We'll practice." : "נתרגל שוב.")
             )
             : null
         )
@@ -2751,13 +2962,29 @@ React.createElement(
             disabled: isAudioPlaying,
             "aria-label": tr("test.audio.playQuestion"),
           },
-          React.createElement("span", { className: "replay-audio-btn__icon" }, "🔊"),
+          React.createElement("span", {
+            className: "material-symbols-outlined replay-audio-btn__icon",
+            "aria-hidden": "true"
+          }, "volume_up"),
           React.createElement("span", { className: "replay-audio-btn__label" }, "")
         )
       : null,
-    React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || "")
+    React.createElement("h2", { className: "query-text" }, (questions[currentIdx] && questions[currentIdx].query) || ""),
+    React.createElement(
+      "span",
+      {
+        className: "material-symbols-outlined question-type-indicator",
+        "aria-hidden": "true",
+        title: questionType === "E"
+          ? (lang === "en" ? "Expression question" : "שאלת הבעה")
+          : (lang === "en" ? "Comprehension question" : "שאלת הבנה")
+      },
+      questionType === "E" ? "mic" : "touch_app"
+    )
   )
 ),
+
+renderExpectedAnswerNote(),
 
 questionType === "C"
   ? React.createElement(
@@ -2790,12 +3017,6 @@ questionType === "C"
             imgIndex === orderedAnswers[0] &&
             orderedClickSequence.length > 0 &&
             orderedClickSequence[0] === orderedAnswers[0];
-          const showFireworks = fireworksVisible && (
-            (answerType === "single" && img === target && clickedCorrect) ||
-            (answerType === "multi" && clickedMultiAnswers.includes(imgIndex)) ||
-            isOrderedCorrect ||
-            (answerType === "mask" && clickedCorrect)
-          );
           const showGreenBorder =
             isCorrectMulti ||
             isTargetSingle ||
@@ -2815,17 +3036,12 @@ questionType === "C"
                 cursor: isNonClickable ? "not-allowed" : "pointer"
               }
             },
-            showFireworks
-              ? React.createElement("img", {
-                  src: "resources/test_assets/general/fireworks.webp",
-                  className: "fireworks",
-                  alt: "celebration",
-                })
-              : null,
             React.createElement("img", {
               src: img,
               alt: "option " + (i + 1),
               className: extraClassName === "top-row-big" ? "image top-row-big" : "image",
+              "data-base-src": img,
+              "data-fallback-index": "0",
               style: Object.assign(
                 { width: "100%", maxWidth: "100%" },
                 showGreenBorder
@@ -2836,6 +3052,7 @@ questionType === "C"
                     }
                   : {}
               ),
+              onError: handleImageFallbackError,
               onClick: function (e) { handleClick(img, e); },
             })
           );
@@ -2955,7 +3172,10 @@ questionType === "E"
               src: img,
               alt: "option " + (i + 1),
               className: "image",
-              style: { width: "100%", maxWidth: "100%" }
+              style: { width: "100%", maxWidth: "100%" },
+              "data-base-src": img,
+              "data-fallback-index": "0",
+              onError: handleImageFallbackError
             })
           );
         }
