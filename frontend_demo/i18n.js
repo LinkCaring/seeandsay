@@ -95,6 +95,12 @@ window.I18N = (function () {
             "test.mic.unsupported": "הדפדפן אינו תומך בהקלטה (MediaRecorder).",
             "test.rec.startFailed": "לא הצלחנו להתחיל הקלטה: {msg}",
 
+            "test.reading.recordingNotReady": "עדיין אין הקלטת קריאה. המתינו שההקלטה תתחיל ונסו שוב.",
+            "test.finish.verifyPending": "עדיין מאמתים את דגימת הקריאה. אנא המתינו רגע ונסו שוב לסיים.",
+            "test.finish.verifyOverlayTitle": "מאמתים את דגימת הקריאה",
+            "test.finish.verifyOverlayBody": "המערכת בודקת את דגימת הקריאה שלכם. כשהאימות יסתיים בהצלחה, נעבור אוטומטית למסך סיכום התוצאות. אם האימות לא יצליח, תתבקשו להקליט קריאה חדשה — בלי לחזור לשאלות המבחן.",
+            "test.reading.finishGateBody": "כדי לסיים את המבחן נדרשת דגימת קריאה תקינה של ההורה. לאחר שתקליטו את הקריאה למטה, לחצו על \"המשך\" — נאמת ברקע, ואם הכל תקין תועברו למסך הסיכום. אם לא, תוכלו לנסות לקרוא שוב.",
+
             "test.reading.validating": "בודקים את הקריאה...",
             "test.reading.wait": "אנא המתינו בזמן שאנחנו מאמתים את הקריאה.",
             "test.reading.valid": "הקריאה אומתה",
@@ -213,6 +219,12 @@ window.I18N = (function () {
             "test.mic.skip": "Skip (no recording)",
             "test.mic.unsupported": "The MediaRecorder API is not supported in your browser.",
             "test.rec.startFailed": "Failed to start recording: {msg}",
+
+            "test.reading.recordingNotReady": "There is no reading recording yet. Wait for recording to start, then try again.",
+            "test.finish.verifyPending": "Your reading sample is still being verified. Please wait a moment and try finishing again.",
+            "test.finish.verifyOverlayTitle": "Verifying your reading sample",
+            "test.finish.verifyOverlayBody": "We are verifying your parent reading clip. When verification succeeds, you will be taken to the results summary automatically. If it does not succeed, you will be asked to record a new reading — without going back through the test questions.",
+            "test.reading.finishGateBody": "To finish the assessment we need a valid parent reading sample. After you record the sentence below, tap Continue — we verify in the background, and if all is well you will go to the results summary. If not, you can try reading again.",
 
             "test.reading.validating": "Validating reading...",
             "test.reading.wait": "Please wait while we verify your reading.",

@@ -1,15 +1,58 @@
+/**
+ * TEMPORARY: FastAPI expects userId:int; demo-… / non-numeric ids return 422.
+ * While flag is true, all API calls use one random integer per browser tab session
+ * (sessionStorage). Set USE_TEMP_RANDOM_BACKEND_USER_ID to false after backend
+ * accepts string ids.
+ */
+var USE_TEMP_RANDOM_BACKEND_USER_ID = true;
+var TEMP_BACKEND_USER_ID_SESSION_KEY = "seeandsayTempBackendUserId";
 
+var inMemoryTempBackendUserId = null;
+
+function getOrCreateTempBackendUserId() {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      var s = sessionStorage.getItem(TEMP_BACKEND_USER_ID_SESSION_KEY);
+      if (s != null && s !== "") {
+        var parsed = parseInt(s, 10);
+        if (!Number.isNaN(parsed)) return parsed;
+      }
+      var rnd = 100000000 + Math.floor(Math.random() * 900000000);
+      sessionStorage.setItem(TEMP_BACKEND_USER_ID_SESSION_KEY, String(rnd));
+      console.warn("[apiToMongo] TEMP random backend userId:", rnd, "(new for this tab session)");
+      return rnd;
+    }
+  } catch (e) {
+    console.warn("[apiToMongo] sessionStorage unavailable for temp user id:", e);
+  }
+  if (inMemoryTempBackendUserId == null) {
+    inMemoryTempBackendUserId = 100000000 + Math.floor(Math.random() * 900000000);
+    console.warn("[apiToMongo] TEMP random backend userId (in-memory):", inMemoryTempBackendUserId);
+  }
+  return inMemoryTempBackendUserId;
+}
+
+function resolveBackendUserId(storedUserId) {
+  if (USE_TEMP_RANDOM_BACKEND_USER_ID) {
+    return getOrCreateTempBackendUserId();
+  }
+  var t = String(storedUserId || "").trim();
+  var n = parseInt(t, 10);
+  if (!Number.isNaN(n) && String(n) === t) return n;
+  return storedUserId;
+}
 
 // create user
 async function createUser(userId, userName) {
   const url = "https://seeandsay-backend.onrender.com/api/createUser";
+  var apiUserId = resolveBackendUserId(userId);
 
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: userId,
+        userId: apiUserId,
         userName: userName
       }),
     });
@@ -34,20 +77,21 @@ async function updateUserTests(userId, ageYears, ageMonths,
                     full_array,correct, partly, wrong,
                     audioBase64, timestampText) {
   const url = "https://seeandsay-backend.onrender.com/api/addTestToUser";
+  var apiUserId = resolveBackendUserId(userId);
 
   try {
     console.log("📤 Uploading test data to MongoDB...");
-    console.log("   User ID:", userId);
+    console.log("   User ID:", userId, USE_TEMP_RANDOM_BACKEND_USER_ID ? "→ API " + apiUserId : "");
     console.log("   Array Results:", full_array);
     console.log("   Results:", correct, "correct,", partly, "partial,", wrong, "wrong");
     console.log("   Audio:", audioBase64 ? "Present (" + (audioBase64.length / 1024).toFixed(2) + " KB base64)" : "None");
     console.log("   Timestamps:", timestampText ? "Present" : "None");
-    
+
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: userId,
+        userId: apiUserId,
         ageYears: ageYears,
         ageMonths: ageMonths,
         full_array: full_array,          // Format: [(1,"correct"),(2,"partly"),(3,"wrong")]
@@ -76,13 +120,14 @@ async function updateUserTests(userId, ageYears, ageMonths,
 // Speaker Verification API call
 async function verifySpeaker(userId, audioFile64) {
   const url = "https://seeandsay-backend.onrender.com/api/VerifySpeaker";
+  var apiUserId = resolveBackendUserId(userId);
 
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: userId,
+        userId: apiUserId,
         audioFile64: audioFile64
       }),
     });

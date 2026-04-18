@@ -14,9 +14,63 @@
   var RESET_ICON = "replay";
   var BUNNY_PROGRESS_ICON = "\uD83D\uDC07"; // 🐇 full rabbit (walking) for progress bar
   var HOME_ICON_NAME = "home";
-  var FINISH_ICON_NAME = "outlined_flag";
   var PAUSE_ACTIVE_ICON_NAME = "pause_circle";
   var PAUSE_PAUSED_ICON_NAME = "play_circle";
+
+  /** Inline SVG: pole + checkered cloth (clearer than emoji on many systems). */
+  var FINISH_FLAG_PATTERN_ID = "navbarFinishCheckered";
+
+  function renderFinishFlagSvg() {
+    var pid = FINISH_FLAG_PATTERN_ID;
+    return React.createElement(
+      "svg",
+      {
+        className: "test-navbar__finish-svg",
+        viewBox: "0 0 24 24",
+        xmlns: "http://www.w3.org/2000/svg",
+        "aria-hidden": "true",
+        focusable: "false"
+      },
+      React.createElement(
+        "defs",
+        null,
+        React.createElement(
+          "pattern",
+          {
+            id: pid,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+            patternUnits: "userSpaceOnUse"
+          },
+          React.createElement("rect", { width: 4, height: 4, fill: "#ffffff" }),
+          React.createElement("rect", { width: 2, height: 2, fill: "#141414" }),
+          React.createElement("rect", { x: 2, y: 2, width: 2, height: 2, fill: "#141414" })
+        )
+      ),
+      React.createElement("rect", {
+        x: 0.6,
+        y: 2.4,
+        width: 2.5,
+        height: 19.2,
+        rx: 0.5,
+        fill: "#252525"
+      }),
+      React.createElement("path", {
+        d: "M3.35 5.4 L3.35 15.95 Q11.8 17.35 20.8 14.55 L20.8 7.35 Q11.8 4.55 3.35 5.4 Z",
+        fill: "url(#" + pid + ")"
+      }),
+      React.createElement("path", {
+        d: "M3.35 5.4 L3.35 15.95 Q11.8 17.35 20.8 14.55 L20.8 7.35 Q11.8 4.55 3.35 5.4 Z",
+        fill: "none",
+        stroke: "#000000",
+        strokeOpacity: 0.22,
+        strokeWidth: 0.4,
+        strokeLinejoin: "round"
+      })
+    );
+  }
 
   function AppNavbar(props) {
     var variant = props.variant || "home";
@@ -50,9 +104,19 @@
     var homeTitle = lang === "en" ? "Home" : "בית";
     var pauseTitle = isPaused ? (lang === "en" ? "Resume" : "המשך") : (lang === "en" ? "Pause" : "השהה");
 
+    var logoLinkProps = isHome
+      ? {
+          href: "https://www.heb.linkcaring.com/",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          "aria-label": lang === "en" ? "Open child development website" : "פתחו אתר התפתחות הילד",
+          title: lang === "en" ? "Open child development website" : "פתחו אתר התפתחות הילד"
+        }
+      : {};
+
     var logoEl = React.createElement(
-      "span",
-      { className: "top-header__brand-wrap" },
+      isHome ? "a" : "span",
+      Object.assign({ className: "top-header__brand-wrap" }, logoLinkProps),
       React.createElement("img", {
         className: logoClass,
         src: "resources/test_assets/general/LogoHeader.png",
@@ -167,10 +231,7 @@
     onClick: function () { if (onFinishTest) onFinishTest(); },
     title: lang === "en" ? "Finish test" : "סיים מבחן",
     "aria-label": lang === "en" ? "Finish test" : "סיים מבחן"
-    }, React.createElement("span", {
-      className: "material-symbols-outlined navbar-icon",
-      "aria-hidden": "true"
-    }, FINISH_ICON_NAME)) : null;
+    }, React.createElement("span", { className: "navbar-icon test-navbar__finish-wrap", "aria-hidden": "true" }, renderFinishFlagSvg())) : null;
 
   
     if (isHome) {

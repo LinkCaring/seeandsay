@@ -107,6 +107,10 @@ function App() {
     localStorage.removeItem("readingValidationResult");
     localStorage.removeItem("readingRecordingBlob");
 
+    // apiToMongo.js temp random backend userId (per tab); clear so next run gets a new id
+    try {
+      sessionStorage.removeItem("seeandsayTempBackendUserId");
+    } catch (e) { /* ignore */ }
 
     //resultsrelated
     localStorage.removeItem("correctAnswers");
