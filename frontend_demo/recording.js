@@ -124,8 +124,10 @@ const SessionRecorder = (function() {
   }
 
   // Start continuous session recording
-  async function startContinuousRecording() {
+  // options.preserveQuestionTimestamps — keep questionTimestamps / session clock (voice re-verify mid-test)
+  async function startContinuousRecording(options) {
     try {
+      var preserveTs = options && options.preserveQuestionTimestamps;
       // Request microphone access
       const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream = userStream;
@@ -188,14 +190,28 @@ const SessionRecorder = (function() {
       recorder.start(10000); // Collect data every 10 seconds
       isRecording = true;
       
-      // Initialize recording start time
-      recordingStartTime = Date.now();
-      questionTimestamps = [];
+      if (preserveTs) {
+        try {
+          var qts = localStorage.getItem("questionTimestamps");
+          questionTimestamps = qts ? JSON.parse(qts) : [];
+        } catch (e) {
+          questionTimestamps = [];
+        }
+        var rst = localStorage.getItem("recordingStartTime");
+        recordingStartTime = rst ? parseInt(rst, 10) : Date.now();
+        var tpt = localStorage.getItem("totalPausedTime");
+        totalPausedTime = tpt ? parseInt(tpt, 10) : 0;
+        console.log("🎙️ Resuming session recording (preserved marks:", questionTimestamps.length + ")");
+      } else {
+        recordingStartTime = Date.now();
+        questionTimestamps = [];
+      }
       
       // Store in localStorage
       localStorage.setItem("sessionRecordingActive", "true");
       localStorage.setItem("recordingStartTime", recordingStartTime.toString());
-      localStorage.setItem("totalPausedTime", 0)
+      localStorage.setItem("totalPausedTime", String(totalPausedTime));
+      localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
 
       console.log("🎙️ Started continuous session recording");
       return true;
@@ -505,23 +521,42 @@ const SessionRecorder = (function() {
   }
 
   // Clean up on session end
-  function cleanup() {
+  // options.preserveQuestionTimestamps — keep timeline data when re-starting recording after mid-test voice re-verify
+  function cleanup(options) {
+    var preserveTs = options && options.preserveQuestionTimestamps;
     stopContinuousRecording();
     localStorage.removeItem("sessionRecordingActive");
     localStorage.removeItem("sessionRecordingUrl");
     localStorage.removeItem("sessionRecordingFinal");
     localStorage.removeItem("sessionRecordingChunks");
-    localStorage.removeItem("recordingStartTime");
-    localStorage.removeItem("questionTimestamps");
-    localStorage.removeItem("recordingPaused");
-    localStorage.removeItem("pauseStartTime");
-    localStorage.removeItem("totalPausedTime");
-    recordingStartTime = null;
-    questionTimestamps = [];
-    totalPausedTime = 0;
-    pauseStartTime = null;
-    isPaused = false;
-    console.log("🧹 Cleaned up session recording");
+    if (!preserveTs) {
+      localStorage.removeItem("recordingStartTime");
+      localStorage.removeItem("questionTimestamps");
+      localStorage.removeItem("recordingPaused");
+      localStorage.removeItem("pauseStartTime");
+      localStorage.removeItem("totalPausedTime");
+      recordingStartTime = null;
+      questionTimestamps = [];
+      totalPausedTime = 0;
+      pauseStartTime = null;
+      isPaused = false;
+    } else {
+      try {
+        var qts = localStorage.getItem("questionTimestamps");
+        questionTimestamps = qts ? JSON.parse(qts) : [];
+      } catch (e) {
+        questionTimestamps = [];
+      }
+      var rst = localStorage.getItem("recordingStartTime");
+      recordingStartTime = rst ? parseInt(rst, 10) : null;
+      var tpt = localStorage.getItem("totalPausedTime");
+      totalPausedTime = tpt ? parseInt(tpt, 10) : 0;
+      pauseStartTime = null;
+      isPaused = false;
+      localStorage.removeItem("recordingPaused");
+      localStorage.removeItem("pauseStartTime");
+    }
+    console.log("🧹 Cleaned up session recording" + (preserveTs ? " (preserved question timestamps)" : ""));
   }
 
   // Get final recording URL (synchronous version for immediate use)

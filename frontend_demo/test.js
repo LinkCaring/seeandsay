@@ -51,14 +51,21 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [readingValidationInProgress, setReadingValidationInProgress] = React.useState(false);
   // Store the verification audio blob for combining with test audio
   const [verificationAudioBlob, setVerificationAudioBlob] = React.useState(null);
+  /** Same as `verificationAudioBlob` / `speakerVerificationStatus` but updated synchronously (avoids stale reads right after `await performSpeakerVerification`). */
+  const verificationAudioBlobRef = React.useRef(null);
+  const speakerVerificationStatusRef = React.useRef("idle");
 
   const [speakerVerificationStatus, setSpeakerVerificationStatus] = React.useState("idle");
-// idle | processing | success | failed
+  // idle | processing | success | failed
 
   const [speakerVerificationAttempts, setSpeakerVerificationAttempts] = React.useState(0);
   const [pendingVerificationBlob, setPendingVerificationBlob] = React.useState(null);
   const [mustFinishVerification, setMustFinishVerification] = React.useState(false);
-
+  /** Fullscreen overlay on questions while first reading verification is still in flight at Finish. */
+  const [blockFinishUntilVerifyOverlay, setBlockFinishUntilVerifyOverlay] = React.useState(false);
+  /** questionResults snapshot when Finish was blocked — auto-complete when verify succeeds (overlay or re-read path). */
+  const pendingCompleteAfterVerifyRef = React.useRef(null);
+  const completeSessionRef = React.useRef(null);
 
   // Session-only states
   const [images, setImages] = React.useState([]);
@@ -113,6 +120,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [currentQuestionImagesLoaded, setCurrentQuestionImagesLoaded] = React.useState(false);
 
   const isMountedRef = React.useRef(true);
+  /** Bumped when invalidating in-flight reading verification (retry, re-sample, new Continue). */
+  const readingVerificationGenRef = React.useRef(0);
+  /** Which `gen` last set speaker status to `"processing"` (so stale runs can clear it safely). */
+  const readingVerifyProcessingOwnerGenRef = React.useRef(null);
 
   // Mobile detection - must be before any early returns
   const isMobile = React.useMemo(function () {
@@ -125,51 +136,113 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   return window.matchMedia("(max-width: 600px) and (orientation: portrait)").matches;
 }, []);
 
-const runSpeakerVerificationInBackground = async function (recordingBlob) {
-  try {
-    setSpeakerVerificationStatus("processing");
-
-    const audioBase64 = await blobToBase64(recordingBlob);
-    setReadingRecordingBlob(audioBase64);
-
-    const validationResult = await verifySpeaker(idDigits, audioBase64);
-    setSpeakerVerificationAttempts(function (prev) { return prev + 1; });
-
-    if (validationResult === null) {
-      // backend unavailable / no connection
-      setReadingValidationResult(null);
-      setReadingValidated(false);
-      setSpeakerVerificationStatus("failed");
-      return;
+  /**
+   * Speaker verification for the reading sample (runs in background after Continue).
+   * @param {number} gen Generation from `readingVerificationGenRef`; stale results are ignored.
+   * @returns {"success"|"invalid"|"error"|"stale"}
+   */
+  const performSpeakerVerification = async function (recordingBlob, gen) {
+    function clearStaleProcessing() {
+      if (gen != null && readingVerifyProcessingOwnerGenRef.current === gen) {
+        readingVerifyProcessingOwnerGenRef.current = null;
+        setSpeakerVerificationStatus("idle");
+        speakerVerificationStatusRef.current = "idle";
+      }
     }
-
-    if (validationResult && validationResult.success === true) {
-      setReadingValidationResult(true);
-      setReadingValidated(true);
-      setVerificationAudioBlob(recordingBlob);
-      setSpeakerVerificationStatus("success");
-      return;
+    function isStale() {
+      return gen != null && gen !== readingVerificationGenRef.current;
     }
+    try {
+      if (isStale()) {
+        return "stale";
+      }
+      setSpeakerVerificationStatus("processing");
+      speakerVerificationStatusRef.current = "processing";
+      readingVerifyProcessingOwnerGenRef.current = gen;
 
-    if (validationResult && validationResult.success === false) {
+      const audioBase64 = await blobToBase64(recordingBlob);
+      if (isStale()) {
+        clearStaleProcessing();
+        return "stale";
+      }
+
+      setReadingRecordingBlob(audioBase64);
+
+      const validationResult = await verifySpeaker(idDigits, audioBase64);
+      if (isStale()) {
+        clearStaleProcessing();
+        return "stale";
+      }
+
+      setSpeakerVerificationAttempts(function (prev) { return prev + 1; });
+
+      if (validationResult === null) {
+        readingVerifyProcessingOwnerGenRef.current = null;
+        setReadingValidationResult(false);
+        setReadingValidated(false);
+        setReadingRecordingBlob(null);
+        setVerificationAudioBlob(null);
+        verificationAudioBlobRef.current = null;
+        setSpeakerVerificationStatus("failed");
+        speakerVerificationStatusRef.current = "failed";
+        return "error";
+      }
+
+      if (validationResult && validationResult.success === true) {
+        readingVerifyProcessingOwnerGenRef.current = null;
+        setReadingValidationResult(true);
+        setReadingValidated(true);
+        setVerificationAudioBlob(recordingBlob);
+        verificationAudioBlobRef.current = recordingBlob;
+        setSpeakerVerificationStatus("success");
+        speakerVerificationStatusRef.current = "success";
+        return "success";
+      }
+
+      if (validationResult && validationResult.success === false) {
+        readingVerifyProcessingOwnerGenRef.current = null;
+        setReadingValidationResult(false);
+        setReadingValidated(false);
+        setReadingRecordingBlob(null);
+        setVerificationAudioBlob(null);
+        verificationAudioBlobRef.current = null;
+        setSpeakerVerificationStatus("failed");
+        speakerVerificationStatusRef.current = "failed";
+        return "invalid";
+      }
+
+      readingVerifyProcessingOwnerGenRef.current = null;
       setReadingValidationResult(false);
       setReadingValidated(false);
+      setReadingRecordingBlob(null);
       setVerificationAudioBlob(null);
+      verificationAudioBlobRef.current = null;
       setSpeakerVerificationStatus("failed");
-      return;
+      speakerVerificationStatusRef.current = "failed";
+      return "error";
+    } catch (err) {
+      console.error("Speaker verification failed:", err);
+      if (isStale()) {
+        clearStaleProcessing();
+        return "stale";
+      }
+      readingVerifyProcessingOwnerGenRef.current = null;
+      setReadingValidationResult(false);
+      setReadingValidated(false);
+      setReadingRecordingBlob(null);
+      setVerificationAudioBlob(null);
+      verificationAudioBlobRef.current = null;
+      setSpeakerVerificationStatus("failed");
+      speakerVerificationStatusRef.current = "failed";
+      return "error";
     }
+  };
 
-    setReadingValidationResult(null);
-    setReadingValidated(false);
-    setSpeakerVerificationStatus("failed");
-  } catch (err) {
-    console.error("Background speaker verification failed:", err);
-    setReadingValidationResult(null);
-    setReadingValidated(false);
-    setVerificationAudioBlob(null);
-    setSpeakerVerificationStatus("failed");
-  }
-};
+  const runSpeakerVerificationInBackground = function (recordingBlob, gen) {
+    performSpeakerVerification(recordingBlob, gen).catch(function (err) {
+      console.error("Background speaker verification:", err);
+    });
+  };
 
 function blobToBase64(blob) {
   return new Promise(function (resolve, reject) {
@@ -217,14 +290,52 @@ function blobToBase64(blob) {
     else if (resultString === "wrong") setWrongAnswers(prev => Math.max(0, prev + delta));
   }
 
-  function removeResultForQuestion(questionNumber) {
-    const idx = questionResults.map(function (r) { return r.questionNumber; }).lastIndexOf(questionNumber);
-    if (idx === -1) return;
-    const removed = questionResults[idx];
-    adjustCountsForResult(removed.result, -1);
-    const nextResults = questionResults.slice(0, idx).concat(questionResults.slice(idx + 1));
-    setQuestionResults(nextResults);
+  /** One row per questionNumber: last row in array order wins (legacy multi-row sessions). */
+  function dedupeQuestionResultsKeepLastAttempt(results) {
+    const lastByKey = new Map();
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      lastByKey.set(String(r.questionNumber), r);
+    }
+    const keys = Array.from(lastByKey.keys()).sort(function (a, b) {
+      return parseInt(a, 10) - parseInt(b, 10);
+    });
+    return keys.map(function (k) { return lastByKey.get(k); });
   }
+
+  function countBucketsFromResults(rows) {
+    let c = 0;
+    let p = 0;
+    let w = 0;
+    rows.forEach(function (r) {
+      if (r.result === "correct") c++;
+      else if (r.result === "partly") p++;
+      else if (r.result === "wrong") w++;
+    });
+    return { correct: c, partly: p, wrong: w };
+  }
+
+  function questionResultsHasDuplicateQuestionNumbers(rows) {
+    const seen = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const k = String(rows[i].questionNumber);
+      if (seen.has(k)) return true;
+      seen.add(k);
+    }
+    return false;
+  }
+
+  // Legacy sessions may have multiple rows per question; collapse to last attempt and realign counters.
+  React.useEffect(function migrateQuestionResultsLastAttemptOnly() {
+    if (!questionResults.length) return;
+    if (!questionResultsHasDuplicateQuestionNumbers(questionResults)) return;
+    const deduped = dedupeQuestionResultsKeepLastAttempt(questionResults);
+    const buckets = countBucketsFromResults(deduped);
+    setQuestionResults(deduped);
+    setCorrectAnswers(buckets.correct);
+    setPartialAnswers(buckets.partly);
+    setWrongAnswers(buckets.wrong);
+  }, [questionResults]);
 
   function goToQuestionByNumber(value) {
   const targetIndex = Number(value) - 1;
@@ -464,6 +575,8 @@ function blobToBase64(blob) {
     setReadingValidated(false);
     setReadingValidationResult(null);
     setSpeakerVerificationStatus("idle");
+    speakerVerificationStatusRef.current = "idle";
+    verificationAudioBlobRef.current = null;
     setMustFinishVerification(false);
     setSessionRecordingStarted(false);
     // sessionRecordingStarted will be set by the useEffect when voice identifier screen appears
@@ -472,7 +585,7 @@ function blobToBase64(blob) {
   const confirmVoiceIdentifier = async function () {
   if (permission && sessionRecordingStarted) {
     SessionRecorder.stopContinuousRecording();
-    console.log("🛑 Stopped reading recording, preparing background validation...");
+    console.log("🛑 Stopped reading recording; verification runs in background after test starts");
 
     var pollAttempts = 0;
     var maxAttempts = 50;
@@ -486,43 +599,89 @@ function blobToBase64(blob) {
         if (recordingData && recordingData.recordingBlob) {
           console.log("✅ Reading recording ready after " + pollAttempts + " attempts");
 
-          // Let the user continue immediately
-          setVoiceIdentifierConfirmed(true);
-          setSpeakerVerificationStatus("processing");
-          setReadingValidationInProgress(false);
+          var finishResume = !!(mustFinishVerification && pendingCompleteAfterVerifyRef.current);
 
-          // Start the actual test recording right away
-          if (permission) {
-            SessionRecorder.cleanup();
-            SessionRecorder.resetTimestamps();
+          async function resumeTestSessionRecordingAfterReading() {
+            if (!permission) return;
+            var preserveQuestionTimestamps = (function () {
+              try {
+                var qt = localStorage.getItem("questionTimestamps");
+                if (!qt || qt === "[]") return false;
+                var arr = JSON.parse(qt);
+                return Array.isArray(arr) && arr.length > 0;
+              } catch (e) {
+                return false;
+              }
+            })();
 
-            const started = await SessionRecorder.startContinuousRecording();
+            SessionRecorder.cleanup({ preserveQuestionTimestamps: preserveQuestionTimestamps });
+            if (!preserveQuestionTimestamps) {
+              SessionRecorder.resetTimestamps();
+            }
+
+            const started = await SessionRecorder.startContinuousRecording({
+              preserveQuestionTimestamps: preserveQuestionTimestamps
+            });
             if (started) {
               setSessionRecordingStarted(true);
               console.log("✅ Started test recording after voice step");
 
-              setTimeout(function () {
-                if (questions.length > 0) {
-                  const firstQuestion = questions[0];
-                  if (firstQuestion) {
-                    SessionRecorder.markQuestionStart(firstQuestion.query_number);
-                    console.log("📝 Marked question 1 start at test start");
+              if (!preserveQuestionTimestamps) {
+                setTimeout(function () {
+                  if (questions.length > 0) {
+                    const firstQuestion = questions[0];
+                    if (firstQuestion) {
+                      SessionRecorder.markQuestionStart(firstQuestion.query_number);
+                      console.log("📝 Marked question 1 start at test start");
+                    }
                   }
-                }
-              }, 100);
-            }
-          } else if (microphoneSkipped) {
-            if (questions.length > 0) {
-              const firstQuestion = questions[0];
-              if (firstQuestion) {
-                SessionRecorder.markQuestionStart(firstQuestion.query_number);
-                console.log("📝 Marked question 1 start at test start (no recording)");
+                }, 100);
               }
             }
           }
 
-          // Run verification in the background
-          runSpeakerVerificationInBackground(recordingData.recordingBlob);
+          if (finishResume) {
+            readingVerificationGenRef.current += 1;
+            var verifyGenAwait = readingVerificationGenRef.current;
+            setReadingValidationInProgress(true);
+            try {
+              var outcomeAwait = await performSpeakerVerification(recordingData.recordingBlob, verifyGenAwait);
+              setReadingValidationInProgress(false);
+              if (outcomeAwait === "success") {
+                var pr = pendingCompleteAfterVerifyRef.current;
+                pendingCompleteAfterVerifyRef.current = null;
+                setMustFinishVerification(false);
+                setVoiceIdentifierConfirmed(true);
+                await resumeTestSessionRecordingAfterReading();
+                completeSession(pr);
+              } else {
+                setReadingValidationInProgress(false);
+              }
+            } catch (errAwait) {
+              console.error("Reading verification after finish gate:", errAwait);
+              setReadingValidationInProgress(false);
+            }
+          } else {
+            setVoiceIdentifierConfirmed(true);
+            setSpeakerVerificationStatus("processing");
+            setReadingValidationInProgress(false);
+
+            if (permission) {
+              await resumeTestSessionRecordingAfterReading();
+            } else if (microphoneSkipped) {
+              if (questions.length > 0) {
+                const firstQuestion = questions[0];
+                if (firstQuestion) {
+                  SessionRecorder.markQuestionStart(firstQuestion.query_number);
+                  console.log("📝 Marked question 1 start at test start (no recording)");
+                }
+              }
+            }
+
+            readingVerificationGenRef.current += 1;
+            var verifyGen = readingVerificationGenRef.current;
+            runSpeakerVerificationInBackground(recordingData.recordingBlob, verifyGen);
+          }
         } else if (pollAttempts < maxAttempts) {
           setTimeout(checkRecordingReady, 100);
         } else {
@@ -530,6 +689,8 @@ function blobToBase64(blob) {
           setReadingValidationResult(null);
           setReadingValidated(false);
           setSpeakerVerificationStatus("failed");
+          speakerVerificationStatusRef.current = "failed";
+          setSessionRecordingStarted(false);
         }
       } catch (err) {
         console.error("Error getting reading recording:", err);
@@ -539,17 +700,23 @@ function blobToBase64(blob) {
           setReadingValidationResult(null);
           setReadingValidated(false);
           setSpeakerVerificationStatus("failed");
+          speakerVerificationStatusRef.current = "failed";
+          setSessionRecordingStarted(false);
         }
       }
     };
 
     setTimeout(checkRecordingReady, 200);
   } else {
-    // no recording available
-    setVoiceIdentifierConfirmed(true);
-    setReadingValidated(false);
-    setReadingValidationResult(null);
-    setSpeakerVerificationStatus("failed");
+    if (microphoneSkipped || !permission) {
+      setVoiceIdentifierConfirmed(true);
+      setReadingValidated(false);
+      setReadingValidationResult(null);
+      setSpeakerVerificationStatus("failed");
+      speakerVerificationStatusRef.current = "failed";
+    } else {
+      alert(tr("test.reading.recordingNotReady"));
+    }
   }
 };
 
@@ -558,11 +725,14 @@ const handleReadingValidationContinue = async function () {
 };
 
 const handleReadingValidationRetry = function () {
+  readingVerificationGenRef.current += 1;
   setReadingValidated(false);
   setReadingValidationResult(null);
   setReadingRecordingBlob(null);
   setVerificationAudioBlob(null);
+  verificationAudioBlobRef.current = null;
   setSpeakerVerificationStatus("idle");
+  speakerVerificationStatusRef.current = "idle";
   setVoiceIdentifierConfirmed(false);
   setMustFinishVerification(true);
   setReadingValidationInProgress(false);
@@ -676,18 +846,13 @@ const handleReadingValidationRetry = function () {
     setAllClickedAnswers([]);
     setMultiAttemptCount(0);
     setOrderedClickSequence([]);
-    setMaskImage(null);
-    setMaskCanvas(null);
+    // Keep mask canvas/image for mask ("A") questions — clearing them broke clicks after closing the popup.
+    // loadQuestion / goToPreviousQuestion still reset mask when leaving the question.
   }
 
   function goToPreviousQuestion() {
     const currentIdx = getCurrentQuestionIndex();
     if (currentIdx <= 0) return;
-
-    const currentQuestion = questions[currentIdx];
-    if (currentQuestion) {
-      removeResultForQuestion(currentQuestion.query_number);
-    }
 
     if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
     setFireworksVisible(false);
@@ -1019,21 +1184,9 @@ const handleReadingValidationRetry = function () {
     const currentIdx = getCurrentQuestionIndex();
     const currentQuestion = questions[currentIdx];
 
-    // Track traffic light responses
-    if (result === "success") {
-      setCorrectAnswers(correctAnswers + 1);
-    } else if (result === "partial") {
-      setPartialAnswers(partialAnswers + 1);
-    } else if (result === "failure") {
-      setWrongAnswers(wrongAnswers + 1);
-    }
-
-    // Track question result in full array
     let updatedQuestionResults = questionResults;
+
     if (currentQuestion) {
-      const questionNumber = currentQuestion.query_number;
-      const questionTypeLabel = getQuestionTypeLabel(currentQuestion);
-      // Map result to string format
       let resultString = "";
       if (result === "success") {
         resultString = "correct";
@@ -1043,16 +1196,29 @@ const handleReadingValidationRetry = function () {
         resultString = "wrong";
       }
 
-      // Create updated array locally to avoid sync issues
-      updatedQuestionResults = [...questionResults, {
-        questionNumber: questionNumber,
-        result: resultString,
-        questionType: questionTypeLabel
-      }];
+      if (resultString) {
+        const questionNumber = currentQuestion.query_number;
+        const questionTypeLabel = getQuestionTypeLabel(currentQuestion);
+        const qKey = String(questionNumber);
+        const previousForQuestion = questionResults.filter(function (r) {
+          return String(r.questionNumber) === qKey;
+        });
+        previousForQuestion.forEach(function (r) {
+          adjustCountsForResult(r.result, -1);
+        });
+        adjustCountsForResult(resultString, 1);
+        const nextBase = questionResults.filter(function (r) {
+          return String(r.questionNumber) !== qKey;
+        });
+        updatedQuestionResults = nextBase.concat([{
+          questionNumber: questionNumber,
+          result: resultString,
+          questionType: questionTypeLabel
+        }]);
 
-      // Add to question results array
-      setQuestionResults(updatedQuestionResults);
-      console.log("Recorded result for question", questionNumber, ":", resultString);
+        setQuestionResults(updatedQuestionResults);
+        console.log("Recorded result for question", questionNumber, ":", resultString);
+      }
     }
 
     // All results (success, partial, failure) advance to the next question
@@ -1258,9 +1424,9 @@ const handleReadingValidationRetry = function () {
     const answerStr = (q.answer || "").trim();
 
     if (answerStr === "A") {
-      // Mask answer type: load A.webp as mask
+      // Mask answer type: load A.png as mask (falls back to A.webp via getImageFallbackUrls)
       setAnswerType("mask");
-      const maskUrl = "resources/test_assets/" + q.query_number + "/A.webp";
+      const maskUrl = "resources/test_assets/" + q.query_number + "/A.png";
       const maskUrlCandidates = getImageFallbackUrls(maskUrl);
       let maskUrlIdx = 0;
 
@@ -1383,31 +1549,60 @@ const handleReadingValidationRetry = function () {
     // Simplified: just complete the session
     completeSession();
   }
-  function ensureSpeakerVerifiedBeforeFinish() {
+  function ensureSpeakerVerifiedBeforeFinish(resultsArg) {
   if (microphoneSkipped || !permission) {
     return true;
   }
 
-  if (speakerVerificationStatus === "success" && verificationAudioBlob) {
+  if (speakerVerificationStatusRef.current === "success" && verificationAudioBlobRef.current) {
     return true;
   }
 
+  if (speakerVerificationStatusRef.current === "processing") {
+    pendingCompleteAfterVerifyRef.current = resultsArg;
+    setBlockFinishUntilVerifyOverlay(true);
+    return false;
+  }
+
+  pendingCompleteAfterVerifyRef.current = resultsArg;
+  readingVerificationGenRef.current += 1;
   setMustFinishVerification(true);
   setVoiceIdentifierConfirmed(false);
+  // Avoid voice-identifier "no server" branch (blob + null result) — show reading / read-again flow instead
+  setReadingRecordingBlob(null);
+  setReadingValidationResult(null);
+  setVerificationAudioBlob(null);
+  setSpeakerVerificationStatus("idle");
+  speakerVerificationStatusRef.current = "idle";
+  verificationAudioBlobRef.current = null;
+  // Stop test-phase recording so the voice screen can auto-start a fresh reading capture
+  if (permission && sessionRecordingStarted) {
+    try {
+      SessionRecorder.stopContinuousRecording();
+    } catch (e) {
+      console.warn("stopContinuousRecording when returning to reading:", e);
+    }
+  }
+  setSessionRecordingStarted(false);
   return false;
 }
 
   function completeSession(updatedQuestionResults) {
-    setImages([]);
-
     // If test is paused, unpause it first
     if (isPaused) {
       setIsPaused(false);
     }
 
-    if (!ensureSpeakerVerifiedBeforeFinish()) {
-    return;
+    const resultsArg = updatedQuestionResults !== undefined ? updatedQuestionResults : questionResults;
+
+    if (!ensureSpeakerVerifiedBeforeFinish(resultsArg)) {
+      return;
     }
+
+    pendingCompleteAfterVerifyRef.current = null;
+    setBlockFinishUntilVerifyOverlay(false);
+
+    setImages([]);
 
     // Stop continuous session recording and send data to backend
     if (sessionRecordingStarted && permission) {
@@ -1427,9 +1622,10 @@ const handleReadingValidationRetry = function () {
 
             // Combine verification audio with test audio if verification audio exists
             let finalBlob = data.recordingBlob;
-            if (verificationAudioBlob) {
+            var verifyBlobForCombine = verificationAudioBlobRef.current || verificationAudioBlob;
+            if (verifyBlobForCombine) {
               console.log("🔗 Combining verification audio with test audio...");
-              finalBlob = await combineAudioBlobs(verificationAudioBlob, data.recordingBlob);
+              finalBlob = await combineAudioBlobs(verifyBlobForCombine, data.recordingBlob);
               console.log("✅ Audio combined successfully");
             }
 
@@ -1518,6 +1714,45 @@ const handleReadingValidationRetry = function () {
     }
   }
 
+  completeSessionRef.current = completeSession;
+
+  // After Finish was blocked because reading verify was still processing, resume completion automatically.
+  React.useEffect(function autoCompleteWhenVerifyReadyAfterFinish() {
+    if (!blockFinishUntilVerifyOverlay) return;
+    if (speakerVerificationStatusRef.current !== "success" || !verificationAudioBlobRef.current) return;
+    const pending = pendingCompleteAfterVerifyRef.current;
+    if (!pending) return;
+    pendingCompleteAfterVerifyRef.current = null;
+    setBlockFinishUntilVerifyOverlay(false);
+    setMustFinishVerification(false);
+    var run = completeSessionRef.current;
+    if (typeof run === "function") {
+      run(pending);
+    }
+  }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, verificationAudioBlob]);
+
+  // Reading verify failed while waiting on Finish (still-processing overlay) — go to read-again flow.
+  React.useEffect(function readingVerifyFailedDuringFinishOverlay() {
+    if (!blockFinishUntilVerifyOverlay) return;
+    if (speakerVerificationStatus !== "failed") return;
+    setBlockFinishUntilVerifyOverlay(false);
+    readingVerificationGenRef.current += 1;
+    setMustFinishVerification(true);
+    setVoiceIdentifierConfirmed(false);
+    setReadingRecordingBlob(null);
+    setReadingValidationResult(null);
+    setSpeakerVerificationStatus("idle");
+    speakerVerificationStatusRef.current = "idle";
+    verificationAudioBlobRef.current = null;
+    if (permission && sessionRecordingStarted) {
+      try {
+        SessionRecorder.stopContinuousRecording();
+      } catch (e) {
+        console.warn("stopContinuousRecording after verify failed on finish overlay:", e);
+      }
+    }
+    setSessionRecordingStarted(false);
+  }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, permission, sessionRecordingStarted]);
 
   function checkCurrentQuestionImages() {
     const q = questions[getCurrentQuestionIndex()];
@@ -2038,103 +2273,38 @@ function renderExpectedAnswerNote() {
       );
     }
 
-    // Show validation result screen if validation has been attempted
-    if (readingValidationResult !== null || readingRecordingBlob !== null) {
-      if (readingValidationResult === true) {
-        // Valid - show continue button
-        return React.createElement(
+    // Invalid / could not verify (includes network or server errors) — always read-again, never "no server" branch
+    if (readingValidationResult === false) {
+      return React.createElement(
+        "div",
+        { className: "voice-identifier-screen" },
+        React.createElement("h2", null, tr("test.reading.invalid")),
+        React.createElement("p", { style: { fontSize: "18px", color: "#c62828", margin: "20px 0" } },
+          tr("test.reading.invalidMsg")
+        ),
+        React.createElement(
           "div",
-          { className: "voice-identifier-screen" },
-          React.createElement("h2", null, tr("test.reading.valid")),
-          React.createElement("p", { style: { fontSize: "18px", color: "#4CAF50", margin: "20px 0" } },
-            tr("test.reading.validMsg")
-          ),
+          { style: { display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px", flexWrap: "wrap" } },
           React.createElement(
             "button",
             {
               className: "continue-button",
-              onClick: handleReadingValidationContinue,
+              onClick: handleReadingValidationRetry,
               style: {
                 padding: "12px 24px",
                 fontSize: "18px",
-                backgroundColor: "#4CAF50",
+                backgroundColor: "#FF9800",
                 color: "white",
                 border: "none",
                 borderRadius: "8px",
                 cursor: "pointer",
-                fontWeight: "bold",
-                marginTop: "20px"
+                fontWeight: "bold"
               }
             },
-            tr("test.reading.toTest")
-          )
-        );
-      } else if (readingValidationResult === false) {
-        // Invalid - show retry message
-        return React.createElement(
-          "div",
-          { className: "voice-identifier-screen" },
-          React.createElement("h2", null, tr("test.reading.invalid")),
-          React.createElement("p", { style: { fontSize: "18px", color: "#c62828", margin: "20px 0" } },
-            tr("test.reading.invalidMsg")
+            tr("test.reading.tryAgain")
           ),
-          React.createElement(
-            "div",
-            { style: { display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px", flexWrap: "wrap" } },
-            React.createElement(
-              "button",
-              {
-                className: "continue-button",
-                onClick: handleReadingValidationRetry,
-                style: {
-                  padding: "12px 24px",
-                  fontSize: "18px",
-                  backgroundColor: "#FF9800",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontWeight: "bold"
-                }
-              },
-              tr("test.reading.tryAgain")
-            ),
-            // Show skip button in developer mode only
-            devMode
-              ? React.createElement(
-                "button",
-                {
-                  className: "continue-button",
-                  onClick: handleReadingValidationContinue,
-                  style: {
-                    padding: "12px 24px",
-                    fontSize: "18px",
-                    backgroundColor: "#9E9E9E",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontWeight: "bold"
-                  }
-                },
-                tr("test.reading.skipDev")
-              )
-              : null
-          )
-        );
-      } else {
-        // No connection - show options
-        return React.createElement(
-          "div",
-          { className: "voice-identifier-screen" },
-          React.createElement("h2", null, tr("test.reading.noBackend")),
-          React.createElement("p", { style: { fontSize: "16px", color: "#666", margin: "20px 0" } },
-            tr("test.reading.noBackendMsg")
-          ),
-          React.createElement(
-            "div",
-            { style: { display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" } },
-            React.createElement(
+          devMode
+            ? React.createElement(
               "button",
               {
                 className: "continue-button",
@@ -2142,7 +2312,7 @@ function renderExpectedAnswerNote() {
                 style: {
                   padding: "12px 24px",
                   fontSize: "18px",
-                  backgroundColor: "#4CAF50",
+                  backgroundColor: "#9E9E9E",
                   color: "white",
                   border: "none",
                   borderRadius: "8px",
@@ -2150,29 +2320,11 @@ function renderExpectedAnswerNote() {
                   fontWeight: "bold"
                 }
               },
-              tr("test.reading.continueNoBackend")
-            ),
-            React.createElement(
-              "button",
-              {
-                className: "continue-button",
-                onClick: handleReadingValidationRetry,
-                style: {
-                  padding: "12px 24px",
-                  fontSize: "18px",
-                  backgroundColor: "#FF9800",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontWeight: "bold"
-                }
-              },
-              tr("test.reading.tryReadingAgain")
+              tr("test.reading.skipDev")
             )
-          )
-        );
-      }
+            : null
+        )
+      );
     }
 
     // Show reading instruction screen
@@ -2186,9 +2338,7 @@ function renderExpectedAnswerNote() {
       {
         className: "speaker-status-banner speaker-status-banner--warning"
       },
-      lang === "en"
-        ? "Before finishing the test, we still need one successful parent reading sample. Please read the sentence below, then press Continue."
-        : "לפני סיום המבחן, עדיין צריך דגימת קריאה תקינה אחת של ההורה. אנא הקריאו את המשפט שלמטה ואז לחצו על המשך."
+      tr("test.reading.finishGateBody")
     )
   : null,
       permission && sessionRecordingStarted
@@ -2646,8 +2796,8 @@ function renderExpectedAnswerNote() {
     "images-container" +
     (currentImageCount === 1 ? " images-container--single" : "") +
     (questionType === "C" ? " images-container--comprehension" : " images-container--expression");
-const shouldShowSpeakerStatusUi =
-  !sessionCompleted && !trafficPopupOpen && !showContinue;
+  const shouldShowSpeakerStatusUi =
+    !sessionCompleted && !trafficPopupOpen && !showContinue;
   // Main UI
   return React.createElement(
     "div",
@@ -2656,7 +2806,49 @@ const shouldShowSpeakerStatusUi =
       style: devMode ? { backgroundColor: "#808080" } : {}
     },
     renderConfettiOverlay(),
- 
+
+    blockFinishUntilVerifyOverlay
+      ? React.createElement(
+        "div",
+        {
+          className: "finish-verify-blocking-overlay",
+          style: {
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(255, 255, 255, 0.97)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10002,
+            padding: "28px 20px",
+            boxSizing: "border-box",
+            textAlign: "center",
+            pointerEvents: "auto"
+          },
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-live": "polite"
+        },
+        React.createElement("div", {
+          style: {
+            width: "44px",
+            height: "44px",
+            border: "4px solid #f3f3f3",
+            borderTop: "4px solid #4CAF50",
+            borderRadius: "50%",
+            animation: "spin 1s linear infinite",
+            marginBottom: "22px"
+          }
+        }),
+        React.createElement("h2", { style: { fontSize: "22px", marginBottom: "14px", color: "#304348", maxWidth: "440px" } }, tr("test.finish.verifyOverlayTitle")),
+        React.createElement("p", { style: { fontSize: "17px", color: "#556", maxWidth: "440px", lineHeight: 1.55 } }, tr("test.finish.verifyOverlayBody"))
+      )
+      : null,
+
     // Paused overlay
     isPaused
       ? React.createElement(
@@ -2757,42 +2949,28 @@ const shouldShowSpeakerStatusUi =
       : null,
     React.createElement(TestNavbar),
     (!sessionCompleted && !isPortraitMobile) ? React.createElement(ProgressBar) : null,
-      shouldShowSpeakerStatusUi?(
-    speakerVerificationStatus === "processing"
-  ? React.createElement(
-      "div",
-      {
-        className: "speaker-status-banner"
-      },
-      lang === "en"
-        ? "Parent voice verification is processing in the background..."
-        : "אימות קול ההורה מעובד ברקע..."
-    )
- : speakerVerificationStatus === "failed"
-  ? React.createElement(
-      "div",
-      {
-        className: "speaker-status-banner speaker-status-banner--warning"
-      },
-      lang === "en"
-        ? "Parent voice verification failed. You can continue for now, but you must retry before finishing."
-        : "אימות קול ההורה נכשל. אפשר להמשיך כרגע, אך חייבים לנסות שוב לפני סיום."
-    )
-
-    
-    : speakerVerificationStatus === "success"
-      ? React.createElement(
-          "div",
-          {
-            className: "speaker-status-banner speaker-status-banner--success"
-          },
-          lang === "en"
-            ? "Parent voice verified successfully."
-            : "קול ההורה אומת בהצלחה."
-        ) :null)
+    shouldShowSpeakerStatusUi
+      ? (
+        speakerVerificationStatus === "failed"
+          ? React.createElement(
+            "div",
+            { className: "speaker-status-banner speaker-status-banner--warning" },
+            lang === "en"
+              ? "Parent voice verification failed. You can continue for now, but you must retry before finishing."
+              : "אימות קול ההורה נכשל. אפשר להמשיך כרגע, אך חייבים לנסות שוב לפני סיום."
+          )
+          : speakerVerificationStatus === "success"
+            ? React.createElement(
+              "div",
+              { className: "speaker-status-banner speaker-status-banner--success" },
+              lang === "en"
+                ? "Parent voice verified successfully."
+                : "קול ההורה אומת בהצלחה."
+            )
+            : null
+      )
       : null,
-
-   devMode
+    devMode
   ? React.createElement(
       "div",
       { className: "dev-mode-indicator" },

@@ -73,6 +73,8 @@ html[dir="ltr"] body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  text-decoration: none;
+  color: inherit;
 }
 
 .top-header__brand-fallback {
@@ -354,6 +356,11 @@ p {
   box-shadow:
     0 2px 4px rgba(62, 48, 38, 0.06),
     0 14px 34px rgba(62, 48, 38, 0.14);
+}
+
+/* Six choices: same tile size — less inner padding so the illustration reads larger */
+.app-container[data-page="test"][data-test-phase="questions"] .images-container[data-count="6"] .image-wrapper {
+  padding: clamp(2px, 0.9vw, 5px);
 }
 
 .app-container[data-page="test"][data-test-phase="questions"] .images-container .image {
@@ -955,30 +962,30 @@ button:focus-visible {
 
 /* Colors */
 .light.green {
-  background-color: var(--status-green-success);
+  background-color: #39a935;
   box-shadow:
     0 10px 18px rgba(0, 0, 0, 0.35),
-    0 0 22px rgba(73, 203, 149, 0.5),
+    0 0 22px rgba(57, 169, 53, 0.42),
     inset 0 2px 8px rgba(255, 255, 255, 0.22),
     inset 0 -8px 14px rgba(0, 0, 0, 0.35),
     0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .light.orange {
-  background-color: #ff9800;
+  background-color: #f68b1f;
   box-shadow:
     0 10px 18px rgba(0, 0, 0, 0.35),
-    0 0 22px rgba(255, 152, 0, 0.55),
+    0 0 22px rgba(246, 139, 31, 0.42),
     inset 0 2px 8px rgba(255, 255, 255, 0.22),
     inset 0 -8px 14px rgba(0, 0, 0, 0.35),
     0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .light.red {
-  background-color: var(--status-res-error);
+  background-color: #d62c2c;
   box-shadow:
     0 10px 18px rgba(0, 0, 0, 0.35),
-    0 0 22px rgba(155, 42, 88, 0.55),
+    0 0 22px rgba(214, 44, 44, 0.42),
     inset 0 2px 8px rgba(255, 255, 255, 0.22),
     inset 0 -8px 14px rgba(0, 0, 0, 0.35),
     0 0 0 3px rgba(255, 255, 255, 0.08);
@@ -1916,6 +1923,20 @@ button {
   font-size: 20px;
 }
 
+/* Finish test: inline SVG (pole + checkered flag — consistent vs emoji). */
+.test-navbar__finish-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.test-navbar__finish-svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  flex-shrink: 0;
+}
+
 /* Ensure Material Symbols render as glyphs (not plain text). */
 .material-symbols-outlined {
   font-family: "Material Symbols Outlined";
@@ -2045,7 +2066,7 @@ button {
   border-radius: 18px 18px 12px 12px;
   border: 1px solid rgba(48, 67, 72, 0.10);
   box-shadow: 0 12px 30px rgba(48, 67, 72, 0.16);
-  padding: 14px 14px 12px;
+  padding: 62px 14px 12px;
   text-align: center;
   animation: traffic-popup-up 180ms ease-out both;
   position: relative;
@@ -2095,31 +2116,34 @@ button {
 /* Back button — whole area (icon + text) clickable, above pseudo-elements */
 .traffic-popup__back {
   position: absolute;
-  top: 6px;
-  left: 4px;
+  top: 4px;
+  left: 8px;
   right: auto;
-  padding: 4px 8px;
-  min-height: 32px;
+  padding: 8px 12px;
+  min-height: 44px;
+  min-width: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  border: none;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(48, 67, 72, 0.2);
   cursor: pointer;
   font-weight: 700;
   font-family: var(--font-family);
-  font-size: 18px;
+  font-size: 30px;
   line-height: 1.15;
   z-index: 10;
-  border-radius: 5px;
-  transition: background-color 0.2s;
+  border-radius: 12px;
+  box-shadow: 0 6px 14px rgba(48, 67, 72, 0.16);
+  transition: background-color 0.2s, transform 0.2s;
 }
 [dir="rtl"] .traffic-popup__back {
   left: auto;
-  right: 10px;
+  right: 8px;
 }
 .traffic-popup__back:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: #ffffff;
+  transform: translateY(-1px);
 }
 
 .traffic-popup__kicker {
@@ -2195,15 +2219,15 @@ button {
 }
 
 .traffic-option__icon--red {
-  background: linear-gradient(145deg, #c23a61, #9b2a58);
+  background: #b02424;
 }
 
 .traffic-option__icon--orange {
-  background: linear-gradient(145deg, #ffb347, #ff9800);
+  background: #d97818;
 }
 
 .traffic-option__icon--green {
-  background: linear-gradient(145deg, #55d3a1, #39b07f);
+  background: #2d8a2a;
 }
 
 .traffic-option__desc {
@@ -2214,18 +2238,28 @@ button {
 }
 
 .traffic-option--green {
-  background: rgba(73, 203, 149, 0.14);
-  border: 1px solid rgba(73, 203, 149, 0.28);
+  background: #39a935;
+  border: 1px solid #2d8a2a;
 }
 
 .traffic-option--orange {
-  background: rgba(255, 152, 0, 0.14);
-  border: 1px solid rgba(255, 152, 0, 0.26);
+  background: #f68b1f;
+  border: 1px solid #d97818;
 }
 
 .traffic-option--red {
-  background: rgba(155, 42, 88, 0.12);
-  border: 1px solid rgba(155, 42, 88, 0.22);
+  background: #d62c2c;
+  border: 1px solid #b02424;
+}
+
+.traffic-option--green .traffic-option__title,
+.traffic-option--orange .traffic-option__title {
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+}
+
+.traffic-option--red .traffic-option__title {
+  color: #ffffff;
 }
 
 .traffic-option:hover:not(:disabled) {
@@ -2654,6 +2688,11 @@ button {
 
   .navbar-icon--pause {
     font-size: 19px;
+  }
+
+  .test-navbar__finish-svg {
+    width: 21px;
+    height: 21px;
   }
 
   .test-navbar__btn--pause {
@@ -3980,9 +4019,14 @@ button {
   max-height: min(19vw, 130px);
 }
 
+/* Six images: let the asset use the full inner tile (was capped ~150px, leaving empty parchment) */
 .images-container[data-count="6"] .image {
-  max-width: min(22vw, 150px) !important;
-  max-height: min(22vw, 150px);
+  width: 100%;
+  max-width: none !important;
+  max-height: none !important;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
 }
 
 /* In landscape (the recommended test orientation) – allow slightly more height */
@@ -4916,9 +4960,37 @@ button {
   line-height: 1.25;
 }
 
-.onboarding-rating--green { border-color: #26b735; }
-.onboarding-rating--yellow { border-color: #f4cd1f; }
-.onboarding-rating--red { border-color: #d64545; }
+.onboarding-rating--green { border-color: #2d8a2a; }
+.onboarding-rating--yellow { border-color: #d97818; }
+.onboarding-rating--red { border-color: #b02424; }
+
+.onboarding-rating--green {
+  background: #39a935;
+  box-shadow: 0 10px 22px rgba(57, 169, 53, 0.22);
+}
+.onboarding-rating--yellow {
+  background: #f68b1f;
+  box-shadow: 0 10px 22px rgba(246, 139, 31, 0.22);
+}
+.onboarding-rating--red {
+  background: #d62c2c;
+  box-shadow: 0 10px 22px rgba(214, 44, 44, 0.22);
+}
+
+.onboarding-rating--green h3,
+.onboarding-rating--green p {
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+}
+.onboarding-rating--yellow h3,
+.onboarding-rating--yellow p {
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+}
+.onboarding-rating--red h3,
+.onboarding-rating--red p {
+  color: #ffffff;
+}
 
 .onboarding-types {
   display: grid;
@@ -4970,6 +5042,18 @@ button {
   line-height: 1;
   flex-shrink: 0;
   color: #5a2a2a;
+}
+
+.onboarding-type-title-icon-ring {
+  width: clamp(44px, 8.2vw, 58px);
+  height: clamp(44px, 8.2vw, 58px);
+  border-radius: 999px;
+  border: 2px solid rgba(90, 42, 42, 0.35);
+  background: rgba(255, 255, 255, 0.86);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 14px rgba(48, 67, 72, 0.14);
 }
 
 .onboarding-type-card p {
@@ -5079,9 +5163,98 @@ button {
   border: 1px solid rgba(48, 67, 72, 0.12);
 }
 
-.onboarding-chip--red { background: #ffd7dd; }
-.onboarding-chip--yellow { background: #fff4b8; }
-.onboarding-chip--green { background: #d4f5d0; }
+.onboarding-chip--red {
+  background: #d62c2c;
+  border-color: #b02424;
+  color: #ffffff;
+}
+.onboarding-chip--yellow {
+  background: #f68b1f;
+  border-color: #d97818;
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.16);
+}
+.onboarding-chip--green {
+  background: #39a935;
+  border-color: #2d8a2a;
+  color: #ffffff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.16);
+}
+
+@media (orientation: portrait) and (min-height: 650px) {
+  .onboarding-flow {
+    min-height: calc(100svh - 96px);
+    gap: 12px;
+    padding-top: 6px;
+    padding-bottom: 8px;
+  }
+
+  .onboarding-frame {
+    min-height: calc(100svh - 182px);
+    display: grid;
+    padding: clamp(18px, 3.4vw, 28px);
+  }
+
+  .onboarding-screen {
+    min-height: 100%;
+    align-content: center;
+    justify-items: center;
+    gap: 14px;
+  }
+
+  /* Screen 2 keeps tighter type so four steps fit one tall portrait screen */
+  .onboarding-screen:not(.onboarding-screen--s2) .onboarding-title {
+    font-size: clamp(34px, 6.6vw, 50px);
+  }
+
+  .onboarding-hero-box {
+    max-width: 680px;
+  }
+
+  .onboarding-hero-box__title {
+    font-size: clamp(34px, 6.8vw, 52px);
+  }
+
+  .onboarding-hero-box__subtitle {
+    font-size: clamp(17px, 3vw, 24px);
+    line-height: 1.25;
+  }
+
+  .onboarding-card,
+  .onboarding-steps,
+  .onboarding-types,
+  .onboarding-rating-stack {
+    width: min(100%, 680px);
+    margin-inline: auto;
+  }
+
+  .onboarding-list-row {
+    font-size: clamp(18px, 2.8vw, 25px);
+    line-height: 1.24;
+  }
+
+  .onboarding-type-card p,
+  .onboarding-rating p {
+    font-size: clamp(17px, 2.8vw, 24px);
+  }
+
+  .onboarding-s3-note {
+    width: min(100%, 680px);
+    margin-inline: auto;
+    font-size: clamp(15px, 2.4vw, 19px);
+    line-height: 1.35;
+  }
+
+  .onboarding-nav {
+    width: min(100%, 680px);
+    margin-inline: auto;
+  }
+
+  .onboarding-nav-btn {
+    min-height: 50px;
+    font-size: clamp(16px, 2.8vw, 21px);
+  }
+}
 
 .onboarding-s3-note {
   margin: 0;
@@ -5246,6 +5419,49 @@ button {
   .onboarding-screen--s2 .onboarding-step-card p {
     font-size: clamp(12px, 2.5vw, 15px);
     line-height: 1.16;
+  }
+}
+
+/* Tall portrait, screen 2: modest bump only — must fit four steps in one viewport */
+@media (orientation: portrait) and (min-height: 650px) {
+  .onboarding-screen--s2 {
+    gap: 10px;
+    align-content: start;
+  }
+
+  .onboarding-screen--s2 .onboarding-title {
+    font-size: clamp(24px, 5vw, 32px);
+  }
+
+  .onboarding-screen--s2 .onboarding-steps {
+    gap: 9px;
+  }
+
+  .onboarding-screen--s2 .onboarding-step-card {
+    padding: 11px 62px 10px 11px;
+    gap: 7px 9px;
+    border-radius: 17px;
+  }
+
+  .onboarding-screen--s2 .onboarding-step-card__badge {
+    min-width: 34px;
+    height: 34px;
+    font-size: 15px;
+    border-radius: 12px;
+  }
+
+  .onboarding-screen--s2 .onboarding-step-card__icon {
+    font-size: 26px;
+  }
+
+  .onboarding-screen--s2 .onboarding-step-card h3 {
+    font-size: clamp(19px, 4.2vw, 24px);
+    margin-bottom: 3px;
+  }
+
+  .onboarding-screen--s2 .onboarding-step-card p {
+    font-size: clamp(14.5px, 2.9vw, 17.5px);
+    line-height: 1.2;
   }
 }
 

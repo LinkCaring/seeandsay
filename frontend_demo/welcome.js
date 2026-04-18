@@ -66,7 +66,7 @@ function Welcome({ lang, setPage }) {
               <div className="onboarding-step-card__icon material-symbols-outlined">volume_up</div>
               <div>
                 <h3>{isEn ? "Listen to the question" : "שומעים את השאלה"}</h3>
-                <p>{isEn ? "The system reads each question. You can replay via the speaker icon." : "המערכת מקריאה את השאלה. ניתן להשתמש שוב בלחיצה על אייקון הרמקול."}</p>
+                <p>{isEn ? "The system reads each question. You can replay via the speaker icon." : "המערכת מקריאה את השאלה. ניתן לחזור על ההקראה בלחיצה על אייקון הרמקול."}</p>
               </div>
             </article>
             <article className="onboarding-step-card">
@@ -82,7 +82,7 @@ function Welcome({ lang, setPage }) {
               <div className="onboarding-step-card__icon material-symbols-outlined">lightbulb</div>
               <div>
                 <h3>{isEn ? "When to use hints?" : "צריכים רמז?"}</h3>
-                <p>{isEn ? "Comprehension: use hint only when needed. Expression: compare response with expected style." : "בשאלות הבנה לחצו על רמז רק לקבלת עזרה. בשאלות הבעה לחצו על זכוכית המגדלת להבנת אופי התשובה המצופה."}</p>
+                <p>{isEn ? "Comprehension: use hint only when needed. Expression: compare response with expected style." : "לחצו על רמז רק אם הילד צריך עזרה. בשאלות הבעה היעזרו בהכוונה להבנת אופי התשובה המצופה."}</p>
               </div>
             </article>
             <article className="onboarding-step-card">
@@ -105,14 +105,18 @@ function Welcome({ lang, setPage }) {
           <div className="onboarding-types">
             <article className="onboarding-type-card">
               <div className="onboarding-type-card__head onboarding-type-card__head--centered">
-                <span className="material-symbols-outlined onboarding-type-title-icon" aria-hidden="true">touch_app</span>
+                <span className="onboarding-type-title-icon-ring" aria-hidden="true">
+                  <span className="material-symbols-outlined onboarding-type-title-icon">touch_app</span>
+                </span>
                 <h3 className="onboarding-type-card__title">{isEn ? "Comprehension" : "שאלות הבנה"}</h3>
               </div>
               <p>{isEn ? "The child chooses the correct image from available options. The traffic light appears automatically after the choice." : "הילד בוחר את התמונה הנכונה מתוך האפשרויות. הרמזור יופיע אוטומטית לאחר הבחירה"}</p>
             </article>
             <article className="onboarding-type-card onboarding-type-card--alt">
               <div className="onboarding-type-card__head onboarding-type-card__head--centered">
-                <span className="material-symbols-outlined onboarding-type-title-icon" aria-hidden="true">mic</span>
+                <span className="onboarding-type-title-icon-ring" aria-hidden="true">
+                  <span className="material-symbols-outlined onboarding-type-title-icon">mic</span>
+                </span>
                 <h3 className="onboarding-type-card__title">{isEn ? "Expression" : "שאלות הבעה"}</h3>
               </div>
               <p>{isEn ? "The child describes and explains the image. The parent clicks the traffic-light icon to provide feedback." : "הילד מתאר ומסביר את התמונה. ההורה לוחץ על אייקון הרמזור כדי לתת משוב"}</p>
