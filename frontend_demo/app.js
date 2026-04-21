@@ -54,6 +54,7 @@ var DEMO_TEST_RUN_LS_KEYS = [
   "pauseStartTime",
   "totalPausedTime",
   "ageInvalid",
+  "ageConfirmed",
   "permission",
   "microphoneSkipped",
 ];
