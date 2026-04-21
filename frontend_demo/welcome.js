@@ -1,6 +1,12 @@
+/**
+ * Welcome flow: screens 3 & 4 are temporarily skipped (see FRONTEND_DEMO_CHANGELOG.md).
+ * Restore: set orderedScreens to include "screen3","screen4", uncomment blocks below in renderScreenBody,
+ * and remove the onboarding-cta-row from screen2 (Tips + Start) — that CTA was only on screen4.
+ */
 function Welcome({ lang, setPage }) {
   const isEn = lang === "en";
-  const orderedScreens = ["screen1", "screen2", "screen3", "screen4"];
+  const orderedScreens = ["screen1", "screen2"];
+  // const orderedScreens = ["screen1", "screen2", "screen3", "screen4"];
   const [activeScreen, setActiveScreen] = React.useState("screen1");
   const [tipsOpen, setTipsOpen] = React.useState(false);
   const activeIndex = orderedScreens.indexOf(activeScreen);
@@ -19,39 +25,42 @@ function Welcome({ lang, setPage }) {
     if (activeScreen === "screen1") {
       return (
         <section className="onboarding-screen onboarding-screen--s1">
-          <div className="onboarding-hero-box">
-            <h1 className="onboarding-hero-box__title">{isEn ? "Walking in Language" : "צועדים בשפה"}</h1>
-            <p className="onboarding-hero-box__subtitle">
+          <div className="onboarding-s1-unified-card">
+            <h1 className="onboarding-s1-unified-card__title">
+              {isEn ? (
+                <React.Fragment>
+                  <span className="onboarding-s1-unified-card__title-line">Children&apos;s language abilities measure</span>
+                  <span className="onboarding-s1-unified-card__title-line onboarding-s1-unified-card__title-line--sub">(MILI)</span>
+                </React.Fragment>
+              ) : (
+                <React.Fragment>
+                  <span className="onboarding-s1-unified-card__title-line onboarding-s1-unified-card__title-line--mili">{'מיל"י'}</span>
+                  <span className="onboarding-s1-unified-card__title-line onboarding-s1-unified-card__title-line--group">
+                    <span className="onboarding-s1-unified-card__title-line--he-desc">מדד יכולות לשוניות ילדים</span>
+                    <span className="onboarding-s1-unified-card__title-line--sub">(MILI)</span>
+                  </span>
+                </React.Fragment>
+              )}
+            </h1>
+            <div className="onboarding-s1-unified-card__divider" role="presentation" aria-hidden="true" />
+            <p className="onboarding-s1-unified-card__subtitle">
               {isEn
-                ? "A quick language check for your child's development"
-                : "בדיקה עצמית קצרה להתפתחות השפה של ילדכם"}
+                ? "Play a short game together and see how your child speaks and develops."
+                : "שחקו משחק קצר יחד ותבינו איך ילדכם מדבר ומתפתח"}
             </p>
-          </div>
-
-          <div className="onboarding-card onboarding-card--overview">
-            <div className="onboarding-list-row">
-              <span className="material-symbols-outlined onboarding-list-row__icon">checklist</span>
-              <span>{isEn ? "Short age-based questions" : "שאלות קצרות לפי גיל הילד"}</span>
-            </div>
-            <div className="onboarding-list-row">
-              <span className="material-symbols-outlined onboarding-list-row__icon">home</span>
-              <span>{isEn ? "Focus on understanding and expression" : "עונים לפי מה שרואים ושומעים בבית"}</span>
-            </div>
-            <div className="onboarding-list-row">
-              <span className="material-symbols-outlined onboarding-list-row__icon">lightbulb</span>
-              <span>{isEn ? "Get an initial language profile" : "מקבלים תמונה ראשונית של רמת השפה"}</span>
-            </div>
-            <div className="onboarding-list-row">
-              <span className="material-symbols-outlined onboarding-list-row__icon">task_alt</span>
-              <span>{isEn ? "Parental feedback on language skills" : "הערכה שפתית מבוססת על אבחוני שפה רשמיים ומתוקננים"}</span>
+            <div className="onboarding-s1-unified-card__bullets">
+              <div className="onboarding-list-row onboarding-list-row--emoji">
+                <span className="onboarding-list-row__emoji" aria-hidden="true">🎯</span>
+                <span>{isEn ? "Age-tailored game" : "משחק מותאם גיל"}</span>
+              </div>
+              <div className="onboarding-list-row onboarding-list-row--emoji">
+                <span className="onboarding-list-row__emoji" aria-hidden="true">📊</span>
+                <span>{isEn ? "Results will be shown at the end of the game!" : "תוצאות יוצגו בסוף המשחק!"}</span>
+              </div>
             </div>
           </div>
 
-          <p className="onboarding-note">
-            {isEn
-              ? "* Recording is used for future product improvement only."
-              : "* המערכת מקליטה את ההערכה לשם פיתוח וטיוב עתידי. כרגע אין שימוש בהקלטה לצורכי הערכה."}
-          </p>
+          <div className="onboarding-illustration-slot" aria-hidden="true" />
         </section>
       );
     }
@@ -63,41 +72,74 @@ function Welcome({ lang, setPage }) {
           <div className="onboarding-steps">
             <article className="onboarding-step-card">
               <span className="onboarding-step-card__badge">1</span>
-              <div className="onboarding-step-card__icon material-symbols-outlined">volume_up</div>
+              <div className="onboarding-step-card__icon onboarding-step-card__icon--plain-s2" aria-hidden="true">
+                <span className="material-symbols-outlined onboarding-step-card__icon-glyph onboarding-step-card__icon-glyph--plain">volume_up</span>
+              </div>
               <div>
                 <h3>{isEn ? "Listen to the question" : "שומעים את השאלה"}</h3>
-                <p>{isEn ? "The system reads each question. You can replay via the speaker icon." : "המערכת מקריאה את השאלה. ניתן לחזור על ההקראה בלחיצה על אייקון הרמקול."}</p>
+                <p>{isEn ? "The system reads each question. You can replay via the speaker icon." : "האזינו לשאלה יחד עם הילד"}</p>
               </div>
             </article>
             <article className="onboarding-step-card">
               <span className="onboarding-step-card__badge">2</span>
-              <div className="onboarding-step-card__icon material-symbols-outlined">hourglass_top</div>
+              <div className="onboarding-step-card__icon onboarding-step-card__icon--plain-s2" aria-hidden="true">
+                <span className="material-symbols-outlined onboarding-step-card__icon-glyph onboarding-step-card__icon-glyph--plain onboarding-step-card__icon-glyph--plain-brown">hourglass_top</span>
+              </div>
               <div>
                 <h3>{isEn ? "Give the child time" : "נותנים לילד לענות"}</h3>
-                <p>{isEn ? "Wait for the child's response and allow independent thinking." : "המתינו לתשובת הילד ותנו לו זמן להבין ולנסות לענות לבד."}</p>
+                <p>{isEn ? "Wait for the child's response and allow independent thinking." : "תנו לילד זמן לחשוב ולענות לבד"}</p>
               </div>
             </article>
             <article className="onboarding-step-card">
               <span className="onboarding-step-card__badge">3</span>
-              <div className="onboarding-step-card__icon material-symbols-outlined">lightbulb</div>
+              <div className="onboarding-step-card__icon onboarding-step-card__icon--test-bulb" aria-hidden="true">
+                <span className="question-bottom-actions__emoji question-bottom-actions__emoji--hint">💡</span>
+              </div>
               <div>
                 <h3>{isEn ? "When to use hints?" : "צריכים רמז?"}</h3>
-                <p>{isEn ? "Comprehension: use hint only when needed. Expression: compare response with expected style." : "לחצו על רמז רק אם הילד צריך עזרה. בשאלות הבעה היעזרו בהכוונה להבנת אופי התשובה המצופה."}</p>
+                <p>{isEn ? "Comprehension: use hint only when needed. Expression: compare response with expected style." : "לחצו על הנורה רק כשהילד לא מצליח לענות לבד"}</p>
               </div>
             </article>
             <article className="onboarding-step-card">
               <span className="onboarding-step-card__badge">4</span>
-              <div className="onboarding-step-card__icon material-symbols-outlined">checklist</div>
+              <div className="onboarding-step-card__icon onboarding-step-card__icon--traffic-wrap">
+                <div
+                  className="onboarding-step-traffic-preview"
+                  role="img"
+                  aria-label={isEn ? "Traffic light: success, partial or hint, did not succeed" : "רמזור: הצליח, חלקית/רמז, לא הצליח"}
+                >
+                  <div className="onboarding-step-traffic-preview__seg onboarding-step-traffic-preview__seg--green">
+                    {isEn ? "OK" : "הצליח"}
+                  </div>
+                  <div className="onboarding-step-traffic-preview__seg onboarding-step-traffic-preview__seg--yellow">
+                    {isEn ? "Partial / hint" : "חלקית/רמז"}
+                  </div>
+                  <div className="onboarding-step-traffic-preview__seg onboarding-step-traffic-preview__seg--red">
+                    {isEn ? "Failed" : "לא הצליח"}
+                  </div>
+                </div>
+              </div>
               <div>
                 <h3>{isEn ? "Rate the answer" : "דרגו את התשובה"}</h3>
-                <p>{isEn ? "At the end of each question, choose success level via traffic light." : "בסיום כל שאלה דרגו את מידת ההצלחה של הילד בעזרת רמזור התשובות."}</p>
+                <p>{isEn ? "At the end of each question, choose success level via traffic light." : "ספקו משוב בשאלות בהן הילד נדרש לדבר  "}</p>
               </div>
             </article>
+          </div>
+          <div className="onboarding-cta-row onboarding-cta-row--single">
+            {/*
+            <button type="button" className="onboarding-btn onboarding-btn--secondary" onClick={function () { setTipsOpen(true); }}>
+              {isEn ? "Tips" : "טיפים"}
+            </button>
+            */}
+            <button type="button" className="onboarding-btn onboarding-btn--primary" onClick={function () { setPage("test"); }}>
+              {isEn ? "Start test" : "התחל"}
+            </button>
           </div>
         </section>
       );
     }
 
+    /*
     if (activeScreen === "screen3") {
       return (
         <section className="onboarding-screen onboarding-screen--s3">
@@ -162,6 +204,7 @@ function Welcome({ lang, setPage }) {
         </section>
       );
     }
+    */
   }
 
   return (

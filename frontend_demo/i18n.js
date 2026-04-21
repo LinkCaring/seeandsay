@@ -45,6 +45,11 @@ window.I18N = (function () {
             "test.trafficPopup.back": "↪️ חזור",
             "test.trafficPopup.backAria": "חזרה לשאלה",
 
+            "test.incompleteSummary.title": "לא כל השאלות נענו",
+            "test.incompleteSummary.body": "עדיין לא סיימתם לענות על כל השאלות. להמשיך למסך הסיכום בכל זאת?",
+            "test.incompleteSummary.stay": "המשיכו במבחן",
+            "test.incompleteSummary.finish": "סיום ומעבר לסיכום",
+
             "test.paused.title": "⏸️ בהשהיה",
             "test.paused.body": "המבחן בהשהיה. ההקלטה נעצרה.",
             "test.paused.cta": "▶️ המשך מבחן",
@@ -73,7 +78,7 @@ window.I18N = (function () {
             "test.start.gender.placeholder": "מגדר",
             "test.start.gender.female": "נקבה",
             "test.start.gender.male": "זכר",
-            "test.start.recordingConsent": "אני מאשר/ת הקלטה לאורך השאלון",
+            "test.start.recordingConsent": "נשתמש במיקרופון כדי להקליט תשובות קצרות - אפשר לעצור בכל רגע",
             "test.start.privacyTermsPrefix": "בהמשך, אני מאשר/ת כי קראתי והסכמתי ל",
             "test.start.privacyPolicyLink": "מדיניות הפרטיות",
             "test.start.termsOfUseLink": "תנאי השימוש",
@@ -123,9 +128,8 @@ window.I18N = (function () {
             "test.done.title": "כל הכבוד!",
             "test.done.body": "הילד ענה {correct} נכון לבד, {partial} נכון בעזרתכם, ו-{wrong} לא נכון.",
             "test.done.total": "סה\"כ שאלות שנענו: {answered} / {total}",
-            "test.done.downloadBoth": "📦 הורדת הכל (MP3 + פרטי הקלטה)",
-            "test.done.downloadRecording": "📥 הורדת הקלטה בלבד (MP3)",
-            "test.done.downloadTimestamps": "📄 הורדת פרטי הקלטה בלבד",
+            "test.done.downloadRecording": "📥 הורדת הקלטה",
+            "test.done.downloadTimestamps": "📄 הורדת תוצאות מפורטות",
 
             "test.nav.back": "⬅️ לשאלה קודמת",
             "test.nav.back.aria": "חזרה לשאלה קודמת",
@@ -169,6 +173,11 @@ window.I18N = (function () {
             "test.trafficPopup.red.desc": "Not correct / needs practice",
             "test.trafficPopup.back": "↪️ Back",
             "test.trafficPopup.backAria": "Back to question",
+
+            "test.incompleteSummary.title": "Not all questions answered",
+            "test.incompleteSummary.body": "You have not answered every question yet. Do you still want to go to the results summary?",
+            "test.incompleteSummary.stay": "Keep testing",
+            "test.incompleteSummary.finish": "Finish and view summary",
 
             "test.paused.title": "⏸️ Paused",
             "test.paused.body": "The test is paused. Recording stopped.",
@@ -248,9 +257,8 @@ window.I18N = (function () {
             "test.done.title": "Congratulations!",
             "test.done.body": "Your child got {correct} correct by themselves, {partial} correct with your help, and {wrong} wrong.",
             "test.done.total": "Total questions answered: {answered} / {total}",
-            "test.done.downloadBoth": "📦 Download both (MP3 + timestamps)",
             "test.done.downloadRecording": "📥 Recording only (MP3)",
-            "test.done.downloadTimestamps": "📄 Timestamps only",
+            "test.done.downloadTimestamps": "📄 Detailed results only",
 
             "test.nav.back": "⬅️ Previous question",
             "test.nav.back.aria": "Go back to previous question",

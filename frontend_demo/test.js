@@ -37,7 +37,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Transcription state
   const [transcription, setTranscription] = React.useState(null);
-  const [waitingForTranscription, setWaitingForTranscription] = React.useState(false);
 
   // Microphone persistent
   const [permission, setPermission] = usePersistentState("permission", false);
@@ -101,7 +100,28 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [maskImage, setMaskImage] = React.useState(null); // HTMLImageElement for the mask
   const [maskCanvas, setMaskCanvas] = React.useState(null); // Canvas for pixel detection
 
+  /** Comprehension auto-scoring + expression traffic: hint used this question. */
+  const [hintWasUsedThisQuestion, setHintWasUsedThisQuestion] = React.useState(false);
+  const hintEverOpenedRef = React.useRef(false);
+  const maskAwaitingSecondRef = React.useRef(false);
+  const singleComprehensionRetryRef = React.useRef(false);
+  const multiWrongClicksRef = React.useRef(0);
+  const multiAutoHintDoneRef = React.useRef(false);
+  const comprehensionAdvanceLockRef = React.useRef(false);
+  /** Ordered (2-step): one rescue tap on correct second image after wrong path or duplicate correct-first. */
+  const orderedRescueActiveRef = React.useRef(false);
+  const orderedRescueTargetRef = React.useRef(null); // 1-based image index
+  const [incompleteSummaryConfirmOpen, setIncompleteSummaryConfirmOpen] = React.useState(false);
 
+  function registerHintOpened() {
+    hintEverOpenedRef.current = true;
+    setHintWasUsedThisQuestion(true);
+  }
+
+  function openHintProgrammatic() {
+    registerHintOpened();
+    setShowHint(true);
+  }
 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
@@ -358,8 +378,7 @@ function blobToBase64(blob) {
   // =============================================================================
   // TESTING SHORTCUTS
   // =============================================================================
-  // For local testing you can bypass the "Please read the following sentence..." step:
-  // Open: http://localhost:5173/?skipReading=1
+  // Local testing without mic/recording: ?skipReading=1 or ?skipMic=1 (handled in confirmAge).
   const skipReading = React.useMemo(function () {
     try {
       return new URLSearchParams(window.location.search).get("skipReading") === "1";
@@ -367,8 +386,6 @@ function blobToBase64(blob) {
       return false;
     }
   }, []);
-
-  const skipReadingAppliedRef = React.useRef(false);
 
   // Report current test phase to App so it can show top navbar on age/mic/voice screens
   React.useEffect(function () {
@@ -510,7 +527,7 @@ function blobToBase64(blob) {
   // =============================================================================
   // EVENT HANDLERS
   // =============================================================================
-  function confirmAge() {
+  async function confirmAge() {
     if (!childName || !String(childName).trim()) {
       alert(tr("test.start.invalidName"));
       return;
@@ -546,9 +563,55 @@ function blobToBase64(blob) {
     setAgeMonths(String(derivedAge.months));
     const internalUserId = ensureInternalUserId();
 
-    // Confirm start form and keep downstream flow unchanged.
+    function prepareDirectTestFlowNoSeparateReading() {
+      setReadingValidated(true);
+      setReadingValidationResult(null);
+      setVerificationAudioBlob(null);
+      verificationAudioBlobRef.current = null;
+      setSpeakerVerificationStatus("idle");
+      speakerVerificationStatusRef.current = "idle";
+      setMustFinishVerification(false);
+      setPendingVerificationBlob(null);
+      setSessionRecordingStarted(false);
+      setVoiceIdentifierConfirmed(true);
+    }
+
+    var skipMicUrl = false;
+    try {
+      skipMicUrl = new URLSearchParams(window.location.search).get("skipMic") === "1";
+    } catch (e) {
+      skipMicUrl = false;
+    }
+
+    if (skipReading || skipMicUrl) {
+      setMicrophoneSkipped(true);
+      setPermission(false);
+      prepareDirectTestFlowNoSeparateReading();
+      setAgeConfirmed(true);
+      createUser(internalUserId, String(childName).trim() || "SomeUserName");
+      return;
+    }
+
+    if (!("MediaRecorder" in window)) {
+      alert(tr("test.mic.unsupported"));
+      return;
+    }
+
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(function (track) {
+        track.stop();
+      });
+      setPermission(true);
+      setMicrophoneSkipped(false);
+    } catch (err) {
+      alert(err && err.message ? err.message : String(err));
+      return;
+    }
+
+    prepareDirectTestFlowNoSeparateReading();
     setAgeConfirmed(true);
-    createUser(internalUserId, String(childName).trim() || "SomeUserName"); // MongoDB
+    createUser(internalUserId, String(childName).trim() || "SomeUserName");
   }
 
   const getMicrophonePermission = async function () {
@@ -763,30 +826,59 @@ const handleReadingValidationRetry = function () {
     }
   }, [permission, microphoneSkipped, voiceIdentifierConfirmed, sessionRecordingStarted, readingValidated]);
 
-  // Auto-bypass voice identifier (reading) step for local testing
-  // Important: do NOT call handleReadingValidationContinue() here, because it can start
-  // SessionRecorder and throw (no try/catch there), which would leave you stuck on this screen.
-  React.useEffect(function () {
-    if (!skipReading) return;
-    if (skipReadingAppliedRef.current) return;
+  // After age + consent, start one continuous session recording when questions are ready
+  // (no separate mic screen or parent "reading" clip — upload uses test audio only unless a verify clip exists).
+  React.useEffect(function startSessionRecordingDirectFlow() {
+    if (!ageConfirmed || sessionCompleted) return;
+    if (!permission || microphoneSkipped) return;
+    if (!voiceIdentifierConfirmed) return;
+    if (questions.length === 0) return;
 
-    if (permission && !voiceIdentifierConfirmed) {
-      skipReadingAppliedRef.current = true;
-      console.warn("⚡ skipReading=1 enabled: bypassing voice identifier step (no validation/recording)");
+    var SR = window.SessionRecorder;
+    if (!SR || typeof SR.startContinuousRecording !== "function") return;
 
-      // Force "no recording" mode for tests
-      setMicrophoneSkipped(true);
-
-      // Mark reading as done so UI can proceed immediately
-      setReadingValidated(true);
-      setReadingValidationResult(true);
-
-      // Jump straight into the test
-      setVoiceIdentifierConfirmed(true);
+    var recordingLive = SR.isRecordingActive && SR.isRecordingActive();
+    if (!sessionRecordingStarted && recordingLive) {
+      setSessionRecordingStarted(true);
+      return;
     }
-  }, [skipReading, permission, microphoneSkipped, voiceIdentifierConfirmed]);
+    if (sessionRecordingStarted && !recordingLive) {
+      setSessionRecordingStarted(false);
+      return;
+    }
+    if (sessionRecordingStarted && recordingLive) return;
 
-  // Open a friendly traffic-light popup when it's time to evaluate (after answering)
+    var cancelled = false;
+    (async function () {
+      try {
+        var started = await SR.startContinuousRecording();
+        if (cancelled) return;
+        if (started) {
+          setSessionRecordingStarted(true);
+          console.log("✅ Session recording started (direct flow after age)");
+          setTimeout(function () {
+            if (cancelled) return;
+            var first = questions[0];
+            if (first && SR.markQuestionStart) {
+              SR.markQuestionStart(first.query_number);
+            }
+          }, 100);
+        } else {
+          alert(tr("test.rec.startFailed", { msg: "Could not start recording" }));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("startSessionRecordingDirectFlow:", err);
+          alert(tr("test.rec.startFailed", { msg: err && err.message ? err.message : String(err) }));
+        }
+      }
+    })();
+    return function () {
+      cancelled = true;
+    };
+  }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
+
+  // Expression only: auto-open traffic popup after showContinue (comprehension scores without popup)
   React.useEffect(function () {
     if (sessionCompleted || isPaused) {
       setTrafficPopupOpen(false);
@@ -795,7 +887,7 @@ const handleReadingValidationRetry = function () {
       return;
     }
 
-    if (showContinue) {
+    if (showContinue && questionType === "E") {
       setTrafficPopupOpen(true);
       setTrafficPopupChoice(null);
       trafficPopupJustOpenedRef.current = true;
@@ -805,7 +897,7 @@ const handleReadingValidationRetry = function () {
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
     trafficPopupJustOpenedRef.current = false;
-  }, [showContinue, sessionCompleted, isPaused, currentIndex]);
+  }, [showContinue, questionType, sessionCompleted, isPaused, currentIndex]);
 
   function playTrafficFeedback(result) {
     // Cute feedback: short beep pattern (no speech)
@@ -1029,6 +1121,47 @@ const handleReadingValidationRetry = function () {
     }, 1000);
   }
 
+  function countUniqueQuestionsAnswered(rows) {
+    return dedupeQuestionResultsKeepLastAttempt(rows || questionResults).length;
+  }
+
+  function finalizeComprehensionResult(result) {
+    if (comprehensionAdvanceLockRef.current) return;
+    comprehensionAdvanceLockRef.current = true;
+    playTrafficFeedback(result);
+    handleContinue(result);
+    comprehensionAdvanceLockRef.current = false;
+  }
+
+  function finalizeComprehensionSuccess() {
+    if (comprehensionAdvanceLockRef.current) return;
+    comprehensionAdvanceLockRef.current = true;
+    setClickedCorrect(true);
+    setFireworksVisible(true);
+    if (fireworksTimerRef.current) {
+      clearTimeout(fireworksTimerRef.current);
+      fireworksTimerRef.current = null;
+    }
+    fireworksTimerRef.current = setTimeout(function () {
+      handleContinue("success");
+      comprehensionAdvanceLockRef.current = false;
+    }, 2400);
+  }
+
+  function requestFinishTest() {
+    if (sessionCompleted) return;
+    var n = questions.length;
+    if (n === 0) {
+      completeSession(questionResults);
+      return;
+    }
+    if (countUniqueQuestionsAnswered(questionResults) < n) {
+      setIncompleteSummaryConfirmOpen(true);
+    } else {
+      completeSession(questionResults);
+    }
+  }
+
   const handleClick = function (img, event) {
     // Reset AFK timer on user interaction
     resetAfkTimer();
@@ -1043,22 +1176,50 @@ const handleReadingValidationRetry = function () {
       }
 
       if (answerType === "single") {
-        // Original single-answer behavior
+        var twoPhotoStrict = images.length === 2;
+        if (twoPhotoStrict) {
+          var correct2 = img === target;
+          if (correct2) {
+            if (hintEverOpenedRef.current) {
+              finalizeComprehensionResult("partial");
+            } else {
+              finalizeComprehensionSuccess();
+            }
+          } else {
+            finalizeComprehensionResult("failure");
+          }
+          return;
+        }
+
         const correct = img === target;
+        var hintUsedSingle = hintEverOpenedRef.current;
+        var awaitingRetry = singleComprehensionRetryRef.current;
         if (correct) {
-          setClickedCorrect(true);
-          showCorrectFeedback(); // 1s delay → confetti → popup
+          if (!hintUsedSingle && !awaitingRetry) {
+            finalizeComprehensionSuccess();
+          } else {
+            singleComprehensionRetryRef.current = false;
+            finalizeComprehensionResult("partial");
+          }
         } else {
-          setShowContinue(true);
+          if (!awaitingRetry) {
+            singleComprehensionRetryRef.current = true;
+            if (!hintUsedSingle) {
+              openHintProgrammatic();
+            }
+          } else {
+            singleComprehensionRetryRef.current = false;
+            finalizeComprehensionResult("failure");
+          }
         }
       } else if (answerType === "multi") {
-        // Multi-answer: open traffic popup when:
-        // - all correct answers were chosen, OR
-        // - attempts >= (number of correct answers + 2) to avoid being stuck on repeated mistakes
         const nextAttempts = multiAttemptCount + 1;
         setMultiAttemptCount(nextAttempts);
 
-        // Track unique clicked answers (for UI highlights), but attempts count includes repeats
+        if (!multiAnswers.includes(imgIndex)) {
+          multiWrongClicksRef.current += 1;
+        }
+
         const newAllClicked = allClickedAnswers.includes(imgIndex)
           ? allClickedAnswers
           : [...allClickedAnswers, imgIndex];
@@ -1066,18 +1227,14 @@ const handleReadingValidationRetry = function () {
           setAllClickedAnswers(newAllClicked);
         }
 
-        // Check if this is a correct answer
         let updatedClickedCorrect = clickedMultiAnswers;
         if (multiAnswers.includes(imgIndex)) {
-          // Add to clicked correct answers if not already clicked
           if (!clickedMultiAnswers.includes(imgIndex)) {
             updatedClickedCorrect = [...clickedMultiAnswers, imgIndex];
             setClickedMultiAnswers(updatedClickedCorrect);
           }
         }
 
-        // If minCorrectAnswers is set, check if we have enough correct answers
-        // Otherwise, mark as correct if all correct answers have been clicked
         let isNowCorrect = false;
         const correctTargetCount = minCorrectAnswers !== null ? minCorrectAnswers : multiAnswers.length;
         const allCorrectSelected = minCorrectAnswers !== null
@@ -1088,52 +1245,133 @@ const handleReadingValidationRetry = function () {
           isNowCorrect = true;
         }
 
-        const attemptLimit = correctTargetCount + 2;
+        if (!allCorrectSelected && nextAttempts === correctTargetCount && !multiAutoHintDoneRef.current) {
+          multiAutoHintDoneRef.current = true;
+          if (!hintEverOpenedRef.current) {
+            openHintProgrammatic();
+          }
+        }
+
+        /* Stop after x+1 attempts without a full pass (x = min correct picks). Still allow scoring when all correct on that same click. */
+        const attemptLimit = correctTargetCount + 1;
         if (isNowCorrect || nextAttempts >= attemptLimit) {
+          var x = correctTargetCount;
+          var hintU = hintEverOpenedRef.current;
+          var wrongs = multiWrongClicksRef.current;
           if (isNowCorrect) {
-            // Show confetti and delay popup
-            setFireworksVisible(true);
-            if (fireworksTimerRef.current) clearTimeout(fireworksTimerRef.current);
-            fireworksTimerRef.current = setTimeout(function () { setShowContinue(true); }, 1000);
+            if (!hintU && wrongs === 0 && nextAttempts === x) {
+              finalizeComprehensionSuccess();
+            } else {
+              finalizeComprehensionResult("partial");
+            }
           } else {
-            setShowContinue(true);
+            finalizeComprehensionResult("failure");
           }
         }
       } else if (answerType === "ordered") {
-        // Ordered answer: check if this matches the next expected answer
-        if (orderedClickSequence.length > 0 && orderedClickSequence.at(-1) != imgIndex) {
-          const newSequence = [orderedClickSequence.at(-1), imgIndex]
-          setOrderedClickSequence(newSequence)
-          
-          // Check if the sequence matches the expected ordered answers
-          let isNowCorrect = false;
-          if (newSequence.length === orderedAnswers.length && 
-              newSequence.every(function(val, idx) { return val === orderedAnswers[idx]; })) {
-            setClickedCorrect(true);
-            isNowCorrect = true;
-          }
-          // Show continue after selecting required number of answers (2 answers for ordered)
-          if (newSequence.length === orderedAnswers.length) {
-            if (isNowCorrect) {
-              showCorrectFeedback();
+        if (orderedAnswers.length !== 2) {
+          if (orderedClickSequence.length > 0 && orderedClickSequence.at(-1) != imgIndex) {
+            const newSeq = [orderedClickSequence.at(-1), imgIndex];
+            var isOkLong = newSeq.length === orderedAnswers.length &&
+              newSeq.every(function (val, idx) { return val === orderedAnswers[idx]; });
+            if (newSeq.length === orderedAnswers.length) {
+              if (isOkLong) {
+                setClickedCorrect(true);
+                setOrderedClickSequence(newSeq);
+                if (hintEverOpenedRef.current) {
+                  finalizeComprehensionResult("partial");
+                } else {
+                  finalizeComprehensionSuccess();
+                }
+              } else {
+                setOrderedClickSequence(newSeq);
+                finalizeComprehensionResult("failure");
+              }
             } else {
-              setShowContinue(true);
+              setOrderedClickSequence(newSeq);
             }
+          } else {
+            setOrderedClickSequence([imgIndex]);
           }
-        }
-        else {
-          const newSequence = [imgIndex]
-          setOrderedClickSequence(newSequence)
+        } else {
+          var expFirst = orderedAnswers[0];
+          var expSecond = orderedAnswers[1];
+
+          if (orderedRescueActiveRef.current) {
+            if (imgIndex === orderedRescueTargetRef.current) {
+              orderedRescueActiveRef.current = false;
+              orderedRescueTargetRef.current = null;
+              finalizeComprehensionResult("partial");
+            } else {
+              orderedRescueActiveRef.current = false;
+              orderedRescueTargetRef.current = null;
+              finalizeComprehensionResult("failure");
+            }
+            return;
+          }
+
+          if (orderedClickSequence.length === 0) {
+            setOrderedClickSequence([imgIndex]);
+            if (imgIndex !== expFirst) {
+              openHintProgrammatic();
+            }
+            return;
+          }
+
+          var firstPick = orderedClickSequence[0];
+          if (orderedClickSequence.length === 1) {
+            if (imgIndex === firstPick) {
+              if (firstPick === expFirst) {
+                openHintProgrammatic();
+                orderedRescueActiveRef.current = true;
+                orderedRescueTargetRef.current = expSecond;
+              } else {
+                finalizeComprehensionResult("failure");
+              }
+              return;
+            }
+
+            var pair = [firstPick, imgIndex];
+            setOrderedClickSequence(pair);
+            var pairOk = pair[0] === expFirst && pair[1] === expSecond;
+            if (pairOk) {
+              setClickedCorrect(true);
+              if (hintEverOpenedRef.current) {
+                finalizeComprehensionResult("partial");
+              } else {
+                finalizeComprehensionSuccess();
+              }
+            } else {
+              openHintProgrammatic();
+              orderedRescueActiveRef.current = true;
+              orderedRescueTargetRef.current = expSecond;
+            }
+            return;
+          }
         }
       } else if (answerType === "mask") {
-        // Mask-based answer: check if click is on green pixel
         if (maskCanvas) {
           const isGreen = checkMaskClick(event);
+          var hintMask = hintEverOpenedRef.current;
+          var awaitingMask2 = maskAwaitingSecondRef.current;
           if (isGreen) {
-            setClickedCorrect(true);
-            showCorrectFeedback(); // 1s delay → confetti → popup
+            if (!hintMask && !awaitingMask2) {
+              maskAwaitingSecondRef.current = false;
+              finalizeComprehensionSuccess();
+            } else {
+              maskAwaitingSecondRef.current = false;
+              finalizeComprehensionResult("partial");
+            }
           } else {
-            setShowContinue(true);
+            if (!awaitingMask2) {
+              maskAwaitingSecondRef.current = true;
+              if (!hintMask) {
+                openHintProgrammatic();
+              }
+            } else {
+              maskAwaitingSecondRef.current = false;
+              finalizeComprehensionResult("failure");
+            }
           }
         }
       }
@@ -1225,11 +1463,14 @@ const handleReadingValidationRetry = function () {
     if (currentIdx < questions.length - 1) {
       updateCurrentQuestionIndex(currentIdx + 1);
     } else {
-      completeSession(updatedQuestionResults);
+      var answeredCount = dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
+      if (answeredCount >= questions.length) {
+        completeSession(updatedQuestionResults);
+      } else {
+        setIncompleteSummaryConfirmOpen(true);
+      }
     }
   };
-
-
 
   // =============================================================================
   // HELPER FUNCTIONS
@@ -1400,8 +1641,20 @@ const handleReadingValidationRetry = function () {
     setClickedMultiAnswers([]);
     setAllClickedAnswers([]);
     setOrderedClickSequence([]);
+    setMultiAttemptCount(0);
     setMaskImage(null);
     setMaskCanvas(null);
+
+    hintEverOpenedRef.current = false;
+    setHintWasUsedThisQuestion(false);
+    maskAwaitingSecondRef.current = false;
+    singleComprehensionRetryRef.current = false;
+    multiWrongClicksRef.current = 0;
+    multiAutoHintDoneRef.current = false;
+    comprehensionAdvanceLockRef.current = false;
+    orderedRescueActiveRef.current = false;
+    orderedRescueTargetRef.current = null;
+    setIncompleteSummaryConfirmOpen(false);
 
     // Handle n|m format for two-row layout
     let imgCount, isTwoRow = false, topRowCount = 0, topRowBigger = false;
@@ -1554,6 +1807,11 @@ const handleReadingValidationRetry = function () {
     return true;
   }
 
+  var hasSeparateVerifyClip = !!(verificationAudioBlobRef.current || verificationAudioBlob);
+  if (!hasSeparateVerifyClip) {
+    return true;
+  }
+
   if (speakerVerificationStatusRef.current === "success" && verificationAudioBlobRef.current) {
     return true;
   }
@@ -1647,13 +1905,15 @@ const handleReadingValidationRetry = function () {
             const reader = new FileReader();
             reader.onloadend = async function () {
               const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-              setWaitingForTranscription(true);
-              const result = await updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-                reader.result, data.timestampText); //MongoDB
-              if (result && result.transcription) {
-                setTranscription(result.transcription);
+              try {
+                const result = await updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
+                  reader.result, data.timestampText); //MongoDB
+                if (result && result.transcription) {
+                  setTranscription(result.transcription);
+                }
+              } catch (e) {
+                console.error("updateUserTests after recording:", e);
               }
-              setWaitingForTranscription(false);
             };
             reader.readAsDataURL(finalBlob);
           } else if (pollAttempts < maxAttempts) {
@@ -1664,32 +1924,26 @@ const handleReadingValidationRetry = function () {
             console.warn("⚠️ Recording conversion timeout after " + maxAttempts + " attempts= " + (maxAttempts * 100) + "ms");
             setSessionCompleted(true);
             const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-            setWaitingForTranscription(true);
             updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
               null, null).then(function(result) {
                 if (result && result.transcription) {
                   setTranscription(result.transcription);
                 }
-                setWaitingForTranscription(false);
               }).catch(function(err) {
-                console.error("Error getting transcription:", err);
-                setWaitingForTranscription(false);
+                console.error("updateUserTests (no recording blob):", err);
               }); //MongoDB
           }
         }).catch(function (err) {
           console.error("❌ Error checking recording:", err);
           setSessionCompleted(true);
           const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-          setWaitingForTranscription(true);
           updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
             null, null).then(function(result) {
               if (result && result.transcription) {
                 setTranscription(result.transcription);
               }
-              setWaitingForTranscription(false);
             }).catch(function(err) {
-              console.error("Error getting transcription:", err);
-              setWaitingForTranscription(false);
+              console.error("updateUserTests after recording error:", err);
             }); //MongoDB
         });
       };
@@ -1700,16 +1954,13 @@ const handleReadingValidationRetry = function () {
       // No recording, show completion and send immediately
       setSessionCompleted(true);
       const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-      setWaitingForTranscription(true);
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
         null, null).then(function(result) {
           if (result && result.transcription) {
             setTranscription(result.transcription);
           }
-          setWaitingForTranscription(false);
         }).catch(function(err) {
-          console.error("Error getting transcription:", err);
-          setWaitingForTranscription(false);
+          console.error("updateUserTests (no recording):", err);
         }); //MongoDB
     }
   }
@@ -1852,8 +2103,7 @@ const handleReadingValidationRetry = function () {
     }
   },
         onFinishTest: function () {
-          // Finish immediately and navigate to completion (also stops recording inside completeSession)
-          completeSession(questionResults);
+          requestFinishTest();
         },
       })
     );
@@ -1954,7 +2204,13 @@ function renderBottomActions() {
                 className: "question-bottom-actions__hint-btn question-bottom-actions__btn--plain",
                 "aria-label": lang === "en" ? "Hint" : "רמז",
                 "aria-expanded": showHint,
-                onClick: function () { setShowHint(!showHint); },
+                onClick: function () {
+                  setShowHint(function (prev) {
+                    var next = !prev;
+                    if (next) registerHintOpened();
+                    return next;
+                  });
+                },
               },
               React.createElement("span", { className: "question-bottom-actions__emoji question-bottom-actions__emoji--hint" }, "💡"),
               React.createElement("span", null, tr("test.hint.needHint")),
@@ -2003,7 +2259,13 @@ function renderBottomActions() {
             className: "question-bottom-actions__hint-btn question-bottom-actions__btn--plain",
             "aria-label": lang === "en" ? "Hint" : "רמז",
             "aria-expanded": showHint,
-            onClick: function () { setShowHint(!showHint); },
+            onClick: function () {
+              setShowHint(function (prev) {
+                var next = !prev;
+                if (next) registerHintOpened();
+                return next;
+              });
+            },
           },
           React.createElement("span", { className: "question-bottom-actions__emoji question-bottom-actions__emoji--hint" }, "💡"),
           React.createElement("span", null, tr("test.hint.needHint")),
@@ -2540,29 +2802,6 @@ function renderExpectedAnswerNote() {
       console.log("📥 Downloaded session data file with timestamps, results, and transcription");
     };
 
-    // Download both files function
-    const downloadBoth = function () {
-      // Download recording first
-      const recordingUrl = SessionRecorder.getFinalRecordingUrlSync();
-      if (recordingUrl) {
-        const a = document.createElement("a");
-        a.href = recordingUrl;
-        const fileExt = SessionRecorder.getCurrentFileExtension();
-        a.download = "session_recording_" + idDigits + "_" + Date.now() + fileExt;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        console.log("📥 Downloaded session recording as MP3");
-      }
-
-      // Download enhanced text file after a short delay to avoid browser blocking
-      setTimeout(function () {
-        downloadTimestamps();
-      }, 500);
-    };
-
-    
-
     return React.createElement(
   React.Fragment,
   null,
@@ -2612,27 +2851,6 @@ function renderExpectedAnswerNote() {
         lang === "en" ? "Great job! 🏁" : "כל הכבוד! 🏁"
       )
     ),
-
-      hasSessionRecording && waitingForTranscription
-  ? React.createElement(
-      "div",
-      {
-        style: {
-          margin: "8px auto 16px",
-          padding: "10px 14px",
-          borderRadius: "12px",
-          background: "rgba(66, 171, 199, 0.08)",
-          border: "1px solid rgba(66, 171, 199, 0.18)",
-          textAlign: "center",
-          maxWidth: "720px",
-          width: "100%"
-        }
-      },
-      lang === "en"
-        ? "Results are ready. The transcript is still processing in the background..."
-        : "התוצאות מוכנות. התמלול עדיין מעובד ברקע..."
-    )
-  : null,
 
       // Age-matched summary (parent-facing)
       React.createElement(
@@ -2687,36 +2905,10 @@ function renderExpectedAnswerNote() {
         React.createElement("span", null, statsLine("הבעה", "Expression", exprStats)),
         React.createElement("span", { style: { marginTop: "4px", fontWeight: 600 } }, strongerLabel)
       ),
-      // Download buttons container
+      // Download buttons container (recording MP3 + detailed results text only; no combined download)
       React.createElement(
         "div",
         { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
-        // Download both button (main action) - show if recording exists
-          hasSessionRecording
-  ? React.createElement(
-      "button",
-      {
-        style: {
-          padding: "12px 24px",
-          fontSize: "18px",
-          backgroundColor: waitingForTranscription ? "#BFC7CC" : "#FF6B35",
-          color: "white",
-          border: "none",
-          borderRadius: "8px",
-          cursor: waitingForTranscription ? "not-allowed" : "pointer",
-          fontWeight: "bold",
-          opacity: waitingForTranscription ? 0.75 : 1
-        },
-        onClick: downloadBoth,
-        disabled: waitingForTranscription
-      },
-      hasSessionRecording && waitingForTranscription
-        ? (lang === "en"
-            ? "Recording ready, transcript still processing..."
-            : "ההקלטה מוכנה, התמלול עדיין בעיבוד...")
-        : tr("test.done.downloadBoth")
-    )
-  : null,
         // Download button for recording only - show if recording exists
         hasSessionRecording
       ? React.createElement(
@@ -2736,30 +2928,24 @@ function renderExpectedAnswerNote() {
         tr("test.done.downloadRecording")
       )
   : null,
-        // Download button for timestamps only - always show on completion screen
-        hasSessionRecording?
+        // Detailed results (timestamps + per-question outcomes + transcript when available)
         React.createElement(
         "button",
         {
           style: {
             padding: "10px 20px",
             fontSize: "16px",
-            backgroundColor: waitingForTranscription ? "#BFC7CC" : "#4CAF50",
+            backgroundColor: "#4CAF50",
             color: "white",
             border: "none",
             borderRadius: "8px",
-            cursor: waitingForTranscription ? "not-allowed" : "pointer",
-            opacity: waitingForTranscription ? 0.75 : 1
+            cursor: "pointer",
+            opacity: 1
           },
-          onClick: downloadTimestamps,
-            disabled: waitingForTranscription
+          onClick: downloadTimestamps
         },
-        waitingForTranscription
-          ? (lang === "en"
-              ? "Transcript still processing..."
-              : "התמלול עדיין בעיבוד...")
-          : tr("test.done.downloadTimestamps")
-      ):null
+        tr("test.done.downloadTimestamps")
+      )
       )
     )
     );
@@ -3076,17 +3262,18 @@ function renderExpectedAnswerNote() {
           React.createElement(
             "div",
             { className: "traffic-popup__grid" },
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "traffic-option traffic-option--green",
-                onClick: function () { handleTrafficPopupChoice("success"); },
-                disabled: !!trafficPopupChoice,
-              },
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title")),
-
-            ),
+            questionType === "E" && hintWasUsedThisQuestion
+              ? null
+              : React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "traffic-option traffic-option--green",
+                    onClick: function () { handleTrafficPopupChoice("success"); },
+                    disabled: !!trafficPopupChoice,
+                  },
+                  React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title"))
+                ),
             React.createElement(
               "button",
               {
@@ -3095,7 +3282,7 @@ function renderExpectedAnswerNote() {
                 onClick: function () { handleTrafficPopupChoice("partial"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.orange.title")),
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.orange.title"))
             ),
             React.createElement(
               "button",
@@ -3105,8 +3292,7 @@ function renderExpectedAnswerNote() {
                 onClick: function () { handleTrafficPopupChoice("failure"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title")),
-
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title"))
             )
           ),
           trafficPopupChoice
@@ -3123,6 +3309,60 @@ function renderExpectedAnswerNote() {
         )
       )
       : null,
+
+    incompleteSummaryConfirmOpen
+      ? React.createElement(
+          "div",
+          {
+            className: "traffic-popup-overlay",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-label": tr("test.incompleteSummary.title"),
+            onClick: function () {
+              setIncompleteSummaryConfirmOpen(false);
+            },
+          },
+          React.createElement(
+            "div",
+            {
+              className: "traffic-popup",
+              onClick: function (e) {
+                e.stopPropagation();
+              },
+            },
+            React.createElement("h2", { className: "traffic-popup__title" }, tr("test.incompleteSummary.title")),
+            React.createElement("p", { style: { margin: "0 0 16px", fontSize: 15, lineHeight: 1.45, color: "#304348", textAlign: "center" } }, tr("test.incompleteSummary.body")),
+            React.createElement(
+              "div",
+              { className: "onboarding-cta-row", style: { maxWidth: "100%", marginTop: 4 } },
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "onboarding-btn onboarding-btn--secondary",
+                  onClick: function () {
+                    setIncompleteSummaryConfirmOpen(false);
+                  },
+                },
+                tr("test.incompleteSummary.stay")
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "onboarding-btn onboarding-btn--primary",
+                  onClick: function () {
+                    setIncompleteSummaryConfirmOpen(false);
+                    completeSession(questionResults);
+                  },
+                },
+                tr("test.incompleteSummary.finish")
+              )
+            )
+          )
+        )
+      : null,
+
     // ── Question section (audio + question only) ──────────
 React.createElement(
   "div",

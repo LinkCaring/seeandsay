@@ -21,7 +21,7 @@ This file documents the new round of requested UI updates starting now.
 ### Comprehension — tap the green region (`A` mask) (`test.js`)
 
 - [x] **Mask answer type** — For the special comprehension format that uses **`A.png`** (with **`.webp`** fallback), the app sets **`answerType` to `"mask"`**, loads the mask into an offscreen **canvas**, and uses **`checkMaskClick`** on image clicks.
-- [x] **Green = correct** — A click counts as correct when the sampled pixel is **green** (heuristic: low red/blue, high green — e.g. R under 50, G over 200, B under 50), scaled from the displayed image rect to canvas coordinates. Correct → **`showCorrectFeedback`** (confetti / flow); non-green → **`setShowContinue(true)`** so the traffic-light step still runs like other comprehension questions.
+- [x] **Green = correct** — Same **green** pixel heuristic on the mask canvas. **Scoring is automatic** (no traffic popup): see **“Comprehension auto-scoring”** below for mask first/second tap and hint behavior.
 - [x] **After closing the traffic popup** — **`cancelTrafficPopup`** intentionally **does not** clear **`maskImage` / `maskCanvas`** so mask (“A”) questions **keep working** on further taps; masks are still reset when **leaving** the question (**`goToPreviousQuestion`** / **`loadQuestion`**).
 
 ### Six images per question — layout (`test.js` + `css/styles.css`)
@@ -69,6 +69,31 @@ This file documents the new round of requested UI updates starting now.
 ### i18n (`i18n.js`)
 
 - [x] **`test.reading.recordingNotReady`**, **`test.finish.verifyPending`** (still available if reused), **`test.finish.verifyOverlayTitle`**, **`test.finish.verifyOverlayBody`**, **`test.reading.finishGateBody`**.
+
+## Comprehension auto-scoring (no traffic popup) + expression hint rules + incomplete finish (`test.js`, `i18n.js`)
+
+### Comprehension — no parent traffic-light step
+
+- [x] **Traffic popup is not used for comprehension** — Answers are scored automatically from taps; **`showContinue` no longer opens the popup for `questionType === "C"`** (effect only opens it when **`showContinue && questionType === "E"`**). Comprehension never relies on **`showContinue`** for grading.
+- [x] **Advance after score** — **`finalizeComprehensionResult`** / **`finalizeComprehensionSuccess`** call **`handleContinue`** with **`success` / `partial` / `failure`** (same bucket strings as before: correct / partly / wrong). **Success** waits **~2.4s** after confetti before advancing so the animation can finish.
+
+### Per-format comprehension rules (`handleClick`, `answerType`)
+
+- [x] **Mask (`answer === "A"`)** — First correct tap with **no hint** → **correct** (confetti). First **non-green** tap → second chance (hint auto-opens only if not already open); second tap **green** → **partly**; second tap **not green** → **wrong**. If the **hint was opened first**, first **green** → **partly**; first **non-green** still gets the **same second chance** (not instant **wrong**); only **two non-greens** ends **wrong**.
+- [x] **Single (one correct image)** — First correct with **no hint** → **correct**. First **wrong** → hint auto + one retry (or retry only if hint was already open); second **correct** → **partly**; second **wrong** → **wrong**. If **hint was opened first**, first **correct** → **partly**; first **wrong** → **same one retry** as the no-hint path (not instant **wrong**).
+- [x] **Multi (comma / `|min`)** — **`x` = `correctTargetCount`** (min correct picks). Tracks **wrong taps**. After **`x`** attempts without a full pass, **hint** auto-opens if not already open. **Still incomplete after `x+1` attempts** → **wrong**. **Correct**: **correct** only with **no hint**, **no wrong taps**, and **exactly `x` taps**; otherwise **partly** when all correct is reached on or before the **`x+1`**-th tap (with hint and/or wrong taps).
+- [x] **Ordered (exactly two steps, e.g. cat→dog)** — **Perfect order with no hint** → **correct** (confetti). **Any hint** (bulb at any time) caps a perfect order at **partly**. **Wrong first image** (e.g. dog first) → **hint auto**. **Same wrong image twice** (dog, dog) → **wrong** immediately. **Wrong pair** (e.g. dog then cat) → **hint** + **one rescue tap** on the **correct second** image; correct → **partly**, wrong → **wrong**. **Correct first image twice** (cat, cat) → **hint** + same **one rescue** on the **second** image. **Questions with more than two ordered picks** keep a simpler legacy path (full sequence must match; hint anywhere → at best partly).
+- [x] **Two-image single comprehension** (not `A`, not multi, not ordered; **exactly two** images; normal **single** answer) — **One tap only**: correct with **no hint** → **correct**; correct **after** a hint → **partly**; **wrong** → **wrong** (no second tap / no retry).
+
+### Expression — traffic popup when a hint was used
+
+- [x] If **`hintWasUsedThisQuestion`** is true on an **expression** question, the traffic popup **omits the green “Succeeded” option**; only **partial** and **did not succeed** remain. Hint toggles call **`registerHintOpened()`** when opening the hint (comprehension + expression).
+
+### Finish / last question — not every question answered
+
+- [x] **`handleContinue`** on the **last** question calls **`completeSession`** only if the **number of unique answered question numbers** (deduped **`questionResults`**) **≥ total questions**; otherwise **`incompleteSummaryConfirmOpen`** shows a **confirm dialog** (stay vs finish anyway).
+- [x] **Navbar Finish** uses **`requestFinishTest()`** instead of calling **`completeSession`** directly — same incomplete check before summary.
+- [x] **Strings** — **`test.incompleteSummary.*`** in **`i18n.js`** (HE/EN).
 
 ## Notes
 
