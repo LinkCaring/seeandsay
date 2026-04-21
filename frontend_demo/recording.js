@@ -372,6 +372,11 @@ const SessionRecorder = (function() {
     return isRecording || localStorage.getItem("sessionRecordingActive") === "true";
   }
 
+  /** True only when a MediaRecorder instance exists and is not stopped (survives only for same page load). */
+  function isMediaRecorderLive() {
+    return !!(mediaRecorder && mediaRecorder.state !== "inactive");
+  }
+
   // Mark question start with timestamp
   function markQuestionStart(questionNumber) {
     if (!recordingStartTime) {
@@ -593,6 +598,7 @@ const SessionRecorder = (function() {
     getCurrentMimeType: getCurrentMimeType,
     getCurrentFileExtension: getCurrentFileExtension,
     isRecordingActive: isRecordingActive,
+    isMediaRecorderLive: isMediaRecorderLive,
     markQuestionStart: markQuestionStart,
     downloadTimestampFile: downloadTimestampFile,
     getTimestampText: getTimestampText,

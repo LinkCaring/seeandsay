@@ -22,6 +22,63 @@ function usePersistentState(key, initialValue) {
   return [state, setState];
 }
 
+function lsRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (e) {}
+}
+
+var DEMO_TEST_RUN_LS_KEYS = [
+  "currentIndex",
+  "questionResults",
+  "correctAnswers",
+  "partialAnswers",
+  "wrongAnswers",
+  "voiceIdentifierConfirmed",
+  "readingValidated",
+  "readingValidationResult",
+  "readingRecordingBlob",
+  "sessionCompleted",
+  "sessionRecordingStarted",
+  "testPaused",
+  "audioChunks",
+  "audioUrl",
+  "recPaused",
+  "sessionRecordingActive",
+  "sessionRecordingUrl",
+  "sessionRecordingFinal",
+  "sessionRecordingChunks",
+  "recordingStartTime",
+  "questionTimestamps",
+  "recordingPaused",
+  "pauseStartTime",
+  "totalPausedTime",
+  "ageInvalid",
+  "permission",
+  "microphoneSkipped",
+];
+
+function clearStoredTestRunKeepChildProfile() {
+  DEMO_TEST_RUN_LS_KEYS.forEach(lsRemove);
+  try {
+    sessionStorage.removeItem("seeandsayTempBackendUserId");
+  } catch (e) {}
+}
+
+function hasInProgressTestState() {
+  try {
+    if (localStorage.getItem("sessionCompleted") === "true") return false;
+    if (localStorage.getItem("ageConfirmed") !== "true") return false;
+    if (localStorage.getItem("voiceIdentifierConfirmed") === "true") return true;
+    var idx = parseInt(localStorage.getItem("currentIndex") || "0", 10);
+    if (!isNaN(idx) && idx > 0) return true;
+    var qr = JSON.parse(localStorage.getItem("questionResults") || "[]");
+    return Array.isArray(qr) && qr.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 function App() {
   const [page, setPage] = usePersistentState("page", "home");
   const [lang, setLang] = React.useState(function () {
@@ -30,6 +87,8 @@ function App() {
   const [csvLoaded, setCsvLoaded] = React.useState(false);
   const [allQuestions, setAllQuestions] = React.useState([]);
   const [showResetConfirm, setShowResetConfirm] = React.useState(false);
+  const [showStartResumeChoice, setShowStartResumeChoice] = React.useState(false);
+  const [testSessionKey, setTestSessionKey] = React.useState(0);
   const [testPhase, setTestPhase] = React.useState(null); // "age" | "mic" | "voice" | "questions" | "complete" | null
 
   const t = function (key, vars) {
@@ -72,53 +131,23 @@ function App() {
     });
   }, []);
 
-  // Reset all persistent states
+  // Reset all persistent states (full demo reset; clears age gate and test run)
   function resetAll() {
-    localStorage.removeItem("ageYears");
-    localStorage.removeItem("ageMonths");
-    localStorage.removeItem("ageConfirmed");
-    localStorage.removeItem("ageInvalid");
-    localStorage.removeItem("currentIndex");
-    localStorage.removeItem("correctAnswers");
-    localStorage.removeItem("partialAnswers");
-    localStorage.removeItem("wrongAnswers");
-    localStorage.removeItem("permission");
-    localStorage.removeItem("microphoneSkipped");
-    localStorage.removeItem("voiceIdentifierConfirmed");
-    localStorage.removeItem("testPaused");
-    localStorage.removeItem("audioChunks");
-    localStorage.removeItem("audioUrl");
-    localStorage.removeItem("recPaused");
-    localStorage.removeItem("devMode");
-    localStorage.removeItem("idDigits");
-    localStorage.removeItem("sessionCompleted");
-    localStorage.removeItem("sessionRecordingStarted");
-
-    // Clean up continuous session recording
-    localStorage.removeItem("sessionRecordingActive");
-    localStorage.removeItem("sessionRecordingUrl");
-    localStorage.removeItem("sessionRecordingFinal");
-    localStorage.removeItem("sessionRecordingChunks");
-    localStorage.removeItem("recordingStartTime");
-    localStorage.removeItem("questionTimestamps");
-
-    // validation related
-    localStorage.removeItem("readingValidated");
-    localStorage.removeItem("readingValidationResult");
-    localStorage.removeItem("readingRecordingBlob");
-
-    // apiToMongo.js temp random backend userId (per tab); clear so next run gets a new id
-    try {
-      sessionStorage.removeItem("seeandsayTempBackendUserId");
-    } catch (e) { /* ignore */ }
-
-    //resultsrelated
-    localStorage.removeItem("correctAnswers");
-    localStorage.removeItem("partialAnswers");
-    localStorage.removeItem("wrongAnswers");
-    localStorage.removeItem("questionResults");
-
+    clearStoredTestRunKeepChildProfile();
+    lsRemove("ageYears");
+    lsRemove("ageMonths");
+    lsRemove("ageConfirmed");
+    lsRemove("idDigits");
+    lsRemove("devMode");
     window.location.reload();
+  }
+
+  function requestStartTest() {
+    if (hasInProgressTestState()) {
+      setShowStartResumeChoice(true);
+    } else {
+      setPage("test");
+    }
   }
 
 
@@ -145,6 +174,7 @@ function App() {
     );
   } else if (page === "test") {
     content = React.createElement(Test, {
+      key: "test-session-" + testSessionKey,
       allQuestions: allQuestions,
       lang: lang,
       t: t,
@@ -157,7 +187,11 @@ function App() {
       onTestPhase: setTestPhase,
     });
   } else {
-    content = React.createElement(Welcome, { lang: lang, setPage: setPage });
+    content = React.createElement(Welcome, {
+      lang: lang,
+      setPage: setPage,
+      onRequestStartTest: requestStartTest,
+    });
   }
 
   var showTopNav = isLandingPage || (page === "test" && testPhase !== "questions" && testPhase !== "complete");
@@ -293,6 +327,112 @@ function App() {
                   cursor: "pointer",
                   minWidth: "120px"
                 }
+              },
+              t("app.reset.no")
+            )
+          )
+        )
+      )
+      : null,
+    showStartResumeChoice
+      ? React.createElement(
+        "div",
+        {
+          style: {
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: "16px",
+          },
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-label": t("app.startResume.title"),
+          onClick: function () { setShowStartResumeChoice(false); },
+        },
+        React.createElement(
+          "div",
+          {
+            style: {
+              background: "white",
+              borderRadius: "14px",
+              padding: "24px 24px 18px",
+              boxShadow: "0 18px 40px rgba(0,0,0,0.22)",
+              maxWidth: "400px",
+              width: "100%",
+              textAlign: "center",
+              fontFamily: "var(--font-family)",
+              position: "relative",
+            },
+            onClick: function (e) { e.stopPropagation(); },
+          },
+          React.createElement("div", { style: { fontSize: "22px", fontWeight: 700, marginBottom: "10px" } }, t("app.startResume.title")),
+          React.createElement("p", { style: { color: "#304348", marginBottom: "18px", lineHeight: 1.5 } }, t("app.startResume.body")),
+          React.createElement(
+            "div",
+            { style: { display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () {
+                  setShowStartResumeChoice(false);
+                  setPage("test");
+                },
+                style: {
+                  padding: "10px 16px",
+                  background: "linear-gradient(135deg,#4caf50,#66bb6a)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "10px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  minWidth: "120px",
+                },
+              },
+              t("app.startResume.continue")
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () {
+                  clearStoredTestRunKeepChildProfile();
+                  setTestSessionKey(function (k) { return k + 1; });
+                  setShowStartResumeChoice(false);
+                  setPage("test");
+                },
+                style: {
+                  padding: "10px 16px",
+                  background: "linear-gradient(135deg,#ff6b6b,#ff8a65)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "10px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  minWidth: "120px",
+                },
+              },
+              t("app.startResume.newRun")
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () { setShowStartResumeChoice(false); },
+                style: {
+                  padding: "10px 16px",
+                  background: "#f0f4f7",
+                  color: "#304348",
+                  border: "1px solid rgba(48,67,72,0.15)",
+                  borderRadius: "10px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  minWidth: "120px",
+                },
               },
               t("app.reset.no")
             )
