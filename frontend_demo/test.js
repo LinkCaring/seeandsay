@@ -128,6 +128,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Pause state (persistent)
   const [isPaused, setIsPaused] = usePersistentState("testPaused", false);
+  const isPausedRef = React.useRef(isPaused);
+  isPausedRef.current = isPaused;
+  const sessionCompletedRef = React.useRef(sessionCompleted);
+  sessionCompletedRef.current = sessionCompleted;
+  const voiceIdentifierConfirmedRef = React.useRef(voiceIdentifierConfirmed);
+  voiceIdentifierConfirmedRef.current = voiceIdentifierConfirmed;
 
   // AFK timer states
   const [afkTimerActive, setAfkTimerActive] = React.useState(false);
@@ -837,21 +843,27 @@ const handleReadingValidationRetry = function () {
     var SR = window.SessionRecorder;
     if (!SR || typeof SR.startContinuousRecording !== "function") return;
 
-    var recordingLive = SR.isRecordingActive && SR.isRecordingActive();
-    if (!sessionRecordingStarted && recordingLive) {
+    var engineLive = typeof SR.isMediaRecorderLive === "function" && SR.isMediaRecorderLive();
+    if (!sessionRecordingStarted && engineLive) {
       setSessionRecordingStarted(true);
       return;
     }
-    if (sessionRecordingStarted && !recordingLive) {
-      setSessionRecordingStarted(false);
-      return;
-    }
-    if (sessionRecordingStarted && recordingLive) return;
+    if (sessionRecordingStarted && engineLive) return;
 
     var cancelled = false;
     (async function () {
       try {
-        var started = await SR.startContinuousRecording();
+        var preserveTs = false;
+        try {
+          preserveTs =
+            localStorage.getItem("sessionRecordingActive") === "true" ||
+            !!localStorage.getItem("recordingStartTime");
+        } catch (e) {
+          preserveTs = false;
+        }
+        var started = await SR.startContinuousRecording({
+          preserveQuestionTimestamps: preserveTs,
+        });
         if (cancelled) return;
         if (started) {
           setSessionRecordingStarted(true);
@@ -1027,6 +1039,13 @@ const handleReadingValidationRetry = function () {
   const pauseTest = function () {
     if (isPaused) return;
 
+    if (questionAudio) {
+      try {
+        questionAudio.pause();
+      } catch (e) {}
+    }
+    setIsAudioPlaying(false);
+
     setIsPaused(true);
 
     // Pause recording if active
@@ -1057,6 +1076,54 @@ const handleReadingValidationRetry = function () {
 
     console.log("▶️ Test resumed");
   };
+
+  const pauseTestRef = React.useRef(pauseTest);
+  pauseTestRef.current = pauseTest;
+
+  const pausedRecordingForVisibilityOnlyRef = React.useRef(false);
+
+  React.useEffect(function autoPauseWhenTabOrAppHidden() {
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        if (sessionCompletedRef.current) return;
+
+        if (voiceIdentifierConfirmedRef.current) {
+          if (!isPausedRef.current) {
+            pauseTestRef.current();
+          }
+          return;
+        }
+
+        try {
+          if (
+            localStorage.getItem("sessionRecordingActive") === "true" &&
+            typeof SessionRecorder !== "undefined" &&
+            SessionRecorder.pauseRecording &&
+            SessionRecorder.pauseRecording()
+          ) {
+            pausedRecordingForVisibilityOnlyRef.current = true;
+          }
+        } catch (e) {}
+        return;
+      }
+
+      if (document.visibilityState === "visible") {
+        if (!pausedRecordingForVisibilityOnlyRef.current) return;
+        pausedRecordingForVisibilityOnlyRef.current = false;
+        if (sessionCompletedRef.current) return;
+        if (isPausedRef.current) return;
+        try {
+          if (typeof SessionRecorder !== "undefined" && SessionRecorder.resumeRecording) {
+            SessionRecorder.resumeRecording().catch(function () {});
+          }
+        } catch (e) {}
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return function () {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   // Reset AFK timer (called on user activity)
   const resetAfkTimer = function () {

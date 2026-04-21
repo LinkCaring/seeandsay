@@ -3,7 +3,7 @@
  * Restore: set orderedScreens to include "screen3","screen4", uncomment blocks below in renderScreenBody,
  * and remove the onboarding-cta-row from screen2 (Tips + Start) — that CTA was only on screen4.
  */
-function Welcome({ lang, setPage }) {
+function Welcome({ lang, setPage, onRequestStartTest }) {
   const isEn = lang === "en";
   const orderedScreens = ["screen1", "screen2"];
   // const orderedScreens = ["screen1", "screen2", "screen3", "screen4"];
@@ -131,7 +131,14 @@ function Welcome({ lang, setPage }) {
               {isEn ? "Tips" : "טיפים"}
             </button>
             */}
-            <button type="button" className="onboarding-btn onboarding-btn--primary" onClick={function () { setPage("test"); }}>
+            <button
+              type="button"
+              className="onboarding-btn onboarding-btn--primary"
+              onClick={function () {
+                if (onRequestStartTest) onRequestStartTest();
+                else setPage("test");
+              }}
+            >
               {isEn ? "Start test" : "התחל"}
             </button>
           </div>
@@ -197,7 +204,14 @@ function Welcome({ lang, setPage }) {
             <button type="button" className="onboarding-btn onboarding-btn--secondary" onClick={function () { setTipsOpen(true); }}>
               {isEn ? "Tips" : "טיפים"}
             </button>
-            <button type="button" className="onboarding-btn onboarding-btn--primary" onClick={function () { setPage("test"); }}>
+            <button
+              type="button"
+              className="onboarding-btn onboarding-btn--primary"
+              onClick={function () {
+                if (onRequestStartTest) onRequestStartTest();
+                else setPage("test");
+              }}
+            >
               {isEn ? "Start test" : "התחל"}
             </button>
           </div>
