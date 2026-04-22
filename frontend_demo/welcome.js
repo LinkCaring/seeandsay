@@ -60,7 +60,13 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
             </div>
           </div>
 
-          <div className="onboarding-illustration-slot" aria-hidden="true" />
+          <div className="onboarding-illustration-slot">
+            <img
+              src="resources/welcome_photo.jpg"
+              alt={isEn ? "Parent and child playing together" : "הורה וילד משחקים יחד"}
+              className="onboarding-illustration-slot__image"
+            />
+          </div>
         </section>
       );
     }
