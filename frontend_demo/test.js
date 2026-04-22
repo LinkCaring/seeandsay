@@ -1195,9 +1195,24 @@ const handleReadingValidationRetry = function () {
   function finalizeComprehensionResult(result) {
     if (comprehensionAdvanceLockRef.current) return;
     comprehensionAdvanceLockRef.current = true;
-    playTrafficFeedback(result);
-    handleContinue(result);
-    comprehensionAdvanceLockRef.current = false;
+  if (result === "partial") {
+    setClickedCorrect(true);
+    setFireworksVisible(true);
+    playTrafficFeedback("success");
+    if (fireworksTimerRef.current) {
+      clearTimeout(fireworksTimerRef.current);
+      fireworksTimerRef.current = null;
+    }
+    fireworksTimerRef.current = setTimeout(function () {
+      handleContinue("partial");
+      comprehensionAdvanceLockRef.current = false;
+    }, 1600);
+    return;
+  }
+
+  playTrafficFeedback(result);
+  handleContinue(result);
+  comprehensionAdvanceLockRef.current = false;
   }
 
   function finalizeComprehensionSuccess() {
