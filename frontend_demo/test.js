@@ -41,7 +41,17 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   // Microphone persistent
   const [permission, setPermission] = usePersistentState("permission", false);
   const [microphoneSkipped, setMicrophoneSkipped] = usePersistentState("microphoneSkipped", false);
+  const [micCheckPassed, setMicCheckPassed] = usePersistentState("micCheckPassed", false);
   const [voiceIdentifierConfirmed, setVoiceIdentifierConfirmed] = usePersistentState("voiceIdentifierConfirmed", false);
+  const [micCheckRunning, setMicCheckRunning] = React.useState(false);
+  const [micCheckReady, setMicCheckReady] = React.useState(false);
+  const [micCheckLevel, setMicCheckLevel] = React.useState(0);
+  const [micCheckPeak, setMicCheckPeak] = React.useState(0);
+  const [micPermissionError, setMicPermissionError] = React.useState("");
+  const micCheckStreamRef = React.useRef(null);
+  const micCheckAudioContextRef = React.useRef(null);
+  const micCheckAnalyserRef = React.useRef(null);
+  const micCheckRafRef = React.useRef(null);
 
   // Reading validation states
   const [readingValidated, setReadingValidated] = usePersistentState("readingValidated", false);
@@ -119,8 +129,97 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   }
 
   function openHintProgrammatic() {
+    if (questionType === "C") return;
     registerHintOpened();
     setShowHint(true);
+  }
+
+  function stopMicrophoneCheck() {
+    if (micCheckRafRef.current) {
+      cancelAnimationFrame(micCheckRafRef.current);
+      micCheckRafRef.current = null;
+    }
+    if (micCheckStreamRef.current) {
+      try {
+        micCheckStreamRef.current.getTracks().forEach(function (track) { track.stop(); });
+      } catch (e) {}
+      micCheckStreamRef.current = null;
+    }
+    if (micCheckAudioContextRef.current) {
+      try {
+        micCheckAudioContextRef.current.close();
+      } catch (e) {}
+      micCheckAudioContextRef.current = null;
+    }
+    micCheckAnalyserRef.current = null;
+    setMicCheckRunning(false);
+  }
+
+  async function startMicrophoneCheck() {
+    stopMicrophoneCheck();
+    if (!permission) return;
+    setMicPermissionError("");
+
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micCheckStreamRef.current = stream;
+      var AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) throw new Error("AudioContext not supported");
+      var ctx = new AudioCtx();
+      micCheckAudioContextRef.current = ctx;
+      var source = ctx.createMediaStreamSource(stream);
+      var analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.85;
+      source.connect(analyser);
+      micCheckAnalyserRef.current = analyser;
+      var data = new Uint8Array(analyser.fftSize);
+      var stableFrames = 0;
+      var minGoodLevel = 0.08;
+      var maxGoodLevel = 0.72;
+      var peak = 0;
+
+      setMicCheckLevel(0);
+      setMicCheckPeak(0);
+      setMicCheckReady(false);
+      setMicCheckRunning(true);
+
+      function tick() {
+        if (!micCheckAnalyserRef.current) return;
+        analyser.getByteTimeDomainData(data);
+        var sum = 0;
+        for (var i = 0; i < data.length; i++) {
+          var centered = (data[i] - 128) / 128;
+          sum += centered * centered;
+        }
+        var rms = Math.sqrt(sum / data.length);
+        var level = Math.max(0, Math.min(1, rms));
+        if (level > peak) {
+          peak = level;
+          setMicCheckPeak(peak);
+        }
+        setMicCheckLevel(level);
+
+        if (level >= minGoodLevel && level <= maxGoodLevel) {
+          stableFrames += 1;
+        } else {
+          stableFrames = Math.max(0, stableFrames - 1);
+        }
+
+        if (stableFrames >= 10 || peak >= 0.14) {
+          setMicCheckReady(true);
+          stopMicrophoneCheck();
+          return;
+        }
+
+        micCheckRafRef.current = requestAnimationFrame(tick);
+      }
+
+      micCheckRafRef.current = requestAnimationFrame(tick);
+    } catch (err) {
+      stopMicrophoneCheck();
+      setMicPermissionError(tr("test.mic.deniedInline"));
+    }
   }
 
   // Continuous recording state (persistent so it survives refresh)
@@ -144,6 +243,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Image loading state
   const [currentQuestionImagesLoaded, setCurrentQuestionImagesLoaded] = React.useState(false);
+  const [showQuestionLoadingRecovery, setShowQuestionLoadingRecovery] = React.useState(false);
 
   const isMountedRef = React.useRef(true);
   /** Bumped when invalidating in-flight reading verification (retry, re-sample, new Continue). */
@@ -374,12 +474,20 @@ function blobToBase64(blob) {
   React.useEffect(function cleanupMount() {
     return function () {
       isMountedRef.current = false;
+      stopMicrophoneCheck();
     };
   }, []);
+
+  // Temporary: keep Dev mode enabled by default for active testing.
+  React.useEffect(function forceDevModeOnForNow() {
+    if (!devMode) setDevMode(true);
+  }, [devMode, setDevMode]);
 
   //question audio states
   const [questionAudio, setQuestionAudio] = React.useState(null);
   const [isAudioPlaying, setIsAudioPlaying] = React.useState(false);
+  const [questionAudioMuted, setQuestionAudioMuted] = React.useState(false);
+  const questionAudioAutoplayTimerRef = React.useRef(null);
 
   // =============================================================================
   // TESTING SHORTCUTS
@@ -525,15 +633,58 @@ function blobToBase64(blob) {
     return currentIndex;
   }
 
+  function getSafeCurrentQuestionIndex() {
+    if (!questions || questions.length === 0) return -1;
+    const raw = parseInt(currentIndex, 10);
+    const normalized = Number.isFinite(raw) ? raw : 0;
+    const clamped = Math.max(0, Math.min(normalized, questions.length - 1));
+    if (clamped !== currentIndex) {
+      setCurrentIndex(clamped);
+    }
+    return clamped;
+  }
+
   function getQuestionTypeLabel(q) {
     if (!q) return "comprehension";
     return q.query_type === "הבנה" ? "comprehension" : "expression";
+  }
+
+  function ageValueFromPart(part) {
+    if (!part) return "";
+    const match = String(part).trim().match(/^(\d+):(\d{1,2})$/);
+    if (!match) return String(part).trim();
+    const years = parseInt(match[1], 10);
+    const months = parseInt(match[2], 10);
+    if (!Number.isFinite(years) || !Number.isFinite(months)) return String(part).trim();
+    return months <= 0 ? years : years + 0.5;
+  }
+
+  function formatAgePartCompact(part) {
+    const value = ageValueFromPart(part);
+    if (value === "") return "";
+    if (typeof value === "string") return value;
+    if (Number.isInteger(value)) return String(value);
+    return String(value);
+  }
+
+  function formatQuestionAgeBadge(ageGroup) {
+    if (!ageGroup) return "";
+    const normalized = String(ageGroup).trim();
+    if (normalized === "") return "";
+    const parts = normalized.split("-");
+    if (parts.length !== 2) return normalized;
+    const from = formatAgePartCompact(parts[0]);
+    const to = formatAgePartCompact(parts[1]);
+    if (!from || !to) return normalized;
+    if (from === to) return from;
+    return from + " - " + to;
   }
 
   // =============================================================================
   // EVENT HANDLERS
   // =============================================================================
   async function confirmAge() {
+    setMicPermissionError("");
     if (!childName || !String(childName).trim()) {
       alert(tr("test.start.invalidName"));
       return;
@@ -567,6 +718,10 @@ function blobToBase64(blob) {
 
     setAgeYears(String(derivedAge.years));
     setAgeMonths(String(derivedAge.months));
+    setMicCheckPassed(false);
+    setMicCheckReady(false);
+    setMicCheckLevel(0);
+    setMicCheckPeak(0);
     const internalUserId = ensureInternalUserId();
 
     function prepareDirectTestFlowNoSeparateReading() {
@@ -582,22 +737,6 @@ function blobToBase64(blob) {
       setVoiceIdentifierConfirmed(true);
     }
 
-    var skipMicUrl = false;
-    try {
-      skipMicUrl = new URLSearchParams(window.location.search).get("skipMic") === "1";
-    } catch (e) {
-      skipMicUrl = false;
-    }
-
-    if (skipReading || skipMicUrl) {
-      setMicrophoneSkipped(true);
-      setPermission(false);
-      prepareDirectTestFlowNoSeparateReading();
-      setAgeConfirmed(true);
-      createUser(internalUserId, String(childName).trim() || "SomeUserName");
-      return;
-    }
-
     if (!("MediaRecorder" in window)) {
       alert(tr("test.mic.unsupported"));
       return;
@@ -608,12 +747,14 @@ function blobToBase64(blob) {
       stream.getTracks().forEach(function (track) {
         track.stop();
       });
-      setPermission(true);
-      setMicrophoneSkipped(false);
     } catch (err) {
-      alert(err && err.message ? err.message : String(err));
+      setMicPermissionError(tr("test.mic.deniedInline"));
       return;
     }
+
+    setPermission(true);
+    setMicrophoneSkipped(false);
+    setMicCheckPassed(false);
 
     prepareDirectTestFlowNoSeparateReading();
     setAgeConfirmed(true);
@@ -630,6 +771,10 @@ function blobToBase64(blob) {
           track.stop();
         });
         setPermission(true);
+        setMicCheckPassed(false);
+        setMicCheckReady(false);
+        setMicCheckLevel(0);
+        setMicCheckPeak(0);
         console.log("✅ Microphone permission granted");
       } catch (err) {
         alert(err.message);
@@ -638,8 +783,11 @@ function blobToBase64(blob) {
   };
 
   const skipMicrophone = function () {
+    stopMicrophoneCheck();
     // Even if skipping recording, mark that user interacted with microphone prompt
     setMicrophoneSkipped(true);
+    setMicCheckPassed(true);
+    setMicCheckReady(false);
     setVoiceIdentifierConfirmed(true);
     setReadingValidated(false);
     setReadingValidationResult(null);
@@ -837,6 +985,7 @@ const handleReadingValidationRetry = function () {
   React.useEffect(function startSessionRecordingDirectFlow() {
     if (!ageConfirmed || sessionCompleted) return;
     if (!permission || microphoneSkipped) return;
+    if (!micCheckPassed) return;
     if (!voiceIdentifierConfirmed) return;
     if (questions.length === 0) return;
 
@@ -888,7 +1037,7 @@ const handleReadingValidationRetry = function () {
     return function () {
       cancelled = true;
     };
-  }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
+  }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
 
   // Expression only: auto-open traffic popup after showContinue (comprehension scores without popup)
   React.useEffect(function () {
@@ -1020,7 +1169,7 @@ const handleReadingValidationRetry = function () {
 
 
   const playQuestionAudio = function () {
-    if (questionAudio) {
+    if (questionAudio && !questionAudioMuted) {
       questionAudio.currentTime = 0;
       questionAudio.play();
       setIsAudioPlaying(true);
@@ -1030,6 +1179,34 @@ const handleReadingValidationRetry = function () {
   const replayQuestionAudio = function () {
     playQuestionAudio();
   };
+
+  React.useEffect(function cleanupQuestionAudioTimer() {
+    return function () {
+      if (questionAudioAutoplayTimerRef.current) {
+        clearTimeout(questionAudioAutoplayTimerRef.current);
+        questionAudioAutoplayTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  React.useEffect(function cleanupPreviousQuestionAudio() {
+    return function () {
+      if (!questionAudio) return;
+      try {
+        questionAudio.pause();
+        questionAudio.currentTime = 0;
+      } catch (e) {}
+    };
+  }, [questionAudio]);
+
+  React.useEffect(function stopAudioWhenMuted() {
+    if (!questionAudioMuted || !questionAudio) return;
+    try {
+      questionAudio.pause();
+      questionAudio.currentTime = 0;
+    } catch (e) {}
+    setIsAudioPlaying(false);
+  }, [questionAudioMuted, questionAudio]);
 
   // =============================================================================
   // PAUSE/RESUME AND AFK TIMER FUNCTIONS
@@ -1295,6 +1472,11 @@ const handleReadingValidationRetry = function () {
           }
         }
       } else if (answerType === "multi") {
+        // Repeated taps on the same image count as a single pick.
+        if (allClickedAnswers.includes(imgIndex)) {
+          return;
+        }
+
         const nextAttempts = multiAttemptCount + 1;
         setMultiAttemptCount(nextAttempts);
 
@@ -1710,6 +1892,21 @@ const handleReadingValidationRetry = function () {
     const q = questions[index];
     if (!q) return;
 
+    if (questionAudioAutoplayTimerRef.current) {
+      clearTimeout(questionAudioAutoplayTimerRef.current);
+      questionAudioAutoplayTimerRef.current = null;
+    }
+    if (questionAudio) {
+      try {
+        questionAudio.pause();
+        questionAudio.currentTime = 0;
+      } catch (e) {}
+      setIsAudioPlaying(false);
+    }
+    // Clear previous question visuals immediately to avoid stale-image flash while switching.
+    setCurrentQuestionImagesLoaded(false);
+    setImages([]);
+
     // Mark question start timestamp for recording
     // Skip question 1 here as it will be marked when test starts
     if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && index > 0) {
@@ -1854,13 +2051,20 @@ const handleReadingValidationRetry = function () {
         console.warn('Audio file not found for question:', q.query_number);
       };
       setQuestionAudio(audio);
-      // Play audio automatically when question loads
-      setTimeout(function () {
-        audio.play().catch(function (err) {
-          console.warn('Audio autoplay failed:', err);
-        });
-        setIsAudioPlaying(true);
-      }, 100);
+      // Play audio automatically only after mic-check is passed.
+      if (micCheckPassed) {
+        questionAudioAutoplayTimerRef.current = setTimeout(function () {
+          questionAudioAutoplayTimerRef.current = null;
+          if (questionAudioMuted) {
+            setIsAudioPlaying(false);
+            return;
+          }
+          audio.play().catch(function (err) {
+            console.warn('Audio autoplay failed:', err);
+          });
+          setIsAudioPlaying(true);
+        }, 100);
+      }
     }
 
     // Set two-row layout states
@@ -1925,7 +2129,7 @@ const handleReadingValidationRetry = function () {
   }
   setSessionRecordingStarted(false);
   return false;
-}
+  }
 
   function completeSession(updatedQuestionResults) {
     // If test is paused, unpause it first
@@ -2088,7 +2292,12 @@ const handleReadingValidationRetry = function () {
   }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, permission, sessionRecordingStarted]);
 
   function checkCurrentQuestionImages() {
-    const q = questions[getCurrentQuestionIndex()];
+    const idx = getSafeCurrentQuestionIndex();
+    if (idx < 0) {
+      setCurrentQuestionImagesLoaded(false);
+      return;
+    }
+    const q = questions[idx];
     if (!q) {
       setCurrentQuestionImagesLoaded(false);
       return;
@@ -2096,6 +2305,14 @@ const handleReadingValidationRetry = function () {
 
     const loaded = ImageLoader.areImagesLoaded(q.query_number, q.image_count);
     setCurrentQuestionImagesLoaded(loaded);
+  }
+
+  function retryCurrentQuestionLoading() {
+    setShowQuestionLoadingRecovery(false);
+    checkCurrentQuestionImages();
+    // Retry global priority loading so stuck networks/CDN stalls can recover.
+    const labels = ["2:00-2:06", "2:07-3:00", "3:00-4:00", "4:00-5:00", "5:00-6:00"];
+    ImageLoader.updatePriority(labels);
   }
 
   // =============================================================================
@@ -2125,12 +2342,13 @@ const handleReadingValidationRetry = function () {
   React.useEffect(
     function loadCurrentQuestion() {
       if (ageConfirmed && questions.length > 0 && !sessionCompleted) {
-        const idx = getCurrentQuestionIndex();
+        const idx = getSafeCurrentQuestionIndex();
+        if (idx < 0) return;
         loadQuestion(idx);
         checkCurrentQuestionImages();
       }
     },
-    [ageConfirmed, questions, currentIndex, sessionCompleted, voiceIdentifierConfirmed]
+    [ageConfirmed, questions, currentIndex, sessionCompleted, voiceIdentifierConfirmed, micCheckPassed]
   );
 
   // Monitor if current question images are loaded
@@ -2144,6 +2362,21 @@ const handleReadingValidationRetry = function () {
       clearInterval(interval);
     };
   }, [ageConfirmed, questions, currentIndex, sessionCompleted]);
+
+  React.useEffect(function questionLoadingRecoveryTimer() {
+    if (!ageConfirmed || questions.length === 0 || sessionCompleted || currentQuestionImagesLoaded) {
+      setShowQuestionLoadingRecovery(false);
+      return;
+    }
+
+    const timer = setTimeout(function () {
+      setShowQuestionLoadingRecovery(true);
+    }, 10000);
+
+    return function () {
+      clearTimeout(timer);
+    };
+  }, [ageConfirmed, questions, currentIndex, sessionCompleted, currentQuestionImagesLoaded]);
 
 
   // =============================================================================
@@ -2167,7 +2400,7 @@ const handleReadingValidationRetry = function () {
         onHome: onHome,
         onReset: onReset,
         setLang: setLang,
-        showDev: true,
+        showDev: false,
         showPause: showControls,
         isPaused: isPaused,
         pauseTest: pauseTest,
@@ -2324,6 +2557,10 @@ function renderBottomActions() {
     );
   }
 
+  if (questionType === "C") {
+    return null;
+  }
+
   if (hintText && hintText.trim() !== "") {
     return React.createElement(
       "div",
@@ -2366,6 +2603,32 @@ function renderBottomActions() {
   }
 
   return null;
+}
+
+function renderDevAudioToggle() {
+  if (!devMode || sessionCompleted) return null;
+  return React.createElement(
+    "div",
+    { className: "dev-audio-toggle-wrap" },
+    React.createElement(
+      "button",
+      {
+        type: "button",
+        className: "dev-audio-toggle-btn" + (questionAudioMuted ? " is-muted" : ""),
+        onClick: function () {
+          setQuestionAudioMuted(function (prev) { return !prev; });
+        },
+        title: questionAudioMuted
+          ? (lang === "en" ? "Unmute question reading" : "בטל השתקת קריאת שאלות")
+          : (lang === "en" ? "Mute question reading" : "השתק קריאת שאלות"),
+        "aria-label": questionAudioMuted
+          ? (lang === "en" ? "Unmute question reading" : "בטל השתקת קריאת שאלות")
+          : (lang === "en" ? "Mute question reading" : "השתק קריאת שאלות"),
+        "aria-pressed": questionAudioMuted
+      },
+      questionAudioMuted ? "🔇" : "🔊"
+    )
+  );
 }
 
 function renderExpectedAnswerToggle() {
@@ -2529,9 +2792,26 @@ function renderExpectedAnswerNote() {
       ),
       React.createElement(
         "button",
-        { onClick: confirmAge },
+        {
+          onClick: confirmAge
+        },
         tr("test.cta.continue")
-      )
+      ),
+      micPermissionError
+        ? React.createElement(
+            "p",
+            {
+              style: {
+                marginTop: "12px",
+                color: "#b71c1c",
+                fontSize: "14px",
+                lineHeight: "1.5",
+                textAlign: "center"
+              }
+            },
+            micPermissionError
+          )
+        : null
     );
   }
 
@@ -2539,43 +2819,65 @@ function renderExpectedAnswerNote() {
     return React.createElement("div", { className: "age-invalid" }, tr("test.age.invalid"));
   }
 
-  if (!permission && !microphoneSkipped) {
+  if (permission && !microphoneSkipped && !micCheckPassed) {
+    const levelPercent = Math.max(0, Math.min(100, Math.round(micCheckLevel * 100)));
     return React.createElement(
       "div",
-      { className: "microphone-permission-screen" },
-      React.createElement("h2", null, tr("test.mic.title")),
-      React.createElement("p", null, tr("test.mic.body")),
+      { className: "microphone-check-screen" },
+      React.createElement("h2", null, tr("test.mic.check.title")),
+      React.createElement("p", null, tr("test.mic.check.body")),
       React.createElement(
-        "button",
-        {
-          className: "allowMic",
-          onClick: getMicrophonePermission
-        },
-        tr("test.mic.allow")
+        "div",
+        { className: "mic-level-meter", role: "img", "aria-label": tr("test.mic.check.target") },
+        React.createElement("div", { className: "mic-level-meter__target" }),
+        React.createElement("div", { className: "mic-level-meter__fill", style: { width: levelPercent + "%" } })
       ),
+      React.createElement("p", { className: "mic-level-meter__label" }, tr("test.mic.check.target")),
+      micCheckReady
+        ? React.createElement("p", { className: "mic-check-success" }, tr("test.mic.check.done"))
+        : null,
+      micPermissionError
+        ? React.createElement(
+            "p",
+            {
+              style: {
+                marginTop: "8px",
+                color: "#b71c1c",
+                fontSize: "14px",
+                textAlign: "center"
+              }
+            },
+            micPermissionError
+          )
+        : null,
       React.createElement(
-  "button",
-  {
-    className: "skipMic",
-    onClick: skipMicrophone
-  },
-  lang === "en" ? "Skip microphone for local testing" : "דלג על מיקרופון לבדיקה מקומית"
-),
-      React.createElement(
-        "p",
-        {
-          style: {
-            marginTop: "24px",
-            fontSize: "14px",
-            color: "rgba(0, 7, 8, 0.55)",
-            maxWidth: "340px",
-            lineHeight: "1.6",
-            textAlign: "center"
-          }
-        },
-        lang === "en"
-          ? "Note: The system records the assessment for future development and improvement purposes. Currently, the recording is not used for the language assessment of the child."
-          : "שים לב! המערכת מקליטה את ההערכה לשם פיתוח וטיוב עתידי. בתוצאות הערכה כרגע אין שימוש בהקלטה לצורכי הערכה השפתית של הילד."
+        "div",
+        { style: { display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" } },
+        !micCheckReady
+          ? React.createElement(
+              "button",
+              {
+                className: "continue-button",
+                onClick: startMicrophoneCheck,
+                disabled: micCheckRunning,
+              },
+              micCheckRunning ? (lang === "en" ? "Listening..." : "מאזינים...") : tr("test.mic.check.start")
+            )
+          : null,
+        micCheckReady
+          ? React.createElement(
+              "button",
+              {
+                className: "continue-button",
+                onClick: function () {
+                  setMicCheckPassed(true);
+                  setMicCheckReady(false);
+                  stopMicrophoneCheck();
+                }
+              },
+              tr("test.mic.check.continue")
+            )
+          : null
       )
     );
   }
@@ -2760,6 +3062,7 @@ function renderExpectedAnswerNote() {
       if (months <= 60) return "4:00-5:00";
       return "5:00-6:00";
     })();
+    const expectedAgeGroupDisplay = formatQuestionAgeBadge(expectedAgeGroup);
 
     const questionByNumber = (function () {
       const map = {};
@@ -2949,8 +3252,8 @@ function renderExpectedAnswerNote() {
           "p",
           { style: { margin: 0 } },
           lang === "en"
-            ? ("Your child answered " + ageMatchedStats.correct + " correct, " + ageMatchedStats.partial + " with help, and " + ageMatchedStats.wrong + " incorrect out of " + ageMatchedStats.total + " questions matching their age group (" + expectedAgeGroup + ").")
-            : (" ענה נכון על " + ageMatchedStats.correct + " תשובות מהשאלות המתאימות לגילו הכרונולוגי (" + expectedAgeGroup + "). " +
+            ? ("Your child answered " + ageMatchedStats.correct + " correct, " + ageMatchedStats.partial + " with help, and " + ageMatchedStats.wrong + " incorrect out of " + ageMatchedStats.total + " questions matching their age group (" + expectedAgeGroupDisplay + ").")
+            : (" ענה נכון על " + ageMatchedStats.correct + " תשובות מהשאלות המתאימות לגילו הכרונולוגי (" + expectedAgeGroupDisplay + "). " +
                ageMatchedStats.partial + " תשובות עם עזרה ו-" + ageMatchedStats.wrong + " תשובות שגויות (מתוך " + ageMatchedStats.total + ").")
         )
       ),
@@ -3044,13 +3347,67 @@ function renderExpectedAnswerNote() {
       "div",
       { className: "question-loading-screen" },
       React.createElement("h2", null, tr("test.loadingQuestion.title")),
-      React.createElement("p", null, tr("test.loadingQuestion.body"))
+      React.createElement("p", null, tr("test.loadingQuestion.body")),
+      showQuestionLoadingRecovery
+        ? React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(
+              "p",
+              { style: { marginTop: "12px", color: "#5c6b70", maxWidth: "320px", textAlign: "center", lineHeight: 1.5 } },
+              lang === "en"
+                ? "Loading is taking longer than expected. You can retry or return home."
+                : "הטעינה מתעכבת מהרגיל. אפשר לנסות שוב או לחזור לדף הבית."
+            ),
+            React.createElement(
+              "div",
+              { style: { marginTop: "14px", display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" } },
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: retryCurrentQuestionLoading,
+                  style: {
+                    padding: "10px 16px",
+                    border: "none",
+                    borderRadius: "10px",
+                    background: "linear-gradient(135deg,#4caf50,#66bb6a)",
+                    color: "white",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    minWidth: "120px"
+                  }
+                },
+                lang === "en" ? "Retry loading" : "נסה לטעון שוב"
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: onHome,
+                  style: {
+                    padding: "10px 16px",
+                    border: "1px solid rgba(48,67,72,0.2)",
+                    borderRadius: "10px",
+                    background: "#f4f7f9",
+                    color: "#304348",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    minWidth: "120px"
+                  }
+                },
+                lang === "en" ? "Back to home" : "חזרה לדף הבית"
+              )
+            )
+          )
+        : null
     );
   }
 
   const currentIdx = getCurrentQuestionIndex();
   const currentQuestion = questions[currentIdx];
   const currentQuestionAgeGroup = currentQuestion ? currentQuestion.age_group : "";
+  const currentQuestionAgeBadge = formatQuestionAgeBadge(currentQuestionAgeGroup);
   const currentImageCount = images.length;
   const maxRows = 2;
   // For ≤4 images put all in ONE row; for more, split into 2 rows
@@ -3070,8 +3427,7 @@ function renderExpectedAnswerNote() {
   return React.createElement(
     "div",
     {
-      className: "app-container",
-      style: devMode ? { backgroundColor: "#808080" } : {}
+      className: "app-container"
     },
     renderConfettiOverlay(),
 
@@ -3137,8 +3493,8 @@ function renderExpectedAnswerNote() {
             zIndex: 9999
           }
         },
-        React.createElement("h1", { style: { color: "white", fontSize: "48px", marginBottom: "20px" } }, tr("test.paused.title")),
-        React.createElement("p", { style: { color: "white", fontSize: "20px", marginBottom: "30px" } },
+        React.createElement("h1", { style: { color: "white", fontSize: "clamp(36px, 10vw, 52px)", marginBottom: "14px", textAlign: "center", lineHeight: 1.1, maxWidth: "90vw" } }, tr("test.paused.title")),
+        React.createElement("p", { style: { color: "white", fontSize: "clamp(17px, 4.6vw, 24px)", marginBottom: "22px", textAlign: "center", lineHeight: 1.35, maxWidth: "90vw" } },
           tr("test.paused.body")
         ),
         React.createElement(
@@ -3146,8 +3502,8 @@ function renderExpectedAnswerNote() {
           {
             onClick: resumeTest,
             style: {
-              padding: "15px 40px",
-              fontSize: "20px",
+              padding: "12px 28px",
+              fontSize: "clamp(17px, 4.5vw, 22px)",
               backgroundColor: "#4CAF50",
               color: "white",
               border: "none",
@@ -3157,6 +3513,24 @@ function renderExpectedAnswerNote() {
             }
           },
           tr("test.paused.cta")
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: onHome,
+            style: {
+              marginTop: "12px",
+              padding: "10px 22px",
+              fontSize: "clamp(15px, 4vw, 19px)",
+              backgroundColor: "#2E5D73",
+              color: "white",
+              border: "1px solid #7FA2B3",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: "600"
+            }
+          },
+          lang === "en" ? "🏠 Back to home" : "🏠 חזרה לבית"
         )
       )
       : null,
@@ -3238,65 +3612,7 @@ function renderExpectedAnswerNote() {
             : null
       )
       : null,
-    devMode
-  ? React.createElement(
-      "div",
-      { className: "dev-mode-indicator" },
-
-      React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "dev-mode-btn",
-          onClick: goToPreviousQuestion,
-          disabled: currentIdx <= 0
-        },
-        lang === "en" ? "◀ Prev" : "▶ קודם"
-      ),
-
-      React.createElement("input", {
-        type: "number",
-        min: 1,
-        max: questions.length,
-        value: devJumpValue,
-        onChange: function (e) {
-          setDevJumpValue(e.target.value.replace(/\D/g, ""));
-        },
-        className: "dev-mode-input",
-        placeholder: lang === "en" ? "Question #" : "מספר שאלה"
-      }),
-
-      React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "dev-mode-btn",
-          onClick: function () {
-            goToQuestionByNumber(devJumpValue);
-          }
-        },
-        lang === "en" ? "Go" : "עבור"
-      ),
-
-      React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "dev-mode-btn",
-          onClick: function () {
-            updateCurrentQuestionIndex(function (prevIdx) {
-              if (prevIdx < questions.length - 1) {
-                return prevIdx + 1;
-              }
-              return prevIdx;
-            });
-          },
-          disabled: currentIdx >= questions.length - 1
-        },
-        lang === "en" ? "Next ▶" : "הבא ◀"
-      )
-    )
-  : null,
+    null,
 
 
     trafficPopupOpen
@@ -3448,7 +3764,7 @@ function renderExpectedAnswerNote() {
     // ── Question section (audio + question only) ──────────
 React.createElement(
   "div",
-  { className: "question-section" },
+  { className: "question-section", key: "question-section-" + ((currentQuestion && currentQuestion.query_number) || currentIdx) },
   React.createElement(
     "div",
     { className: "question-section__query-row" },
@@ -3480,7 +3796,29 @@ React.createElement(
           : (lang === "en" ? "Comprehension question" : "שאלת הבנה")
       },
       questionType === "E" ? "mic" : "touch_app"
-    )
+    ),
+    currentQuestionAgeBadge
+      ? React.createElement(
+          "span",
+          {
+            className: "question-age-indicator",
+            title: lang === "en"
+              ? ("Target age for this question: " + currentQuestionAgeGroup)
+              : ("גיל היעד לשאלה: " + currentQuestionAgeGroup),
+            "aria-label": lang === "en"
+              ? ("Target age " + currentQuestionAgeGroup)
+              : ("גיל יעד " + currentQuestionAgeGroup)
+          },
+          React.createElement("span", { className: "question-age-indicator__label", "aria-hidden": "true" }, "שנים"),
+          React.createElement(
+            "span",
+            { className: "question-age-indicator__text" },
+            currentQuestionAgeBadge
+          ),
+          React.createElement("span", { className: "question-age-indicator__emoji", "aria-hidden": "true" }, "🎂")
+        )
+      : null
+    
   )
 ),
 
@@ -3725,5 +4063,6 @@ questionType === "E"
     )
   : null,
       renderBottomActions(),
+      renderDevAudioToggle(),
   );
 }

@@ -1,0 +1,31 @@
+---
+description: Running changelog structure and maintenance behavior
+alwaysApply: true
+---
+
+# Running Changelog Structure (Always Apply)
+
+Maintain the running changelog file using this exact section order inside each dated block:
+
+## PR title
+
+## Summary (2-3 bullets)
+- Keep exactly 2-3 concise bullets.
+- Recalculate the summary each time so it accurately reflects all items listed under numbered main changes.
+- Focus on outcomes and grouped impact, not line-by-line implementation details.
+
+## numbered main changes
+1. Use a numbered list.
+2. Each item should describe one concrete code, behavior, or documentation change.
+3. Keep each item brief and specific.
+
+## numbered notes
+1. Use a numbered list.
+2. Include risks, assumptions, follow-ups, or test caveats.
+3. If there are no notes, write `None`.
+
+# Running Changelog Behavior
+
+- Maintain one running changelog Markdown file and append new entries for each completed change until the user says otherwise.
+- Write each changelog entry as one brief sentence.
+- Keep normal conversational reply style in chat; this structure is for the changelog file only.

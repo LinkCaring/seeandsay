@@ -331,6 +331,19 @@ p {
   position: relative;
 }
 
+.app-version-label {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 2px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(48, 67, 72, 0.55);
+  z-index: 30;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Test flow: warm neutral canvas behind questions */
 .app-container[data-page="test"] {
   background: #EEF4F3;
@@ -656,8 +669,8 @@ button:focus-visible {
 /* Speaker icon + question text — one unit, attached */
 .question-section__query-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: stretch;
+  gap: 0;
   flex-wrap: nowrap;
   width: 100%;
   padding: 3px 10px;
@@ -665,11 +678,23 @@ button:focus-visible {
   background: #fff;
   border: 1px solid rgba(48, 67, 72, 0.12);
   box-shadow: 0 8px 18px rgba(48, 67, 72, 0.08);
+  overflow: hidden;
+}
+
+[dir="rtl"] .question-section__query-row {
+  padding-left: 0;
+}
+
+[dir="rtl"] .question-section__query-row .query-text {
+  margin-inline: 10px;
 }
 
 .question-section__query-row .query-text {
   flex: 1 1 auto;
   margin: 0;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
 }
 
 [dir="rtl"] .query-text {
@@ -1632,6 +1657,63 @@ button {
   color: var(--colors-dark-gray);
   text-align: center;
   line-height: 1.6;
+}
+
+.microphone-check-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 40px 28px;
+  background: var(--bg-white);
+  border-radius: 16px;
+  box-shadow: 0px 2px 4px -1px rgba(0, 0, 0, 0.2),
+    0px 4px 5px 0px rgba(0, 0, 0, 0.14),
+    0px 1px 10px 0px rgba(0, 0, 0, 0.12);
+  max-width: 520px;
+  margin: 88px auto;
+  font-family: var(--font-family);
+}
+
+.mic-level-meter {
+  width: min(360px, 92%);
+  height: 18px;
+  border-radius: 999px;
+  background: #e9eef1;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(48, 67, 72, 0.14);
+}
+
+.mic-level-meter__target {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 20%;
+  width: 50%;
+  background: rgba(76, 175, 80, 0.35);
+  pointer-events: none;
+}
+
+.mic-level-meter__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, #4aa3d8, #2f87bf);
+  transition: width 90ms linear;
+}
+
+.mic-level-meter__label {
+  margin-top: 2px;
+  font-size: 13px;
+  color: #55656a;
+}
+
+.mic-check-success {
+  margin: 0;
+  color: #2e7d32;
+  font-weight: 700;
 }
 
 .session-complete__nav {
@@ -3299,6 +3381,34 @@ button {
   margin-bottom: 6px;
   white-space: normal;
   text-align: center;
+}
+
+.dev-audio-toggle-wrap {
+  position: sticky;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+  margin-bottom: 2px;
+  padding-bottom: 2px;
+  background: transparent;
+}
+
+.dev-audio-toggle-btn {
+  border: none;
+  background: transparent;
+  color: #304348;
+  border-radius: 999px;
+  padding: 0 3px;
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dev-audio-toggle-btn.is-muted {
+  color: #8a2222;
 }
 
 @keyframes chest-pop {
@@ -5325,8 +5435,55 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
+  padding: 0 6px;
+  margin-block: 0;
   font-size: 24px !important;
   line-height: 1;
+}
+
+.question-age-indicator {
+  display: inline-flex;
+  flex-direction: column !important;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  gap: 2px;
+  padding: 6px 10px 6px 8px;
+  border-radius: 0;
+  background: #E5EFF4;
+  border: none;
+  border-right: 1px solid #B6C7CF;
+  box-shadow: none;
+  color: #1F4A63;
+  white-space: nowrap;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-inline-start: 0;
+  margin-block: -3px;
+}
+
+.question-age-indicator__label {
+  order: 3;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+.question-age-indicator__emoji {
+  order: 1;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.question-age-indicator__text {
+  order: 2;
+  font-size: 12px;
+  font-weight: 700;
+  direction: ltr;
+  unicode-bidi: bidi-override;
+  text-align: center;
 }
 
 .onboarding-demo-rating {
@@ -5497,6 +5654,11 @@ button {
   cursor: pointer;
   font-family: var(--font-family);
   transition: transform var(--transition-base), box-shadow var(--transition-base), background var(--transition-base);
+}
+
+.onboarding-nav-btn--ghost {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .onboarding-steps {

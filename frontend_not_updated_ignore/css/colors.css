@@ -1,0 +1,49 @@
+/* =========================================================
+   COLOR PALETTE - Material Design Theme
+   ========================================================= */
+
+:root {
+  /* Background Colors */
+  --bg-white: #ffffff;
+  --bg-main-bg: #f7fafb;
+
+  /* Text Colors */
+  --colors-text: #304348;
+  --colors-dark-gray: #67797e;
+  --colors-gray: #b0c0c4;
+  --colors-light-gray: #98a5a9;
+  --gray: #9c9c9c;
+
+  /* Turquoise Colors */
+  --colors-turquoise: #42abc7;
+  --turquoise-selected: #35899f;
+  --colors-light-turquoise: #e9f9fe;
+  --colors-gray-turquoise: #d1dde0;
+  --colors-light-turquoise-buttons: #f7fdff;
+  --light-blue: #cff0f7;
+
+  /* Green Colors */
+  --light-green: #e2ecee;
+  --status-green-success: #49cb95;
+  --status-green-success-10: rgba(73, 203, 149, 0.1);
+
+  /* Red/Error Colors */
+  --status-red-error-20: rgba(239, 143, 182, 0.2);
+  --status-res-error: #9b2a58;
+
+  /* Font */
+  --font-family: 'Open Sans Hebrew', sans-serif;
+
+  /* Accent Gradient */
+  --brand-gradient: linear-gradient(135deg, #42abc7 0%, #35899f 100%);
+
+  /* Shadows */
+  --shadow-soft: 0 10px 30px rgba(48, 67, 72, 0.1);
+  --shadow-hover: 0 14px 40px rgba(48, 67, 72, 0.16);
+
+  /* Content Max Width */
+  --layout-max-width: 960px;
+
+  /* Transitions */
+  --transition-base: 180ms ease-in-out;
+}
