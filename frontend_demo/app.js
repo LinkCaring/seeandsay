@@ -57,6 +57,7 @@ var DEMO_TEST_RUN_LS_KEYS = [
   "ageConfirmed",
   "permission",
   "microphoneSkipped",
+  "micCheckPassed",
 ];
 
 function clearStoredTestRunKeepChildProfile() {
@@ -239,6 +240,11 @@ function App() {
       "div",
       { className: isLandingPage ? "landing-wrapper" : "page-content" },
       content
+    ),
+    React.createElement(
+      "div",
+      { className: "app-version-label", "aria-hidden": "true" },
+      "version 1"
     ),
     // Landscape orientation overlay — shown only in test mode + portrait
     React.createElement(

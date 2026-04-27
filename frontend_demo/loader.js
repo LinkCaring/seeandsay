@@ -1,6 +1,7 @@
 const ImageLoader = (function() {
   const loadedImages = new Set();
   const loadingQueue = [];
+  const queuedImages = new Set();
   let isProcessing = false;
   let allQuestions = [];
 
@@ -14,13 +15,29 @@ const ImageLoader = (function() {
         resolve(url);
         return;
       }
-      
+
+      let settled = false;
+      const timeoutMs = 10000;
+      const timeoutId = setTimeout(function() {
+        if (settled) return;
+        settled = true;
+        console.warn("Image load timeout:", url);
+        loadedImages.add(url);
+        resolve(url);
+      }, timeoutMs);
+
       const img = new Image();
       img.onload = function() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
         loadedImages.add(url);
         resolve(url);
       };
       img.onerror = function() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
         console.warn("Failed to load image:", url);
         loadedImages.add(url); // Mark as "loaded" to avoid retry
         resolve(url);
@@ -34,6 +51,7 @@ const ImageLoader = (function() {
 
     isProcessing = true;
     const url = loadingQueue.shift();
+    queuedImages.delete(url);
     
     preloadImage(url).then(function() {
       isProcessing = false;
@@ -69,7 +87,11 @@ const ImageLoader = (function() {
         
         const count = parseInt(q.image_count, 10) || 1;
         for (let i = 1; i <= count; i++) {
-          orderedUrls.push(getImageUrl(q.query_number, i));
+          const url = getImageUrl(q.query_number, i);
+          if (!loadedImages.has(url) && !queuedImages.has(url)) {
+            orderedUrls.push(url);
+            queuedImages.add(url);
+          }
         }
       });
     });

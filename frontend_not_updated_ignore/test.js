@@ -369,9 +369,9 @@ function Test({ allQuestions }) {
     const answerStr = (q.answer || "").trim();
 
     if (answerStr === "A") {
-      // Mask answer type: load A.png as mask
+      // Mask answer type: load A.webp as mask
       setAnswerType("mask");
-      const maskUrl = "resources/test_assets/" + q.query_number + "/A.png";
+      const maskUrl = "resources/test_assets/" + q.query_number + "/A.webp";
 
       // Load mask image and draw to canvas for pixel detection
       const mask = new Image();

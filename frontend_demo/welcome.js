@@ -232,9 +232,13 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       <div className="onboarding-frame">{renderScreenBody()}</div>
 
       <div className="onboarding-nav">
-        <button type="button" className="onboarding-nav-btn" onClick={goPrev} disabled={activeIndex <= 0}>
-          {isEn ? "Previous" : "הקודם"}
-        </button>
+        {activeIndex >= 2
+          ? React.createElement(
+              "button",
+              { type: "button", className: "onboarding-nav-btn", onClick: goPrev },
+              isEn ? "Previous" : "הקודם"
+            )
+          : React.createElement("span", { className: "onboarding-nav-btn onboarding-nav-btn--ghost", "aria-hidden": true })}
         <div className="onboarding-progress">
           {orderedScreens.map(function (screenId, idx) {
             return (
@@ -249,9 +253,13 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
             );
           })}
         </div>
-        <button type="button" className="onboarding-nav-btn" onClick={goNext} disabled={activeIndex >= orderedScreens.length - 1}>
-          {isEn ? "Next" : "הבא"}
-        </button>
+        {activeIndex < orderedScreens.length - 1
+          ? React.createElement(
+              "button",
+              { type: "button", className: "onboarding-nav-btn", onClick: goNext },
+              isEn ? "Next" : "הבא"
+            )
+          : React.createElement("span", { className: "onboarding-nav-btn onboarding-nav-btn--ghost", "aria-hidden": true })}
       </div>
       {tipsOpen ? (
         <div className="onboarding-modal-overlay" role="dialog" aria-modal="true" onClick={function () { setTipsOpen(false); }}>
