@@ -4,6 +4,15 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const tr = function (key, vars) {
     return t ? t(key, vars) : key;
   };
+  const getQuestionAudioFolderByGender = function (genderValue) {
+    const normalized = String(genderValue || "").toLowerCase();
+    if (normalized === "female" || normalized === "girl") return "audio_girl";
+    return "audio_boy";
+  };
+
+  /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
+  var ENABLE_EXPRESSION_HINTS = false;
+  var EXPRESSION_EVAL_DELAY_MS = 20000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
   const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "failure" | null
@@ -32,11 +41,18 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [devMode, setDevMode] = usePersistentState("devMode", false)
   const [devJumpValue, setDevJumpValue] = React.useState("");
   const [evaluationEnabled, setEvaluationEnabled] = React.useState(false);
+  const [expressionTrafficSubmitted, setExpressionTrafficSubmitted] = React.useState(false);
+  const [expressionAdvanceLock, setExpressionAdvanceLock] = React.useState(false);
+  const [expressionEvalMsLeft, setExpressionEvalMsLeft] = React.useState(EXPRESSION_EVAL_DELAY_MS);
+  const expressionEvalDeadlineRef = React.useRef(null);
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
   // Transcription state
   const [transcription, setTranscription] = React.useState(null);
+  const [lastCompletedTestId, setLastCompletedTestId] = React.useState(null);
+  const [expressionAiResult, setExpressionAiResult] = React.useState(null);
+  const [expressionAiLoading, setExpressionAiLoading] = React.useState(false);
 
   // Microphone persistent
   const [permission, setPermission] = usePersistentState("permission", false);
@@ -82,6 +98,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [showContinue, setShowContinue] = React.useState(false);
   const [clickedCorrect, setClickedCorrect] = React.useState(false);
   const [fireworksVisible, setFireworksVisible] = React.useState(false);
+  const [showClappingAvatar, setShowClappingAvatar] = React.useState(false);
+  const [consecutiveSuccessStreak, setConsecutiveSuccessStreak] = React.useState(0);
   const [sessionCompleted, setSessionCompleted] = usePersistentState("sessionCompleted", false);
   const [questionType, setQuestionType] = React.useState("C");
 
@@ -124,12 +142,14 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [incompleteSummaryConfirmOpen, setIncompleteSummaryConfirmOpen] = React.useState(false);
 
   function registerHintOpened() {
+    if (questionType === "E" && !ENABLE_EXPRESSION_HINTS) return;
     hintEverOpenedRef.current = true;
     setHintWasUsedThisQuestion(true);
   }
 
   function openHintProgrammatic() {
     if (questionType === "C") return;
+    if (questionType === "E" && !ENABLE_EXPRESSION_HINTS) return;
     registerHintOpened();
     setShowHint(true);
   }
@@ -488,6 +508,36 @@ function blobToBase64(blob) {
   const [isAudioPlaying, setIsAudioPlaying] = React.useState(false);
   const [questionAudioMuted, setQuestionAudioMuted] = React.useState(false);
   const questionAudioAutoplayTimerRef = React.useRef(null);
+  /** Active question `Audio` instance for synchronous pause/stop (state updates lag behind timers). */
+  const questionAudioRef = React.useRef(null);
+  const tryAgainAudioRef = React.useRef(null);
+
+  function stopQuestionAudioForSessionComplete() {
+    if (questionAudioAutoplayTimerRef.current) {
+      clearTimeout(questionAudioAutoplayTimerRef.current);
+      questionAudioAutoplayTimerRef.current = null;
+    }
+    if (questionAudioRef.current) {
+      try {
+        questionAudioRef.current.pause();
+        questionAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      questionAudioRef.current = null;
+    }
+    if (tryAgainAudioRef.current) {
+      try {
+        tryAgainAudioRef.current.pause();
+        tryAgainAudioRef.current.currentTime = 0;
+      } catch (e) {}
+    }
+    setQuestionAudio(null);
+    setIsAudioPlaying(false);
+  }
+
+  React.useEffect(function () {
+    if (!sessionCompleted) return;
+    stopQuestionAudioForSessionComplete();
+  }, [sessionCompleted]);
 
   // =============================================================================
   // TESTING SHORTCUTS
@@ -520,23 +570,53 @@ function blobToBase64(blob) {
   }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
 
 
-  // evaulation enabling effect - enables the traffic light popup after 15 seconds 
+  // Expression evaluation timer - opens traffic evaluation after 20 seconds.
   React.useEffect(function () {
   if (sessionCompleted || questionType !== "E") {
     setEvaluationEnabled(false);
+    setExpressionTrafficSubmitted(false);
+    setExpressionAdvanceLock(false);
+    setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+    expressionEvalDeadlineRef.current = null;
     return;
   }
 
   setEvaluationEnabled(false);
+  setExpressionTrafficSubmitted(false);
+  setExpressionAdvanceLock(false);
+  setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+  expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
 
   const timer = setTimeout(function () {
     setEvaluationEnabled(true);
-  }, 15000);
+    setExpressionEvalMsLeft(0);
+    expressionEvalDeadlineRef.current = null;
+  }, EXPRESSION_EVAL_DELAY_MS);
 
   return function () {
     clearTimeout(timer);
   };
 }, [currentIndex, questionType, sessionCompleted]);
+
+  React.useEffect(function tickExpressionEvalCountdown() {
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalDeadlineRef.current) return;
+    const intervalId = setInterval(function () {
+      if (!expressionEvalDeadlineRef.current) {
+        setExpressionEvalMsLeft(0);
+        return;
+      }
+      const next = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
+      setExpressionEvalMsLeft(next);
+    }, 100);
+
+    return function () {
+      clearInterval(intervalId);
+    };
+  }, [currentIndex, questionType, sessionCompleted, evaluationEnabled]);
+
+  React.useEffect(function () {
+    setExpressionAdvanceLock(false);
+  }, [currentIndex]);
 
   // =============================================================================
   // DEVELOPER MODE FUNCTIONS
@@ -554,6 +634,7 @@ function blobToBase64(blob) {
       // Handle arrow keys in dev mode
       if (devMode) {
         if (event.key === "ArrowRight") {
+          if (questionType === "E" && (!expressionTrafficSubmitted || expressionAdvanceLock)) return;
           updateCurrentQuestionIndex(prevIdx => {
             if (prevIdx < questions.length - 1) {
               return prevIdx + 1;
@@ -561,6 +642,7 @@ function blobToBase64(blob) {
             return prevIdx;
           });
         } else if (event.key === "ArrowLeft") {
+          if (questionType === "E" && evaluationEnabled && trafficPopupOpen) return;
           updateCurrentQuestionIndex(prevIdx => {
             if (prevIdx > 0) {
               return prevIdx - 1;
@@ -578,7 +660,7 @@ function blobToBase64(blob) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [devMode, devJumpValue, questions.length]);
+  }, [devMode, devJumpValue, questions.length, questionType, expressionTrafficSubmitted, expressionAdvanceLock, trafficPopupOpen, evaluationEnabled]);
 
 
 
@@ -647,6 +729,13 @@ function blobToBase64(blob) {
   function getQuestionTypeLabel(q) {
     if (!q) return "comprehension";
     return q.query_type === "הבנה" ? "comprehension" : "expression";
+  }
+
+  function findFirstExpressionQuestionIndex() {
+    for (var i = 0; i < questions.length; i++) {
+      if (questions[i].query_type === "הבעה") return i;
+    }
+    return -1;
   }
 
   function ageValueFromPart(part) {
@@ -1039,7 +1128,7 @@ const handleReadingValidationRetry = function () {
     };
   }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
 
-  // Expression only: auto-open traffic popup after showContinue (comprehension scores without popup)
+  // Expression only: open traffic popup after 20s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
     if (sessionCompleted || isPaused) {
       setTrafficPopupOpen(false);
@@ -1048,7 +1137,7 @@ const handleReadingValidationRetry = function () {
       return;
     }
 
-    if (showContinue && questionType === "E") {
+    if (questionType === "E" && (showContinue || evaluationEnabled)) {
       setTrafficPopupOpen(true);
       setTrafficPopupChoice(null);
       trafficPopupJustOpenedRef.current = true;
@@ -1058,7 +1147,7 @@ const handleReadingValidationRetry = function () {
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
     trafficPopupJustOpenedRef.current = false;
-  }, [showContinue, questionType, sessionCompleted, isPaused, currentIndex]);
+  }, [showContinue, evaluationEnabled, questionType, sessionCompleted, isPaused, currentIndex]);
 
   function playTrafficFeedback(result) {
     // Cute feedback: short beep pattern (no speech)
@@ -1089,8 +1178,12 @@ const handleReadingValidationRetry = function () {
   }
 
   function cancelTrafficPopup() {
-    if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
+    clearStreakCelebrationTimers();
+    streakCelebratePendingAdvanceRef.current = null;
+    streakConfettiDoneRef.current = false;
+    streakVideoDoneRef.current = false;
     setFireworksVisible(false);
+    setShowClappingAvatar(false);
     setShowContinue(false);
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
@@ -1106,9 +1199,14 @@ const handleReadingValidationRetry = function () {
   function goToPreviousQuestion() {
     const currentIdx = getCurrentQuestionIndex();
     if (currentIdx <= 0) return;
+    if (questionType === "E" && evaluationEnabled && trafficPopupOpen) return;
 
-    if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
+    clearStreakCelebrationTimers();
+    streakCelebratePendingAdvanceRef.current = null;
+    streakConfettiDoneRef.current = false;
+    streakVideoDoneRef.current = false;
     setFireworksVisible(false);
+    setShowClappingAvatar(false);
     setShowContinue(false);
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
@@ -1124,13 +1222,69 @@ const handleReadingValidationRetry = function () {
   }
 
   const trafficChoiceInProgressRef = React.useRef(false);
+  /** Consecutive comprehension "wrong" results; two in a row → skip to first expression question. */
+  const consecutiveCompFailRef = React.useRef(0);
+  /** Consecutive expression "wrong" results; two in a row → end test (summary). */
+  const consecutiveExprFailRef = React.useRef(0);
   const fireworksTimerRef = React.useRef(null);
+  const streakCelebratePendingAdvanceRef = React.useRef(null);
+  const streakConfettiDoneRef = React.useRef(false);
+  const streakVideoDoneRef = React.useRef(false);
+  const streakVideoSafetyTimerRef = React.useRef(null);
+
+  function clearStreakCelebrationTimers() {
+    if (fireworksTimerRef.current) {
+      clearTimeout(fireworksTimerRef.current);
+      fireworksTimerRef.current = null;
+    }
+    if (streakVideoSafetyTimerRef.current) {
+      clearTimeout(streakVideoSafetyTimerRef.current);
+      streakVideoSafetyTimerRef.current = null;
+    }
+  }
+
+  function maybeFinishStreakCelebration() {
+    if (!streakConfettiDoneRef.current || !streakVideoDoneRef.current) return;
+    clearStreakCelebrationTimers();
+    setFireworksVisible(false);
+    setShowClappingAvatar(false);
+    var goNext = streakCelebratePendingAdvanceRef.current;
+    streakCelebratePendingAdvanceRef.current = null;
+    if (typeof goNext === "function") {
+      goNext();
+    }
+  }
+
+  function startThreeInRowCelebration(onDone) {
+    clearStreakCelebrationTimers();
+    streakCelebratePendingAdvanceRef.current = onDone;
+    streakConfettiDoneRef.current = false;
+    streakVideoDoneRef.current = false;
+    setFireworksVisible(true);
+    setShowClappingAvatar(true);
+
+    // Confetti duration gate
+    fireworksTimerRef.current = setTimeout(function () {
+      fireworksTimerRef.current = null;
+      streakConfettiDoneRef.current = true;
+      maybeFinishStreakCelebration();
+    }, 2400);
+
+    // Safety so user cannot get stuck if browser blocks media events.
+    streakVideoSafetyTimerRef.current = setTimeout(function () {
+      streakVideoSafetyTimerRef.current = null;
+      streakVideoDoneRef.current = true;
+      maybeFinishStreakCelebration();
+    }, 7000);
+  }
 
   function handleTrafficPopupChoice(result) {
     // Prevent double-invocation (double-click)
     if (trafficChoiceInProgressRef.current) return;
     trafficChoiceInProgressRef.current = true;
 
+    setExpressionTrafficSubmitted(true);
+    setExpressionAdvanceLock(true);
     playTrafficFeedback(result);
     setShowContinue(false);
     setTrafficPopupOpen(false);
@@ -1178,6 +1332,18 @@ const handleReadingValidationRetry = function () {
 
   const replayQuestionAudio = function () {
     playQuestionAudio();
+  };
+
+  const playTryAgainAudio = function () {
+    if (questionAudioMuted) return;
+    try {
+      if (!tryAgainAudioRef.current) {
+        tryAgainAudioRef.current = new Audio("resources/questions_audio/try_again.mp3");
+      }
+      const a = tryAgainAudioRef.current;
+      a.currentTime = 0;
+      a.play().catch(function () {});
+    } catch (e) {}
   };
 
   React.useEffect(function cleanupQuestionAudioTimer() {
@@ -1463,6 +1629,7 @@ const handleReadingValidationRetry = function () {
         } else {
           if (!awaitingRetry) {
             singleComprehensionRetryRef.current = true;
+            playTryAgainAudio();
             if (!hintUsedSingle) {
               openHintProgrammatic();
             }
@@ -1474,6 +1641,9 @@ const handleReadingValidationRetry = function () {
       } else if (answerType === "multi") {
         // Repeated taps on the same image count as a single pick.
         if (allClickedAnswers.includes(imgIndex)) {
+          if (!multiAnswers.includes(imgIndex)) {
+            playTryAgainAudio();
+          }
           return;
         }
 
@@ -1516,9 +1686,19 @@ const handleReadingValidationRetry = function () {
           }
         }
 
-        /* Stop after x+1 attempts without a full pass (x = min correct picks). Still allow scoring when all correct on that same click. */
+        /* Stop after x+1 attempts without a full pass (x = min correct picks).
+           Also stop immediately if it becomes impossible to reach the required correct set
+           with the attempts left (early hard-failure). */
         const attemptLimit = correctTargetCount + 1;
-        if (isNowCorrect || nextAttempts >= attemptLimit) {
+        const attemptsLeft = attemptLimit - nextAttempts;
+        const neededCorrect = Math.max(0, correctTargetCount - updatedClickedCorrect.length);
+        const impossibleToRecover = !isNowCorrect && neededCorrect > attemptsLeft;
+        var willFinalizeFailure = !isNowCorrect && (nextAttempts >= attemptLimit || impossibleToRecover);
+        if (!multiAnswers.includes(imgIndex) && !willFinalizeFailure) {
+          playTryAgainAudio();
+        }
+
+        if (isNowCorrect || nextAttempts >= attemptLimit || impossibleToRecover) {
           var x = correctTargetCount;
           var hintU = hintEverOpenedRef.current;
           var wrongs = multiWrongClicksRef.current;
@@ -1629,6 +1809,7 @@ const handleReadingValidationRetry = function () {
           } else {
             if (!awaitingMask2) {
               maskAwaitingSecondRef.current = true;
+              playTryAgainAudio();
               if (!hintMask) {
                 openHintProgrammatic();
               }
@@ -1720,20 +1901,59 @@ const handleReadingValidationRetry = function () {
 
         setQuestionResults(updatedQuestionResults);
         console.log("Recorded result for question", questionNumber, ":", resultString);
+
+        var qtLabel = getQuestionTypeLabel(currentQuestion);
+        if (qtLabel === "comprehension") {
+          consecutiveCompFailRef.current = resultString === "wrong"
+            ? consecutiveCompFailRef.current + 1
+            : 0;
+        }
+        if (qtLabel === "expression") {
+          consecutiveExprFailRef.current = resultString === "wrong"
+            ? consecutiveExprFailRef.current + 1
+            : 0;
+        }
       }
     }
 
-    // All results (success, partial, failure) advance to the next question
-    if (currentIdx < questions.length - 1) {
-      updateCurrentQuestionIndex(currentIdx + 1);
-    } else {
-      var answeredCount = dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
-      if (answeredCount >= questions.length) {
+    var nextStreak = result === "success" ? (consecutiveSuccessStreak + 1) : 0;
+    setConsecutiveSuccessStreak(nextStreak);
+    var shouldRunThreeInRowCelebration = result === "success" && nextStreak > 0 && (nextStreak % 3 === 0);
+
+    function advanceAfterResult() {
+      if (consecutiveExprFailRef.current >= 2) {
+        consecutiveExprFailRef.current = 0;
+        consecutiveCompFailRef.current = 0;
         completeSession(updatedQuestionResults);
+        return;
+      }
+      if (consecutiveCompFailRef.current >= 2) {
+        var firstExprIdx = findFirstExpressionQuestionIndex();
+        consecutiveCompFailRef.current = 0;
+        if (firstExprIdx >= 0 && currentIdx < firstExprIdx) {
+          updateCurrentQuestionIndex(firstExprIdx);
+          return;
+        }
+      }
+      if (currentIdx < questions.length - 1) {
+        updateCurrentQuestionIndex(currentIdx + 1);
       } else {
-        setIncompleteSummaryConfirmOpen(true);
+        var answeredCount = dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
+        if (answeredCount >= questions.length) {
+          completeSession(updatedQuestionResults);
+        } else {
+          setIncompleteSummaryConfirmOpen(true);
+        }
       }
     }
+
+    if (shouldRunThreeInRowCelebration) {
+      startThreeInRowCelebration(advanceAfterResult);
+      return;
+    }
+
+    // All non-celebration paths continue immediately.
+    advanceAfterResult();
   };
 
   // =============================================================================
@@ -1850,32 +2070,41 @@ const handleReadingValidationRetry = function () {
 
 
   function loadAllQuestions() {
-    const ageGroupOrder = ["2:00-2:06", "2:07-3:00", "3:00-4:00", "4:00-5:00", "5:00-6:00"];
+    const normalizedGender = String(childGender || "").toLowerCase();
+    const useGirlQuery = normalizedGender === "female" || normalizedGender === "girl";
+    const useBoyQuery = normalizedGender === "male" || normalizedGender === "boy";
+
+    function pickQueryByGender(q) {
+      if (useGirlQuery) {
+        return q.query_girl || q.query || q.query_boy || "";
+      }
+      if (useBoyQuery) {
+        return q.query_boy || q.query || q.query_girl || "";
+      }
+      // No/unknown gender fallback must prefer boy column.
+      return q.query_boy || q.query || "";
+    }
 
     const filtered = allQuestions
       .filter(function (q) {
-        return q && q.query && q.query_type && q.age_group;
+        if (!q || !q.query_type || !q.age_group) return false;
+        var chosenQuery = pickQueryByGender(q);
+        return !!String(chosenQuery).trim();
       })
       .map(function (q) {
+        var chosenQuery = pickQueryByGender(q);
         return {
           ...q,
           query_type: q.query_type.trim().normalize("NFC"),
           age_group: q.age_group.trim().normalize("NFC"),
-          query: (q.query || "").trim(),
+          query: String(chosenQuery || "").trim(),
           comments: (q.comments || "").trim(), // Preserve comments field
         };
       });
 
-    // Sort by age group first (using predefined order), then by question number
+    // Single global order: query_number ascending (1…N). CSV rows define age metadata per question;
+    // comprehension precedes expression when numbers are assigned accordingly (e.g. 1–32 then 33–68).
     const sorted = filtered.sort(function (a, b) {
-      const ageGroupA = ageGroupOrder.indexOf(a.age_group);
-      const ageGroupB = ageGroupOrder.indexOf(b.age_group);
-
-      if (ageGroupA !== ageGroupB) {
-        return ageGroupA - ageGroupB;
-      }
-
-      // Within same age group, sort by query_number
       const numA = parseInt(a.query_number, 10) || 0;
       const numB = parseInt(b.query_number, 10) || 0;
       return numA - numB;
@@ -1895,6 +2124,13 @@ const handleReadingValidationRetry = function () {
     if (questionAudioAutoplayTimerRef.current) {
       clearTimeout(questionAudioAutoplayTimerRef.current);
       questionAudioAutoplayTimerRef.current = null;
+    }
+    if (questionAudioRef.current) {
+      try {
+        questionAudioRef.current.pause();
+        questionAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      questionAudioRef.current = null;
     }
     if (questionAudio) {
       try {
@@ -2042,7 +2278,8 @@ const handleReadingValidationRetry = function () {
       //play the audio
 
       // Load and play question audio
-      const audioUrl = "resources/questions_audio/audio_" + q.query_number + ".mp3";
+      const audioFolder = getQuestionAudioFolderByGender(childGender);
+      const audioUrl = "resources/questions_audio/" + audioFolder + "/audio_" + q.query_number + ".mp3";
       const audio = new Audio(audioUrl);
       audio.onended = function () {
         setIsAudioPlaying(false);
@@ -2050,6 +2287,7 @@ const handleReadingValidationRetry = function () {
       audio.onerror = function () {
         console.warn('Audio file not found for question:', q.query_number);
       };
+      questionAudioRef.current = audio;
       setQuestionAudio(audio);
       // Play audio automatically only after mic-check is passed.
       if (micCheckPassed) {
@@ -2146,7 +2384,26 @@ const handleReadingValidationRetry = function () {
     pendingCompleteAfterVerifyRef.current = null;
     setBlockFinishUntilVerifyOverlay(false);
 
+    stopQuestionAudioForSessionComplete();
+
     setImages([]);
+    setLastCompletedTestId(null);
+    setExpressionAiResult(null);
+    setExpressionAiLoading(false);
+    consecutiveCompFailRef.current = 0;
+    consecutiveExprFailRef.current = 0;
+
+    var handleUploadResult = function (result) {
+      if (result && result.transcription) {
+        setTranscription(result.transcription);
+      }
+      if (result && result.test_id) {
+        setLastCompletedTestId(result.test_id);
+      }
+      if (result && result.expression_ai) {
+        setExpressionAiResult(result.expression_ai);
+      }
+    };
 
     // Stop continuous session recording and send data to backend
     if (sessionRecordingStarted && permission) {
@@ -2193,10 +2450,8 @@ const handleReadingValidationRetry = function () {
               const fullArray = formatQuestionResultsArray(updatedQuestionResults);
               try {
                 const result = await updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-                  reader.result, data.timestampText); //MongoDB
-                if (result && result.transcription) {
-                  setTranscription(result.transcription);
-                }
+                  reader.result, data.timestampText, childGender); //MongoDB
+                handleUploadResult(result);
               } catch (e) {
                 console.error("updateUserTests after recording:", e);
               }
@@ -2211,10 +2466,8 @@ const handleReadingValidationRetry = function () {
             setSessionCompleted(true);
             const fullArray = formatQuestionResultsArray(updatedQuestionResults);
             updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-              null, null).then(function(result) {
-                if (result && result.transcription) {
-                  setTranscription(result.transcription);
-                }
+              null, null, childGender).then(function(result) {
+                handleUploadResult(result);
               }).catch(function(err) {
                 console.error("updateUserTests (no recording blob):", err);
               }); //MongoDB
@@ -2224,10 +2477,8 @@ const handleReadingValidationRetry = function () {
           setSessionCompleted(true);
           const fullArray = formatQuestionResultsArray(updatedQuestionResults);
           updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-            null, null).then(function(result) {
-              if (result && result.transcription) {
-                setTranscription(result.transcription);
-              }
+            null, null, childGender).then(function(result) {
+              handleUploadResult(result);
             }).catch(function(err) {
               console.error("updateUserTests after recording error:", err);
             }); //MongoDB
@@ -2241,10 +2492,8 @@ const handleReadingValidationRetry = function () {
       setSessionCompleted(true);
       const fullArray = formatQuestionResultsArray(updatedQuestionResults);
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-        null, null).then(function(result) {
-          if (result && result.transcription) {
-            setTranscription(result.transcription);
-          }
+        null, null, childGender).then(function(result) {
+          handleUploadResult(result);
         }).catch(function(err) {
           console.error("updateUserTests (no recording):", err);
         }); //MongoDB
@@ -2252,6 +2501,31 @@ const handleReadingValidationRetry = function () {
   }
 
   completeSessionRef.current = completeSession;
+
+  const refreshExpressionAiStatus = React.useCallback(async function () {
+    if (!lastCompletedTestId) return;
+    setExpressionAiLoading(true);
+    try {
+      const resp = await getExpressionAiStatus(idDigits, lastCompletedTestId);
+      if (resp && resp.expression_ai) {
+        setExpressionAiResult(resp.expression_ai);
+      }
+    } finally {
+      setExpressionAiLoading(false);
+    }
+  }, [idDigits, lastCompletedTestId]);
+
+  React.useEffect(function pollExpressionAiWhilePending() {
+    if (!sessionCompleted) return;
+    if (!lastCompletedTestId) return;
+    if (!expressionAiResult || expressionAiResult.status !== "pending") return;
+    const timer = setInterval(function () {
+      refreshExpressionAiStatus();
+    }, 5000);
+    return function () {
+      clearInterval(timer);
+    };
+  }, [sessionCompleted, lastCompletedTestId, expressionAiResult, refreshExpressionAiStatus]);
 
   // After Finish was blocked because reading verify was still processing, resume completion automatically.
   React.useEffect(function autoCompleteWhenVerifyReadyAfterFinish() {
@@ -2335,7 +2609,7 @@ const handleReadingValidationRetry = function () {
         loadAllQuestions();
       }
     },
-    [allQuestions, ageConfirmed]
+    [allQuestions, ageConfirmed, childGender]
   );
 
   // Load current question
@@ -2386,6 +2660,8 @@ const handleReadingValidationRetry = function () {
   function TestNavbar() {
     const isRecording = permission && sessionRecordingStarted;
     const showControls = voiceIdentifierConfirmed && !sessionCompleted;
+    const exprBlockNext = questionType === "E" && (!expressionTrafficSubmitted || expressionAdvanceLock);
+    const exprBlockPrev = questionType === "E" && evaluationEnabled && trafficPopupOpen;
     const AppNavbar = window.AppNavbar;
     if (!AppNavbar) {
       return React.createElement("div", { className: "test-navbar" }, null);
@@ -2410,9 +2686,12 @@ const handleReadingValidationRetry = function () {
         isRecording: !!isRecording,
         currentQuestionIndex: getCurrentQuestionIndex(),
         totalQuestions: questions.length,
+        navPrevDisabled: exprBlockPrev,
+        navNextDisabled: exprBlockNext,
         onPrevQuestion: goToPreviousQuestion,
         onNextQuestion: function () {
         var currentIdx = getCurrentQuestionIndex();
+        if (exprBlockNext) return;
         if (currentIdx < questions.length - 1) {
       updateCurrentQuestionIndex(currentIdx + 1);
     }
@@ -2432,6 +2711,8 @@ const handleReadingValidationRetry = function () {
     const showControls = voiceIdentifierConfirmed && !sessionCompleted;
     const isRtl = lang !== "en";
     const bunnyPosition = Math.max(4, isRtl ? (100 - progressPercentage) : progressPercentage);
+    var exprBlockNextPb = questionType === "E" && (!expressionTrafficSubmitted || expressionAdvanceLock);
+    var exprBlockPrevPb = questionType === "E" && evaluationEnabled && trafficPopupOpen;
     return React.createElement(
       "div",
       { className: "progress-bar-container" },
@@ -2447,6 +2728,7 @@ const handleReadingValidationRetry = function () {
           type: "button",
           className: "ctrl-btn",
           onClick: goToPreviousQuestion,
+          disabled: exprBlockPrevPb,
           title: tr("test.nav.back"),
           "aria-label": tr("test.nav.back.aria")
         },
@@ -2490,8 +2772,10 @@ const handleReadingValidationRetry = function () {
           type: "button",
           className: "ctrl-btn",
           onClick: function () {
+            if (exprBlockNextPb) return;
             updateCurrentQuestionIndex(currentIdx + 1);
           },
+          disabled: exprBlockNextPb,
           title: lang === "en" ? "Next question" : "השאלה הבאה",
           "aria-label": lang === "en" ? "Next question" : "השאלה הבאה"
         },
@@ -2504,7 +2788,10 @@ const handleReadingValidationRetry = function () {
 
 function renderBottomActions() {
   if (questionType === "E") {
-    var hasExpressionHint = !!(hintText && hintText.trim() !== "");
+    var hasExpressionHint = ENABLE_EXPRESSION_HINTS && !!(hintText && hintText.trim() !== "");
+    var evalProgressRatio = Math.max(0, Math.min(1, expressionEvalMsLeft / EXPRESSION_EVAL_DELAY_MS));
+    var evalSecondsLeft = Math.max(0, Math.ceil(expressionEvalMsLeft / 1000));
+    var showExpressionCountdown = !evaluationEnabled && !trafficPopupOpen && !showContinue;
     return React.createElement(
       "div",
       { className: "question-bottom-actions question-bottom-actions--expression" },
@@ -2542,17 +2829,36 @@ function renderBottomActions() {
           "button",
           {
             type: "button",
-           className: "question-bottom-actions__eval-btn question-bottom-actions__btn--plain" +     
-           (evaluationEnabled ? " question-bottom-actions__eval-btn--signaled" : ""),
+            className: "question-bottom-actions__eval-btn question-bottom-actions__btn--plain",
             onClick: function () { setTrafficPopupOpen(true); },
             disabled: trafficPopupOpen || showContinue,
 
             title: tr("test.evaluate.label"),
             "aria-label": tr("test.evaluate.label"),
           },
-          React.createElement("span", { className: "question-bottom-actions__emoji" }, "🚦"),
-          React.createElement("span", null, tr("test.evaluate.label"))
-        )
+          React.createElement(
+            "span",
+            { className: "question-bottom-actions__eval-compact" },
+            React.createElement("span", { className: "question-bottom-actions__emoji question-bottom-actions__emoji--eval" }, "🚦"),
+            React.createElement("span", { className: "question-bottom-actions__eval-label" }, tr("test.evaluate.label"))
+          )
+        ),
+        showExpressionCountdown
+          ? React.createElement(
+              "span",
+              {
+                className: "expression-eval-countdown expression-eval-countdown--inline expression-eval-countdown--bar-end",
+                "aria-live": "polite",
+              },
+              React.createElement("span", { className: "expression-eval-countdown__icon", "aria-hidden": "true" }, "\u23F3"),
+              React.createElement(
+                "span",
+                { className: "expression-eval-countdown__track expression-eval-countdown__track--vertical" },
+                React.createElement("span", { className: "expression-eval-countdown__fill expression-eval-countdown__fill--vertical", style: { height: (evalProgressRatio * 100).toFixed(1) + "%" } })
+              ),
+              React.createElement("span", { className: "expression-eval-countdown__text expression-eval-countdown__text--vertical" }, evalSecondsLeft + "s")
+            )
+          : null
       )
     );
   }
@@ -2664,6 +2970,48 @@ function renderConfettiOverlay() {
           transform: "translateY(-14vh) rotate(" + ((i * 31) % 360) + "deg)"
         }
       });
+    })
+  );
+}
+
+function renderClappingAvatarOverlay() {
+  if (!showClappingAvatar) return null;
+  return React.createElement(
+    "div",
+    {
+      className: "clapping-avatar-overlay",
+      style: {
+        position: "fixed",
+        inset: 0,
+        zIndex: 10003,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        pointerEvents: "none"
+      },
+      "aria-hidden": "true"
+    },
+    React.createElement("video", {
+      className: "clapping-avatar-overlay__video",
+      style: {
+        width: "min(88vw, 860px)",
+        height: "min(78vh, 860px)",
+        objectFit: "contain",
+        filter: "drop-shadow(0 10px 22px rgba(0, 0, 0, 0.22))"
+      },
+      src: "resources/avatar/clapping.webm",
+      autoPlay: true,
+      playsInline: true,
+      preload: "auto",
+      muted: false,
+      onEnded: function () {
+        streakVideoDoneRef.current = true;
+        maybeFinishStreakCelebration();
+      },
+      onError: function () {
+        streakVideoDoneRef.current = true;
+        maybeFinishStreakCelebration();
+      }
     })
   );
 }
@@ -3075,8 +3423,11 @@ function renderExpectedAnswerNote() {
     })();
 
     const ageMatchedStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
+    const ageMatchedCompStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
     const strengtheningGoals = [];
     const strengtheningGoalSet = {};
+    const strengtheningGoalsComp = [];
+    const strengtheningGoalSetComp = {};
     questionResults.forEach(function (item) {
       const qNum = parseInt(item.questionNumber, 10);
       const q = questionByNumber[qNum];
@@ -3091,6 +3442,20 @@ function renderExpectedAnswerNote() {
         if (goal && !strengtheningGoalSet[goal]) {
           strengtheningGoalSet[goal] = true;
           strengtheningGoals.push(goal);
+        }
+      }
+      if (item.questionType === "comprehension") {
+        ageMatchedCompStats.total += 1;
+        if (item.result === "correct") ageMatchedCompStats.correct += 1;
+        else if (item.result === "partly") ageMatchedCompStats.partial += 1;
+        else if (item.result === "wrong") {
+          ageMatchedCompStats.wrong += 1;
+          const goalC =
+            (q.test_goal || q.testGoal || q["TEST GOAL"] || q.test_goal_he || q.test_goal_en || "").toString().trim();
+          if (goalC && !strengtheningGoalSetComp[goalC]) {
+            strengtheningGoalSetComp[goalC] = true;
+            strengtheningGoalsComp.push(goalC);
+          }
         }
       }
     });
@@ -3118,10 +3483,39 @@ function renderExpectedAnswerNote() {
       return lang === "en" ? "Balanced between comprehension and expression" : "מאוזן בין הבנה להבעה";
     })();
 
+    const hasExpressionQuestions = exprStats.total > 0;
+    var expressionAiStatus = expressionAiResult && expressionAiResult.status;
+    const expressionAiResolved =
+      !hasExpressionQuestions ||
+      (expressionAiResult &&
+        (expressionAiStatus === "done" || expressionAiStatus === "failed"));
+    const expressionFeedbackPending =
+      hasExpressionQuestions &&
+      lastCompletedTestId &&
+      (!expressionAiResult ||
+        expressionAiStatus === "pending" ||
+        expressionAiLoading);
+    const ageMatchedForDisplay =
+      !hasExpressionQuestions || expressionAiResolved ? ageMatchedStats : ageMatchedCompStats;
+    const strengtheningGoalsShown = expressionAiResolved ? strengtheningGoals : strengtheningGoalsComp;
+
+    const parentExprByQ = {};
+    questionResults.forEach(function (item) {
+      if (item.questionType !== "expression") return;
+      parentExprByQ[String(item.questionNumber)] = item.result;
+    });
+
     const statsLine = function (titleHe, titleEn, stats) {
       const title = lang === "en" ? titleEn : titleHe;
       return title + ": " + stats.correct + " ✔ / " + stats.partial + " ~ / " + stats.wrong + " ✖ מתוך " + stats.total;
     };
+
+    function parentEvalLabel(result) {
+      if (result === "correct") return lang === "en" ? "Success" : "הצליח";
+      if (result === "partly") return lang === "en" ? "Partial" : "חלקי";
+      if (result === "wrong") return lang === "en" ? "Wrong" : "שגוי";
+      return "—";
+    }
 
     // Download recording function
     const downloadRecording = function () {
@@ -3237,7 +3631,7 @@ function renderExpectedAnswerNote() {
       )
     ),
 
-      // Age-matched summary (parent-facing)
+      // Age-matched summary: comprehension-only until expression AI is ready (then full age band)
       React.createElement(
         "div",
         { style: { width: "min(100%, 720px)", margin: "8px auto 0", textAlign: "center" } },
@@ -3245,19 +3639,23 @@ function renderExpectedAnswerNote() {
           "p",
           { style: { margin: "0 0 6px", fontWeight: 700 } },
           lang === "en"
-            ? "Age-matched results"
-            : "סיכום לפי גיל הילד"
+            ? (!hasExpressionQuestions || expressionAiResolved
+              ? "Age-matched results"
+              : "Comprehension (age-matched) — expression follows after AI")
+            : (!hasExpressionQuestions || expressionAiResolved
+              ? "סיכום לפי גיל הילד"
+              : "הבנה — סיכום לפי גיל (פרטי הבעה אחרי משוב AI)")
         ),
         React.createElement(
           "p",
           { style: { margin: 0 } },
           lang === "en"
-            ? ("Your child answered " + ageMatchedStats.correct + " correct, " + ageMatchedStats.partial + " with help, and " + ageMatchedStats.wrong + " incorrect out of " + ageMatchedStats.total + " questions matching their age group (" + expectedAgeGroupDisplay + ").")
-            : (" ענה נכון על " + ageMatchedStats.correct + " תשובות מהשאלות המתאימות לגילו הכרונולוגי (" + expectedAgeGroupDisplay + "). " +
-               ageMatchedStats.partial + " תשובות עם עזרה ו-" + ageMatchedStats.wrong + " תשובות שגויות (מתוך " + ageMatchedStats.total + ").")
+            ? ("Your child answered " + ageMatchedForDisplay.correct + " correct, " + ageMatchedForDisplay.partial + " with help, and " + ageMatchedForDisplay.wrong + " incorrect out of " + ageMatchedForDisplay.total + " age-matched questions (" + expectedAgeGroupDisplay + ").")
+            : ("ענה נכון על " + ageMatchedForDisplay.correct + " תשובות מהשאלות המתאימות לגיל (" + expectedAgeGroupDisplay + "). " +
+               ageMatchedForDisplay.partial + " תשובות עם עזרה ו-" + ageMatchedForDisplay.wrong + " תשובות שגויות (מתוך " + ageMatchedForDisplay.total + ").")
         )
       ),
-      strengtheningGoals.length > 0
+      strengtheningGoalsShown.length > 0
         ? React.createElement(
             "div",
             { style: { width: "min(100%, 720px)", margin: "10px auto 0", textAlign: "center" } },
@@ -3271,7 +3669,7 @@ function renderExpectedAnswerNote() {
             React.createElement(
               "div",
               { style: { display: "grid", gap: "6px" } },
-              strengtheningGoals.map(function (g) {
+              strengtheningGoalsShown.map(function (g) {
                 return React.createElement(
                   "div",
                   { key: g, style: { padding: "10px 12px", borderRadius: "14px", background: "rgba(66, 171, 199, 0.08)", border: "1px solid rgba(66, 171, 199, 0.18)" } },
@@ -3281,15 +3679,54 @@ function renderExpectedAnswerNote() {
             )
           )
         : null,
-      // Keep detailed breakdown (useful for internal use)
+      // By category: comprehension always; expression summary only after AI; single “waiting” control for expression AI
       React.createElement(
         "div",
         { style: { display: "grid", gap: "6px", marginTop: "14px", textAlign: "center" } },
         React.createElement("strong", null, lang === "en" ? "By category:" : "לפי קטגוריה:"),
         React.createElement("span", null, statsLine("הבנה", "Comprehension", compStats)),
-        React.createElement("span", null, statsLine("הבעה", "Expression", exprStats)),
-        React.createElement("span", { style: { marginTop: "4px", fontWeight: 600 } }, strongerLabel)
+        expressionAiResolved
+          ? React.createElement("span", null, statsLine("הבעה", "Expression", exprStats))
+          : hasExpressionQuestions
+            ? React.createElement(
+                "span",
+                { style: { fontSize: "14px", color: "#5a6b70" } },
+                lang === "en"
+                  ? "Expression: results will appear with AI feedback (parent + model)."
+                  : "הבעה: הסיכום יוצג יחד עם משוב ה-AI (הורים + מודל)."
+              )
+            : null,
+        expressionAiResolved
+          ? React.createElement("span", { style: { marginTop: "4px", fontWeight: 600 } }, strongerLabel)
+          : null
       ),
+      hasExpressionQuestions && lastCompletedTestId && expressionFeedbackPending
+        ? React.createElement(
+            "div",
+            { style: { marginTop: "12px", textAlign: "center" } },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                disabled: true,
+                style: {
+                  padding: "10px 18px",
+                  fontSize: "15px",
+                  backgroundColor: "#9aa3b2",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "8px",
+                  cursor: "not-allowed",
+                  opacity: 0.9,
+                  maxWidth: "min(100%, 520px)"
+                }
+              },
+              lang === "en"
+                ? "Expression AI feedback (0–2 scoring + summary) will be ready shortly…"
+                : "משוב הבעה מה-AI (ציון 0–2 והתרשמות) יהיה זמין בקרוב…"
+            )
+          )
+        : null,
       // Download buttons container (recording MP3 + detailed results text only; no combined download)
       React.createElement(
         "div",
@@ -3331,8 +3768,262 @@ function renderExpectedAnswerNote() {
         },
         tr("test.done.downloadTimestamps")
       )
+      ),
+      expressionAiResolved && hasExpressionQuestions && expressionAiResult
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                marginTop: "18px",
+                width: "min(100%, 720px)",
+                marginLeft: "auto",
+                marginRight: "auto",
+                padding: "14px 14px 16px",
+                textAlign: "start",
+                background: "#f7f8fd",
+                border: "1px solid #d7defb",
+                borderRadius: "12px",
+                display: "grid",
+                gap: "14px"
+              }
+            },
+            React.createElement(
+              "div",
+              { style: { fontWeight: 800, fontSize: "17px", textAlign: "center", color: "#20364a" } },
+              lang === "en" ? "Expression — parent traffic lights & AI" : "הבעה — מחוון הורים ומשוב AI"
+            ),
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
+                lang === "en" ? "1. Parent evaluation (traffic lights)" : "1. הערכת הורים (מחוון)"
+              ),
+              React.createElement(
+                "p",
+                { style: { margin: "0 0 8px", fontSize: "14px" } },
+                statsLine(
+                  "הערכת הורים",
+                  "Parent evaluation",
+                  exprStats
+                )
+              ),
+              React.createElement(
+                "div",
+                { style: { overflowX: "auto" } },
+                (function () {
+                  var th = { padding: "8px 10px", border: "1px solid #cfd8ea", background: "#eef2fb", fontWeight: 700, fontSize: "13px" };
+                  var td = { padding: "8px 10px", border: "1px solid #e2e6f0", fontSize: "13px" };
+                  var qNums = Object.keys(parentExprByQ).sort(function (a, b) {
+                    return parseInt(a, 10) - parseInt(b, 10);
+                  });
+                  return React.createElement(
+                    "table",
+                    { style: { width: "100%", borderCollapse: "collapse", marginTop: "4px" } },
+                    React.createElement(
+                      "thead",
+                      null,
+                      React.createElement(
+                        "tr",
+                        null,
+                        React.createElement("th", { style: th }, lang === "en" ? "Q#" : "שאלה"),
+                        React.createElement("th", { style: th }, lang === "en" ? "Parent" : "הורים")
+                      )
+                    ),
+                    React.createElement(
+                      "tbody",
+                      null,
+                      qNums.map(function (qn) {
+                        return React.createElement(
+                          "tr",
+                          { key: "par-expr-" + qn },
+                          React.createElement("td", { style: td }, qn),
+                          React.createElement("td", { style: td }, parentEvalLabel(parentExprByQ[qn]))
+                        );
+                      })
+                    )
+                  );
+                })()
+              )
+            ),
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
+                lang === "en" ? "2. AI scoring (0 / 1 / 2)" : "2. ציון AI (0 / 1 / 2)"
+              ),
+              (function () {
+                var rows = Array.isArray(expressionAiResult.per_question) ? expressionAiResult.per_question : [];
+                var successCount = 0;
+                var partialCount = 0;
+                var wrongCount = 0;
+                rows.forEach(function (r) {
+                  var s = Number(r && r.ai_score);
+                  if (s === 2) successCount += 1;
+                  else if (s === 1) partialCount += 1;
+                  else wrongCount += 1;
+                });
+                var aiStats = {
+                  correct: successCount,
+                  partial: partialCount,
+                  wrong: wrongCount,
+                  total: rows.length
+                };
+                return React.createElement(
+                  React.Fragment,
+                  null,
+                  React.createElement(
+                    "p",
+                    { style: { margin: "0 0 8px", fontSize: "14px" } },
+                    statsLine("מודל AI (0–2)", "AI model (0–2)", aiStats)
+                  ),
+                  React.createElement(
+                    "div",
+                    { style: { overflowX: "auto" } },
+                    (function () {
+                      var th = { padding: "8px 10px", border: "1px solid #cfd8ea", background: "#eef2fb", fontWeight: 700, fontSize: "12px" };
+                      var td = { padding: "8px 10px", border: "1px solid #e2e6f0", fontSize: "12px" };
+                      var obsLabelsEn = {
+                        child_response_clear: "Clear child speech",
+                        single_speaker_examinee_clear: "Single speaker (lab/adult test)",
+                        no_audible_speech: "No audible speech",
+                        only_noise_or_unclear: "Noise / unclear only",
+                        adult_or_parent_only_no_child: "Adult/parent only (no child)",
+                        mixed_speakers_child_segment_unclear: "Mixed speakers — child unclear",
+                        manual_review_fallback: "Pipeline fallback / manual review",
+                      };
+                      var obsLabelsHe = {
+                        child_response_clear: "דיבור ילד ברור",
+                        single_speaker_examinee_clear: "דובר יחיד (בדיקה / מבוגר)",
+                        no_audible_speech: "אין דיבור ברור",
+                        only_noise_or_unclear: "רעש / לא ברור",
+                        adult_or_parent_only_no_child: "מבוגר בלבד (בלי ילד נפרד)",
+                        mixed_speakers_child_segment_unclear: "כמה דוברים — לא ניתן לבודד ילד",
+                        manual_review_fallback: "נפילת צינור / ביקורת ידנית",
+                      };
+                      return React.createElement(
+                        "table",
+                        { style: { width: "100%", borderCollapse: "collapse", marginTop: "4px" } },
+                        React.createElement(
+                          "thead",
+                          null,
+                          React.createElement(
+                            "tr",
+                            null,
+                            React.createElement("th", { style: th }, lang === "en" ? "Q#" : "שאלה"),
+                            React.createElement("th", { style: th }, lang === "en" ? "Parent" : "הורים"),
+                            React.createElement("th", { style: th }, "AI"),
+                            React.createElement("th", { style: th }, lang === "en" ? "Listen" : "שמיעה"),
+                            React.createElement("th", { style: th }, lang === "en" ? "Note" : "הערה")
+                          )
+                        ),
+                        React.createElement(
+                          "tbody",
+                          null,
+                          rows.map(function (r, idx) {
+                            var qn = String((r && r.question_number) != null ? r.question_number : "");
+                            var pr = parentExprByQ[qn];
+                            var score = Number(r && r.ai_score);
+                            var aiLabel = score === 2
+                              ? (lang === "en" ? "2" : "2")
+                              : score === 1
+                                ? "1"
+                                : "0";
+                            var obsKey = r && r.ai_speaker_observation;
+                            var obsHuman = obsKey
+                              ? ((lang === "en" ? obsLabelsEn : obsLabelsHe)[obsKey] || obsKey)
+                              : "";
+                            var reasonTxt = (r && r.ai_reason_short) ? String(r.ai_reason_short) : "";
+                            return React.createElement(
+                              "tr",
+                              { key: "expr-compare-" + idx },
+                              React.createElement("td", { style: td }, qn || "—"),
+                              React.createElement("td", { style: td }, parentEvalLabel(pr)),
+                              React.createElement("td", { style: td }, aiLabel),
+                              React.createElement("td", { style: td }, obsHuman || "—"),
+                              React.createElement("td", { style: td }, reasonTxt || "—")
+                            );
+                          })
+                        )
+                      );
+                    })()
+                  )
+                );
+              })()
+            ),
+            (function () {
+              var eli = expressionAiResult && expressionAiResult.expressive_language_impression;
+              if (!eli) return null;
+              return React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
+                  lang === "en" ? "3. Short impression (AI, sample-based)" : "3. התרשמות קצרה (AI, לפי דגימות)"
+                ),
+                eli.status === "done" && eli.summary_paragraph_he
+                  ? React.createElement(
+                      "div",
+                      {
+                        style: {
+                          padding: "12px 12px",
+                          borderRadius: "10px",
+                          background: "linear-gradient(180deg, rgba(66, 171, 199, 0.09), rgba(91, 108, 245, 0.06))",
+                          border: "1px solid rgba(66, 171, 199, 0.22)"
+                        }
+                      },
+                      React.createElement(
+                        "p",
+                        { style: { margin: 0, fontSize: "15px", lineHeight: 1.55, color: "#2a3d4a" } },
+                        eli.summary_paragraph_he
+                      ),
+                      Array.isArray(eli.observed_strengths) && eli.observed_strengths.length > 0
+                        ? React.createElement(
+                            "p",
+                            { style: { margin: "10px 0 0", fontSize: "13px", color: "#445" } },
+                            (lang === "en" ? "Noted strengths: " : "נקודות חוזק: ") + eli.observed_strengths.join(" · ")
+                          )
+                        : null,
+                      Array.isArray(eli.observed_challenges) && eli.observed_challenges.length > 0
+                        ? React.createElement(
+                            "p",
+                            { style: { margin: "6px 0 0", fontSize: "13px", color: "#445" } },
+                            (lang === "en" ? "Patterns: " : "דפוסים: ") + eli.observed_challenges.join(" · ")
+                          )
+                        : null,
+                      eli.phonology_separate_note_he
+                        ? React.createElement(
+                            "p",
+                            { style: { margin: "8px 0 0", fontSize: "12px", color: "#556", fontStyle: "italic" } },
+                            lang === "en" ? ("Articulation: " + eli.phonology_separate_note_he) : ("היגוי: " + eli.phonology_separate_note_he)
+                          )
+                        : null,
+                      eli.limitations_he
+                        ? React.createElement(
+                            "p",
+                            { style: { margin: "8px 0 0", fontSize: "12px", color: "#666" } },
+                            lang === "en" ? ("Limitations: " + eli.limitations_he) : ("הגבלות: " + eli.limitations_he)
+                          )
+                        : null
+                    )
+                  : React.createElement(
+                      "p",
+                      { style: { margin: 0, fontSize: "14px", color: "#555" } },
+                      eli.limitations_he ||
+                        eli.reason ||
+                        (lang === "en"
+                          ? "Expressive-language impression was not generated for this session."
+                          : "לא נוצרה התרשמות הבעה למפגש זה.")
+                    )
+              );
+            })()
+          )
+        : null
       )
-    )
     );
   }
 
@@ -3423,6 +4114,22 @@ function renderExpectedAnswerNote() {
     (questionType === "C" ? " images-container--comprehension" : " images-container--expression");
   const shouldShowSpeakerStatusUi =
     !sessionCompleted && !trafficPopupOpen && !showContinue;
+  const getTrafficOptionExample = function (resultKey) {
+    if (!currentQuestion) return "";
+    if (resultKey === "success") return String(currentQuestion.expected_full_parents || "").trim();
+    if (resultKey === "partial") return String(currentQuestion.expected_partial || "").trim();
+    return String(currentQuestion.expected_wrong || "").trim();
+  };
+  const renderTrafficOptionExample = function (resultKey) {
+    var exampleText = getTrafficOptionExample(resultKey);
+    if (!exampleText) return null;
+    return React.createElement(
+      "div",
+      { className: "traffic-option__desc" },
+      React.createElement("span", { className: "traffic-option__example-prefix" }, tr("test.trafficPopup.examplePrefix") + " "),
+      exampleText
+    );
+  };
   // Main UI
   return React.createElement(
     "div",
@@ -3430,6 +4137,7 @@ function renderExpectedAnswerNote() {
       className: "app-container"
     },
     renderConfettiOverlay(),
+    renderClappingAvatarOverlay(),
 
     blockFinishUntilVerifyOverlay
       ? React.createElement(
@@ -3636,6 +4344,7 @@ function renderExpectedAnswerNote() {
             }
           },
           (function () {
+            if (questionType === "E" && evaluationEnabled) return null;
             const fallbackBack = lang === "en" ? "↪️ Back" : "↪️ חזור";
             const fallbackAria = lang === "en" ? "Back to question" : "חזרה לשאלה";
             const backLabel = (function () {
@@ -3660,7 +4369,7 @@ function renderExpectedAnswerNote() {
           React.createElement(
             "div",
             { className: "traffic-popup__grid" },
-            questionType === "E" && hintWasUsedThisQuestion
+            ENABLE_EXPRESSION_HINTS && questionType === "E" && hintWasUsedThisQuestion
               ? null
               : React.createElement(
                   "button",
@@ -3670,27 +4379,40 @@ function renderExpectedAnswerNote() {
                     onClick: function () { handleTrafficPopupChoice("success"); },
                     disabled: !!trafficPopupChoice,
                   },
-                  React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title"))
+                  React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.green.title")),
+                  renderTrafficOptionExample("success")
                 ),
             React.createElement(
               "button",
               {
                 type: "button",
-                className: "traffic-option traffic-option--orange",
+                className: "traffic-option traffic-option--lime",
                 onClick: function () { handleTrafficPopupChoice("partial"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.orange.title"))
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.orange.title")),
+              renderTrafficOptionExample("partial")
             ),
             React.createElement(
               "button",
               {
                 type: "button",
-                className: "traffic-option traffic-option--red",
+                className: "traffic-option traffic-option--amber",
                 onClick: function () { handleTrafficPopupChoice("failure"); },
                 disabled: !!trafficPopupChoice,
               },
-              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title"))
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.midFailure.title"))
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "traffic-option traffic-option--yellow",
+                onClick: function () { handleTrafficPopupChoice("failure"); },
+                disabled: !!trafficPopupChoice,
+              },
+              React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.red.title")),
+              renderTrafficOptionExample("failure")
             )
           ),
           trafficPopupChoice

@@ -119,7 +119,7 @@ function App() {
 
   // Load CSV and start image loading as soon as the site opens
   React.useEffect(() => {
-    Papa.parse("resources/query_database.csv?v=20250218-1", {
+    Papa.parse("resources/query_database.csv?v=20260502-1", {
       download: true,
       header: true,
       complete: function (res) {
@@ -244,7 +244,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 1"
+      "version 2"
     ),
     // Landscape orientation overlay — shown only in test mode + portrait
     React.createElement(

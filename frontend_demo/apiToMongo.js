@@ -9,6 +9,24 @@ var TEMP_BACKEND_USER_ID_SESSION_KEY = "seeandsayTempBackendUserId";
 
 var inMemoryTempBackendUserId = null;
 
+function getApiBaseUrl() {
+  if (window && window.SEEANDSAY_API_BASE_URL) {
+    var configured = String(window.SEEANDSAY_API_BASE_URL).replace(/\/+$/, "");
+    // Guard against pointing API to static file server port by mistake.
+    if (/^https?:\/\/(localhost|127\.0\.0\.1):8000$/i.test(configured)) {
+      var sameHost = (window && window.location && window.location.hostname) ? window.location.hostname : "127.0.0.1";
+      return "http://" + sameHost + ":8001";
+    }
+    return configured;
+  }
+  var isLocalHost = window && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+  if (isLocalHost) {
+    var host = window.location.hostname || "127.0.0.1";
+    return "http://" + host + ":8001";
+  }
+  return "https://seeandsay-backend.onrender.com";
+}
+
 function getOrCreateTempBackendUserId() {
   try {
     if (typeof sessionStorage !== "undefined") {
@@ -44,7 +62,7 @@ function resolveBackendUserId(storedUserId) {
 
 // create user
 async function createUser(userId, userName) {
-  const url = "https://seeandsay-backend.onrender.com/api/createUser";
+  const url = getApiBaseUrl() + "/api/createUser";
   var apiUserId = resolveBackendUserId(userId);
 
   try {
@@ -75,8 +93,8 @@ async function createUser(userId, userName) {
 // full_array --> is the new, full array of right and wrong
 async function updateUserTests(userId, ageYears, ageMonths,
                     full_array,correct, partly, wrong,
-                    audioBase64, timestampText) {
-  const url = "https://seeandsay-backend.onrender.com/api/addTestToUser";
+                    audioBase64, timestampText, childGender) {
+  const url = getApiBaseUrl() + "/api/addTestToUser";
   var apiUserId = resolveBackendUserId(userId);
 
   try {
@@ -99,7 +117,8 @@ async function updateUserTests(userId, ageYears, ageMonths,
         partly: partly,
         wrong: wrong,
         audioFile64: audioBase64,        // Base64 string: "data:audio/mpeg;base64,..."
-        timestamps: timestampText
+        timestamps: timestampText,
+        childGender: childGender || null
       }),
     });
 
@@ -119,7 +138,7 @@ async function updateUserTests(userId, ageYears, ageMonths,
 
 // Speaker Verification API call
 async function verifySpeaker(userId, audioFile64) {
-  const url = "https://seeandsay-backend.onrender.com/api/VerifySpeaker";
+  const url = getApiBaseUrl() + "/api/VerifySpeaker";
   var apiUserId = resolveBackendUserId(userId);
 
   try {
@@ -156,6 +175,20 @@ async function verifySpeaker(userId, audioFile64) {
   } catch (err) {
     console.error("❌ Speaker verification error:", err);
     // Return null on network errors to allow testing without backend connection
+    return null;
+  }
+}
+
+async function getExpressionAiStatus(userId, testId) {
+  if (!testId) return null;
+  var apiUserId = resolveBackendUserId(userId);
+  var url = getApiBaseUrl() + "/api/expressionAiStatus?userId=" + encodeURIComponent(apiUserId) + "&testId=" + encodeURIComponent(testId);
+  try {
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) throw new Error("Server responded with status " + response.status);
+    return await response.json();
+  } catch (err) {
+    console.error("❌ Failed to fetch expression AI status:", err);
     return null;
   }
 }
