@@ -17,10 +17,10 @@ function BottomNav({ page, setPage, t }) {
         className={page === "test" ? "active" : ""}
         onClick={() => setPage("test")}
         aria-current={page === "test" ? "page" : undefined}
-        aria-label={t ? t("nav.test.aria") : "Test"}
+        aria-label={t ? t("nav.test.aria") : "Game"}
       >
         <span className="icon">🧪</span>
-        <span className="label">{t ? t("nav.test") : "Test"}</span>
+        <span className="label">{t ? t("nav.test") : "Game"}</span>
       </button>
 
       <button

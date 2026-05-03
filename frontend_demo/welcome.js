@@ -5,11 +5,49 @@
  */
 function Welcome({ lang, setPage, onRequestStartTest }) {
   const isEn = lang === "en";
-  const orderedScreens = ["screen1", "screen2"];
+  const ENABLE_SCREEN1_INTRO_VIDEO = true;
+  const orderedScreens = ["screen1", "screen1_video", "screen2"];
   // const orderedScreens = ["screen1", "screen2", "screen3", "screen4"];
   const [activeScreen, setActiveScreen] = React.useState("screen1");
   const [tipsOpen, setTipsOpen] = React.useState(false);
+  const introVideoRef = React.useRef(null);
+  const introVideoAutoplayBlockedRef = React.useRef(false);
   const activeIndex = orderedScreens.indexOf(activeScreen);
+
+  React.useEffect(function tryAutoplayIntroVideo() {
+    if (activeScreen !== "screen1_video") return;
+    const el = introVideoRef.current;
+    if (!el) return;
+    introVideoAutoplayBlockedRef.current = false;
+    el.muted = false;
+    const p = el.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(function () {
+        introVideoAutoplayBlockedRef.current = true;
+      });
+    }
+  }, [activeScreen]);
+
+  React.useEffect(function retryIntroVideoOnFirstInteraction() {
+    if (activeScreen !== "screen1_video") return;
+    function tryStart() {
+      if (!introVideoAutoplayBlockedRef.current) return;
+      const el = introVideoRef.current;
+      if (!el) return;
+      const p = el.play();
+      if (p && typeof p.then === "function") {
+        p.then(function () {
+          introVideoAutoplayBlockedRef.current = false;
+        }).catch(function () {});
+      }
+    }
+    document.addEventListener("pointerdown", tryStart, { passive: true });
+    document.addEventListener("touchstart", tryStart, { passive: true });
+    return function () {
+      document.removeEventListener("pointerdown", tryStart);
+      document.removeEventListener("touchstart", tryStart);
+    };
+  }, [activeScreen]);
 
   function goPrev() {
     if (activeIndex <= 0) return;
@@ -67,6 +105,29 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               className="onboarding-illustration-slot__image"
             />
           </div>
+        </section>
+      );
+    }
+
+    if (activeScreen === "screen1_video") {
+      return (
+        <section className="onboarding-screen onboarding-screen--intro-video-only">
+          <video
+            ref={introVideoRef}
+            className="onboarding-intro-video-only__video"
+            src="resources/avatar/intro1.webm"
+            autoPlay
+            playsInline
+            preload="auto"
+            onEnded={function () {
+              introVideoAutoplayBlockedRef.current = false;
+              setActiveScreen("screen2");
+            }}
+            onError={function () {
+              introVideoAutoplayBlockedRef.current = false;
+              setActiveScreen("screen2");
+            }}
+          />
         </section>
       );
     }
@@ -145,7 +206,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
                 else setPage("test");
               }}
             >
-              {isEn ? "Start test" : "התחל"}
+              {isEn ? "Start game" : "התחל משחק"}
             </button>
           </div>
         </section>
@@ -184,7 +245,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               </div>
             </article>
           </div>
-          <p className="onboarding-s3-note">{isEn ? "Pay attention to these icons during the test to identify the question type." : "שימו לב לאייקונים אלו במהלך המבחן לזיהוי סוג השאלה"}</p>
+          <p className="onboarding-s3-note">{isEn ? "Pay attention to these icons during the game to spot the question type." : "שימו לב לאייקונים האלה במהלך המשחק כדי לזהות את סוג השאלה"}</p>
         </section>
       );
     }
@@ -218,7 +279,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
                 else setPage("test");
               }}
             >
-              {isEn ? "Start test" : "התחל"}
+              {isEn ? "Start game" : "התחל משחק"}
             </button>
           </div>
         </section>
@@ -231,7 +292,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     <div className="onboarding-flow">
       <div className="onboarding-frame">{renderScreenBody()}</div>
 
-      <div className="onboarding-nav">
+      <div className="onboarding-nav" style={{ visibility: activeScreen === "screen1_video" ? "hidden" : "visible" }}>
         {activeIndex >= 2
           ? React.createElement(
               "button",
@@ -264,7 +325,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       {tipsOpen ? (
         <div className="onboarding-modal-overlay" role="dialog" aria-modal="true" onClick={function () { setTipsOpen(false); }}>
           <div className="onboarding-modal" onClick={function (e) { e.stopPropagation(); }}>
-            <h2 className="onboarding-title">{isEn ? "Tips for smooth flow" : "טיפים חשובים למבחן"}</h2>
+            <h2 className="onboarding-title">{isEn ? "Tips for a smooth game" : "טיפים חשובים למשחק"}</h2>
             <div className="onboarding-tips-list">
               <div className="onboarding-tip-line">🔇 {isEn ? "Sit in a quiet place." : "שבו במקום שקט"}</div>
               <div className="onboarding-tip-line">⏳ {isEn ? "Let the child answer at their own pace." : "תנו לילד לענות בקצב שלו"}</div>

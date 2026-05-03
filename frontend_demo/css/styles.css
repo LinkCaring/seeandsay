@@ -2143,18 +2143,20 @@ button {
 
 
 .traffic-popup {
-  width: min(360px, 96vw);
+  width: min(460px, 96vw);
   background: rgba(255, 255, 255, 0.97);
   border-radius: 18px 18px 12px 12px;
   border: 1px solid rgba(48, 67, 72, 0.10);
   box-shadow: 0 12px 30px rgba(48, 67, 72, 0.16);
-  padding: 62px 14px 12px;
+  padding: 62px 16px 14px;
   text-align: center;
   animation: traffic-popup-up 180ms ease-out both;
   position: relative;
   overflow: hidden;
   pointer-events: auto;
   font-family: var(--font-family);
+  max-height: 78vh;
+  overflow-y: auto;
 }
 
 @keyframes traffic-popup-up {
@@ -2255,17 +2257,20 @@ button {
 .traffic-option {
   border: none;
   border-radius: 18px;
-  padding: 12px 12px;
+  padding: 14px 14px;
   cursor: pointer;
-  text-align: center;
+  text-align: start;
   font-family: var(--font-family);
   box-shadow: 0 14px 30px rgba(48, 67, 72, 0.12);
   transition: transform var(--transition-base), box-shadow var(--transition-base), filter var(--transition-base);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 6px;
 }
+[dir="rtl"] .traffic-option { text-align: right; }
+[dir="ltr"] .traffic-option { text-align: left; }
 
 .traffic-option:active {
   transform: translateY(1px);
@@ -2278,7 +2283,7 @@ button {
 }
 
 .traffic-option__title {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 800;
   line-height: 1.22;
   letter-spacing: 0;
@@ -2314,9 +2319,13 @@ button {
 
 .traffic-option__desc {
   font-size: 13px;
-  font-weight: 700;
-  line-height: 1.3;
-  color: rgba(48, 67, 72, 0.78);
+  font-weight: 650;
+  line-height: 1.36;
+  color: rgba(48, 67, 72, 0.9);
+  white-space: pre-wrap;
+}
+.traffic-option__example-prefix {
+  font-weight: 900;
 }
 
 .traffic-option--green {
@@ -2324,25 +2333,47 @@ button {
   border: 1px solid #2d8a2a;
 }
 
-.traffic-option--orange {
-  background: #f68b1f;
-  border: 1px solid #d97818;
+/* Partial success: between green and yellow on the scale */
+.traffic-option--lime {
+  background: #c5e63a;
+  border: 1px solid #9bbf2a;
 }
 
-.traffic-option--red {
-  background: #d62c2c;
-  border: 1px solid #b02424;
+/* Between partial (lime) and failure (yellow) */
+.traffic-option--amber {
+  background: #e8e14a;
+  border: 1px solid #cfc33a;
 }
 
-.traffic-option--green .traffic-option__title,
-.traffic-option--orange .traffic-option__title {
+/* Failure: yellow end of the scale (replaces red tone) */
+.traffic-option--yellow {
+  background: #ffd84d;
+  border: 1px solid #e3c13e;
+}
+
+.traffic-option--green .traffic-option__title {
   color: #ffffff;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
 }
+.traffic-option--green .traffic-option__desc { color: rgba(255, 255, 255, 0.92); }
 
-.traffic-option--red .traffic-option__title {
-  color: #ffffff;
+.traffic-option--lime .traffic-option__title {
+  color: #2a3d0a;
+  text-shadow: none;
 }
+.traffic-option--lime .traffic-option__desc { color: rgba(27, 40, 7, 0.92); }
+
+.traffic-option--amber .traffic-option__title {
+  color: #4e4900;
+  text-shadow: none;
+}
+.traffic-option--amber .traffic-option__desc { color: rgba(64, 60, 0, 0.93); }
+
+.traffic-option--yellow .traffic-option__title {
+  color: #554300;
+  text-shadow: none;
+}
+.traffic-option--yellow .traffic-option__desc { color: rgba(56, 44, 0, 0.92); }
 
 .traffic-option:hover:not(:disabled) {
   transform: translateY(-2px);
@@ -3847,13 +3878,111 @@ button {
   filter: grayscale(0.6) contrast(1.1) brightness(0.65);
 }
 
+.question-bottom-actions__emoji--eval {
+  font-size: 58px;
+}
+
+/* Expression eval control: emoji + label only (timer is a sibling in the row) */
+.question-bottom-actions__eval-compact {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+  direction: ltr;
+}
+
+.question-bottom-actions__eval-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expression-eval-countdown {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 74, 99, 0.18);
+}
+
+.expression-eval-countdown__icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.expression-eval-countdown__track {
+  flex: 1 1 auto;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(31, 74, 99, 0.14);
+  overflow: hidden;
+}
+
+.expression-eval-countdown__fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #5ec0ee 0%, #1f8dd6 100%);
+  transition: width 120ms linear;
+}
+
+.expression-eval-countdown__text {
+  min-width: 32px;
+  font-weight: 700;
+  font-size: 13px;
+  color: #1f4a63;
+  text-align: end;
+}
+
+.expression-eval-countdown--inline {
+  margin: 0;
+  padding: 4px 6px;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+/* Sits as its own flex item at the end of the expression bottom row (not inside the eval button) */
+.expression-eval-countdown--bar-end {
+  flex: 0 0 auto;
+  order: 3;
+  align-self: center;
+  margin-inline-start: 0;
+}
+
+.expression-eval-countdown__track--vertical {
+  width: 10px;
+  height: 44px;
+  border-radius: 999px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.expression-eval-countdown__fill--vertical {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #7ed957 0%, #ffd84d 100%);
+  transition: height 120ms linear;
+}
+
+.expression-eval-countdown__text--vertical {
+  min-width: 0;
+  font-size: 12px;
+  text-align: center;
+}
+
 .question-bottom-actions--expression .question-bottom-actions__eval-btn {
   order: 1;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   min-height: 62px;
   padding: 9px 10px;
   font-size: 16px;
+  max-width: min(56vw, 320px);
 }
 
 .question-bottom-actions--expression .question-bottom-actions__hint-btn,
@@ -3942,6 +4071,10 @@ button {
     line-height: 1.05;
     direction: rtl;
     text-align: center;
+  }
+
+  .question-bottom-actions--expression .expression-eval-countdown--bar-end {
+    order: 3;
   }
 
   .question-bottom-actions--expression .question-bottom-actions__emoji {
@@ -5150,6 +5283,7 @@ button {
 }
 
 .onboarding-screen--s1 {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -5172,6 +5306,7 @@ button {
 }
 
 .onboarding-illustration-slot {
+  position: relative;
   flex: 1 1 auto;
   min-height: clamp(120px, 26vh, 260px);
   margin-top: 0;
@@ -5183,10 +5318,60 @@ button {
 }
 
 .onboarding-illustration-slot__image {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.onboarding-s1-video-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.onboarding-s1-video-layer__video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.22));
+}
+
+.onboarding-intro-video-global-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.onboarding-intro-video-global-layer__video {
+  width: min(100vw, 900px);
+  height: min(100vh, 900px);
+  object-fit: contain;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.22));
+}
+
+.onboarding-screen--intro-video-only {
+  min-height: clamp(360px, 70vh, 780px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.onboarding-intro-video-only__video {
+  width: min(100%, 900px);
+  height: min(70vh, 900px);
+  object-fit: contain;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.22));
 }
 
 @media (orientation: portrait) {

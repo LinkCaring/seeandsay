@@ -95,6 +95,8 @@
     var totalQuestions = props.totalQuestions || 0;
     var onPrevQuestion = props.onPrevQuestion;
     var onNextQuestion = props.onNextQuestion;
+    var navPrevDisabled = !!props.navPrevDisabled;
+    var navNextDisabled = !!props.navNextDisabled;
     var innerClass = isHome ? "top-header__inner" : "test-navbar__inner";
     var logoClass = isHome ? "top-header__logo" : "test-navbar__logo";
     var langClass = isHome ? "top-header__lang" : "test-navbar__lang";
@@ -191,7 +193,7 @@
     onClick: function () { if (onPrevQuestion) onPrevQuestion(); },
     title: lang === "en" ? "Previous question" : "שאלה קודמת",
     "aria-label": lang === "en" ? "Previous question" : "שאלה קודמת",
-    disabled: currentQuestionIndex <= 0
+    disabled: currentQuestionIndex <= 0 || navPrevDisabled
   }, "<"),
   React.createElement(
     "span",
@@ -204,7 +206,7 @@
     onClick: function () { if (onNextQuestion) onNextQuestion(); },
     title: lang === "en" ? "Next question" : "השאלה הבאה",
     "aria-label": lang === "en" ? "Next question" : "השאלה הבאה",
-    disabled: currentQuestionIndex >= totalQuestions - 1
+    disabled: currentQuestionIndex >= totalQuestions - 1 || navNextDisabled
   }, ">")
 ) : null;
 
@@ -229,8 +231,8 @@
     type: "button",
     className: btnClass + " test-navbar__btn--finish",
     onClick: function () { if (onFinishTest) onFinishTest(); },
-    title: lang === "en" ? "Finish test" : "סיים מבחן",
-    "aria-label": lang === "en" ? "Finish test" : "סיים מבחן"
+    title: lang === "en" ? "Finish game" : "סיים משחק",
+    "aria-label": lang === "en" ? "Finish game" : "סיים משחק"
     }, React.createElement("span", { className: "navbar-icon test-navbar__finish-wrap", "aria-hidden": "true" }, renderFinishFlagSvg())) : null;
 
   

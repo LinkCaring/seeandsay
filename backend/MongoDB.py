@@ -151,7 +151,8 @@ class SeeSayMongoStorage:
     def add_test_to_user(self,
                          user_id,age_years,age_months,
                          full_array,correct, partly, wrong,
-                         audio_file_base64,updated_transcription, timestamps):
+                         audio_file_base64,updated_transcription, timestamps,
+                         expression_ai=None, test_id=None):
         """
         Adds a new exam record to the 'tests' array of a specific user.
         Time_took --> how long it took to finish
@@ -162,6 +163,7 @@ class SeeSayMongoStorage:
 
             ## Data storage - audio as reference
             new_test = {
+                'testId': test_id,
                 'dateFinished': datetime.now(),
                 'ageYears': age_years,
                 'ageMonths': age_months,
@@ -171,7 +173,8 @@ class SeeSayMongoStorage:
                 'wrong': wrong,
                 'audioFile64': audio_file_base64,
                 'transcription': updated_transcription,
-                'timestamps': timestamps
+                'timestamps': timestamps,
+                'expressionAI': expression_ai or {}
             }
 
             ## Save
@@ -196,6 +199,43 @@ class SeeSayMongoStorage:
         except Exception as e:
             logger.error(f"❌ Error adding test for user {user_id}: {e}")
             return False
+
+    def update_test_expression_ai(self, user_id, test_id, expression_ai):
+        """
+        Update expressionAI payload for a specific stored test by testId.
+        """
+        try:
+            result = self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": test_id},
+                {"$set": {"tests.$.expressionAI": expression_ai}}
+            )
+            if result.matched_count == 0:
+                logger.warning(f"⚠️ No matching test for user {user_id} testId {test_id}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error updating expressionAI for user {user_id}, testId {test_id}: {e}")
+            return False
+
+    def get_test_expression_ai(self, user_id, test_id):
+        """
+        Get expressionAI payload for a specific test by testId.
+        """
+        try:
+            user = self.users_collection.find_one(
+                {"userId": user_id},
+                {"_id": 0, "tests": 1}
+            )
+            if not user:
+                return None
+            tests = user.get("tests", [])
+            for t in tests:
+                if str(t.get("testId") or "") == str(test_id):
+                    return t.get("expressionAI") or {}
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error getting expressionAI for user {user_id}, testId {test_id}: {e}")
+            return None
 
     # get one user info using user_id.
     def get_user_config(self, user_id):
@@ -303,6 +343,42 @@ class SeeSayMongoStorage:
         if self.client:
             self.client.close()
             logger.info("✅ MongoDB connection closed")
+
+    def check_and_increment_daily_quota(self, quota_key: str, date_key: str, daily_limit: int) -> bool:
+        """
+        Atomic daily quota limiter using MongoDB.
+        Returns True when call is allowed and counter incremented.
+        Returns False when daily limit is already reached.
+        """
+        try:
+            col = self.db.api_usage
+            doc_id = f"{quota_key}:{date_key}"
+
+            # Ensure doc exists
+            col.update_one(
+                {"_id": doc_id},
+                {
+                    "$setOnInsert": {
+                        "_id": doc_id,
+                        "quota_key": quota_key,
+                        "date_key": date_key,
+                        "count": 0,
+                        "updatedAt": datetime.now(),
+                    }
+                },
+                upsert=True,
+            )
+
+            # Increment only when still below limit
+            result = col.update_one(
+                {"_id": doc_id, "count": {"$lt": int(daily_limit)}},
+                {"$inc": {"count": 1}, "$set": {"updatedAt": datetime.now()}},
+            )
+            return result.modified_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error in daily quota check/increment: {e}")
+            # Fail-open to avoid blocking critical test completion due to quota subsystem failure
+            return True
 
     def __enter__(self):
         """Context manager entry"""

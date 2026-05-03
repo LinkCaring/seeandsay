@@ -7,4 +7,6 @@ pydantic
 openai
 httpx
 speechmatics-python
+google-genai
+pydub
 

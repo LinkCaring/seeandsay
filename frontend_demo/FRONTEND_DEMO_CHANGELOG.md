@@ -1,6 +1,6 @@
 # Frontend demo — living changelog
 
-What changed in `frontend_demo`. **Update this file when you ship meaningful UX or flow changes.**
+What changed in `frontend_demo`. **For PR-ready running logs in this repo, append to `CHANGES_2026-04-28_05-02.md`** (28 Apr–2 May 2026 period). Use this file only for a short optional digest if you want one.
 
 ---
 
