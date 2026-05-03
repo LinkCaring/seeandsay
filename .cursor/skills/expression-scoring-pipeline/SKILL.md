@@ -102,6 +102,8 @@ After per-question 0/1/2 scoring finishes, run **one** additional Gemini call on
 - Accepting unvalidated free-text model responses.
 - Overusing high temperature in scoring tasks.
 - No fallback path when model output is malformed.
+- **Python 3.13+:** stdlib `audioop` removed — pydub fails unless **`audioop-lts`** is installed (see `backend/requirements.txt`). Logs show `pydub is unavailable: No module named 'pyaudioop'` before any FFmpeg issue.
+- **Linux/deploy:** FFmpeg must be on `PATH` for pydub to decode/export many formats (separate from pip).
 
 ## Current Repo Checkpoint
 - Gemini expression scoring is integrated in `backend/server.py` under `/api/addTestToUser`.
@@ -124,7 +126,7 @@ After per-question 0/1/2 scoring finishes, run **one** additional Gemini call on
 ## Pause/Resume Recovery Notes
 - If you need to temporarily pause this feature, do not remove persisted `expressionAI` payloads in Mongo.
 - To troubleshoot quickly after a break:
-  1. Verify `pydub` is installed and ffmpeg is available on server runtime.
+  1. Verify `pydub` + (on 3.13+) `audioop-lts` are installed and ffmpeg is available on server runtime.
   2. Confirm timestamps format from frontend is still `[(q,t), ...]`.
   3. Run one test and inspect `expression_ai.per_question` flags for slice/decode issues.
   4. Keep legacy headlight scoring active while tuning Gemini behavior.
