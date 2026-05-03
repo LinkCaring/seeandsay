@@ -870,6 +870,7 @@ function blobToBase64(blob) {
   };
 
   const skipMicrophone = function () {
+    primeMediaPlaybackFromUserGesture();
     stopMicrophoneCheck();
     // Even if skipping recording, mark that user interacted with microphone prompt
     setMicrophoneSkipped(true);
@@ -887,6 +888,7 @@ function blobToBase64(blob) {
   };
 
   const confirmVoiceIdentifier = async function () {
+  primeMediaPlaybackFromUserGesture();
   if (permission && sessionRecordingStarted) {
     SessionRecorder.stopContinuousRecording();
     console.log("🛑 Stopped reading recording; verification runs in background after test starts");
@@ -1025,6 +1027,7 @@ function blobToBase64(blob) {
 };
 
 const handleReadingValidationContinue = async function () {
+  primeMediaPlaybackFromUserGesture();
   setVoiceIdentifierConfirmed(true);
 };
 
@@ -1319,6 +1322,30 @@ const handleReadingValidationRetry = function () {
     }
   }, [isPaused, sessionCompleted]);
 
+
+  /**
+   * Browsers only allow started audio while "user activation" is fresh. Our question clip plays later
+   * (after images), so we prime HTMLAudio on the same tick as a real click (mic continue, skip, etc.).
+   * Tiny silent WAV; volume near zero.
+   */
+  const primeMediaPlaybackFromUserGesture = function () {
+    try {
+      var a = new Audio();
+      a.src =
+        "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==";
+      a.volume = 0.0001;
+      var p = a.play();
+      if (p && typeof p.then === "function") {
+        p.then(function () {
+          try {
+            a.pause();
+            a.removeAttribute("src");
+            a.load();
+          } catch (e2) {}
+        }).catch(function () {});
+      }
+    } catch (e) {}
+  };
 
   const playQuestionAudio = function () {
     if (questionAudio && !questionAudioMuted) {
@@ -3245,6 +3272,7 @@ function renderExpectedAnswerNote() {
               {
                 className: "continue-button",
                 onClick: function () {
+                  primeMediaPlaybackFromUserGesture();
                   setMicCheckPassed(true);
                   setMicCheckReady(false);
                   stopMicrophoneCheck();

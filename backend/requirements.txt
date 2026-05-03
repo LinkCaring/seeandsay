@@ -9,4 +9,7 @@ httpx
 speechmatics-python
 google-genai
 pydub
+# Python 3.13 removed stdlib `audioop` (PEP 594); pydub then fails with No module named 'pyaudioop'.
+# Install on 3.13+ only; 3.11/3.12 keep builtin audioop.
+audioop-lts>=0.2.1; python_version >= "3.13"
 
