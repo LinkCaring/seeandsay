@@ -2583,10 +2583,12 @@ const handleReadingValidationRetry = function () {
 
   function retryCurrentQuestionLoading() {
     setShowQuestionLoadingRecovery(false);
+    const idx = getSafeCurrentQuestionIndex();
+    const q = idx >= 0 ? questions[idx] : null;
+    if (q && q.query_number != null && q.image_count != null) {
+      ImageLoader.prioritizeQuestion(q.query_number, q.image_count);
+    }
     checkCurrentQuestionImages();
-    // Retry global priority loading so stuck networks/CDN stalls can recover.
-    const labels = ["2:00-2:06", "2:07-3:00", "3:00-4:00", "4:00-5:00", "5:00-6:00"];
-    ImageLoader.updatePriority(labels);
   }
 
   // =============================================================================
@@ -2619,6 +2621,10 @@ const handleReadingValidationRetry = function () {
         const idx = getSafeCurrentQuestionIndex();
         if (idx < 0) return;
         loadQuestion(idx);
+        const q = questions[idx];
+        if (q && q.query_number != null && q.image_count != null) {
+          ImageLoader.prioritizeQuestion(q.query_number, q.image_count);
+        }
         checkCurrentQuestionImages();
       }
     },
