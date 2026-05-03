@@ -100,6 +100,39 @@ const ImageLoader = (function() {
     startLoading(allQuestions, priorityAgeGroups);
   }
 
+  /**
+   * Loads current-question images immediately in parallel and pulls them ahead of the FIFO queue.
+   * Avoids long waits when the user jumps forward (e.g. two comprehension wrongs → first expression).
+   */
+  function prioritizeQuestion(queryNumber, imageCount) {
+    var qn = parseInt(queryNumber, 10);
+    if (!qn) return;
+    var count = parseInt(imageCount, 10) || 1;
+    var urls = [];
+    var u;
+    var idx;
+    var i;
+    for (i = 1; i <= count; i++) {
+      urls.push(getImageUrl(qn, i));
+    }
+    for (i = 0; i < urls.length; i++) {
+      u = urls[i];
+      while ((idx = loadingQueue.indexOf(u)) !== -1) {
+        loadingQueue.splice(idx, 1);
+      }
+    }
+    var pending = urls.filter(function(url) {
+      return !loadedImages.has(url);
+    });
+    if (pending.length === 0) {
+      processQueue();
+      return;
+    }
+    Promise.all(pending.map(preloadImage)).then(function() {
+      processQueue();
+    });
+  }
+
   function areImagesLoaded(queryNumber, imageCount) {
     const count = parseInt(imageCount, 10) || 1;
     for (let i = 1; i <= count; i++) {
@@ -119,6 +152,7 @@ const ImageLoader = (function() {
   return {
     startLoading: startLoading,
     updatePriority: updatePriority,
+    prioritizeQuestion: prioritizeQuestion,
     areImagesLoaded: areImagesLoaded,
     isImageLoaded: isImageLoaded,
     getImageUrl: getImageUrl
