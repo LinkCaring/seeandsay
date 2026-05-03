@@ -1,12 +1,20 @@
 const ImageLoader = (function() {
   const loadedImages = new Set();
-  const loadingQueue = [];
   const queuedImages = new Set();
-  let isProcessing = false;
+  /** FIFO for הבנה questions — runs in parallel with exprQueue (second worker). */
+  const compQueue = [];
+  /** FIFO for הבעה questions — runs in parallel with compQueue. */
+  const exprQueue = [];
+  let isProcessingComp = false;
+  let isProcessingExpr = false;
   let allQuestions = [];
 
   function getImageUrl(queryNumber, imageIndex) {
     return "resources/test_assets/" + queryNumber + "/image_" + imageIndex + ".png";
+  }
+
+  function isExpressionQuestion(q) {
+    return (q.query_type || "").trim().normalize("NFC") === "הבעה";
   }
 
   function preloadImage(url) {
@@ -46,25 +54,41 @@ const ImageLoader = (function() {
     });
   }
 
-  function processQueue() {
-    if (isProcessing || loadingQueue.length === 0) return;
+  function processCompQueue() {
+    if (isProcessingComp || compQueue.length === 0) return;
 
-    isProcessing = true;
-    const url = loadingQueue.shift();
+    isProcessingComp = true;
+    const url = compQueue.shift();
     queuedImages.delete(url);
-    
+
     preloadImage(url).then(function() {
-      isProcessing = false;
-      processQueue(); // Process next item
+      isProcessingComp = false;
+      processCompQueue();
     });
+  }
+
+  function processExprQueue() {
+    if (isProcessingExpr || exprQueue.length === 0) return;
+
+    isProcessingExpr = true;
+    const url = exprQueue.shift();
+    queuedImages.delete(url);
+
+    preloadImage(url).then(function() {
+      isProcessingExpr = false;
+      processExprQueue();
+    });
+  }
+
+  function kickBothQueues() {
+    processCompQueue();
+    processExprQueue();
   }
 
   function startLoading(questions, priorityAgeGroups) {
     if (!questions || questions.length === 0) return;
-    
+
     allQuestions = questions;
-    
-    const orderedUrls = [];
 
     const sorted = questions.slice().sort(function(a, b) {
       const numA = parseInt(a.query_number, 10) || 0;
@@ -76,33 +100,36 @@ const ImageLoader = (function() {
       if (!q.query_number || !q.image_count) return;
 
       const count = parseInt(q.image_count, 10) || 1;
+      const targetQueue = isExpressionQuestion(q) ? exprQueue : compQueue;
+
       for (let i = 1; i <= count; i++) {
         const url = getImageUrl(q.query_number, i);
         if (!loadedImages.has(url) && !queuedImages.has(url)) {
-          orderedUrls.push(url);
+          targetQueue.push(url);
           queuedImages.add(url);
         }
       }
     });
 
-    // Add all URLs to queue in the correct order
-    loadingQueue.push(...orderedUrls);
-    
-    // Start processing
-    processQueue();
+    kickBothQueues();
   }
 
   function updatePriority(priorityAgeGroups) {
     if (!allQuestions || allQuestions.length === 0) return;
-    
-    // Since we're loading all questions in order, just restart loading
-    // This will maintain the same order as startLoading
+
     startLoading(allQuestions, priorityAgeGroups);
   }
 
+  function removeUrlFromQueue(queue, url) {
+    let idx;
+    while ((idx = queue.indexOf(url)) !== -1) {
+      queue.splice(idx, 1);
+    }
+  }
+
   /**
-   * Loads current-question images immediately in parallel and pulls them ahead of the FIFO queue.
-   * Avoids long waits when the user jumps forward (e.g. two comprehension wrongs → first expression).
+   * Loads current-question images immediately in parallel and removes them from backlog queues.
+   * Keeps navigation/jumps responsive while dual FIFOs prefetch in the background.
    */
   function prioritizeQuestion(queryNumber, imageCount) {
     var qn = parseInt(queryNumber, 10);
@@ -110,26 +137,24 @@ const ImageLoader = (function() {
     var count = parseInt(imageCount, 10) || 1;
     var urls = [];
     var u;
-    var idx;
     var i;
     for (i = 1; i <= count; i++) {
       urls.push(getImageUrl(qn, i));
     }
     for (i = 0; i < urls.length; i++) {
       u = urls[i];
-      while ((idx = loadingQueue.indexOf(u)) !== -1) {
-        loadingQueue.splice(idx, 1);
-      }
+      removeUrlFromQueue(compQueue, u);
+      removeUrlFromQueue(exprQueue, u);
     }
     var pending = urls.filter(function(url) {
       return !loadedImages.has(url);
     });
     if (pending.length === 0) {
-      processQueue();
+      kickBothQueues();
       return;
     }
     Promise.all(pending.map(preloadImage)).then(function() {
-      processQueue();
+      kickBothQueues();
     });
   }
 
@@ -148,7 +173,6 @@ const ImageLoader = (function() {
     return loadedImages.has(url);
   }
 
-  // Public API
   return {
     startLoading: startLoading,
     updatePriority: updatePriority,

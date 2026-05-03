@@ -507,16 +507,14 @@ function blobToBase64(blob) {
   const [questionAudio, setQuestionAudio] = React.useState(null);
   const [isAudioPlaying, setIsAudioPlaying] = React.useState(false);
   const [questionAudioMuted, setQuestionAudioMuted] = React.useState(false);
-  const questionAudioAutoplayTimerRef = React.useRef(null);
+  /** True after loadQuestion builds the clip — autoplay runs only once images are ready (see effect below). */
+  const questionAudioAutoplayPendingRef = React.useRef(false);
   /** Active question `Audio` instance for synchronous pause/stop (state updates lag behind timers). */
   const questionAudioRef = React.useRef(null);
   const tryAgainAudioRef = React.useRef(null);
 
   function stopQuestionAudioForSessionComplete() {
-    if (questionAudioAutoplayTimerRef.current) {
-      clearTimeout(questionAudioAutoplayTimerRef.current);
-      questionAudioAutoplayTimerRef.current = null;
-    }
+    questionAudioAutoplayPendingRef.current = false;
     if (questionAudioRef.current) {
       try {
         questionAudioRef.current.pause();
@@ -1346,14 +1344,50 @@ const handleReadingValidationRetry = function () {
     } catch (e) {}
   };
 
-  React.useEffect(function cleanupQuestionAudioTimer() {
-    return function () {
-      if (questionAudioAutoplayTimerRef.current) {
-        clearTimeout(questionAudioAutoplayTimerRef.current);
-        questionAudioAutoplayTimerRef.current = null;
+  React.useEffect(function autoplayQuestionAudioAfterImagesReady() {
+    if (sessionCompleted || !ageConfirmed) return;
+    if (!currentQuestionImagesLoaded) return;
+    if (!questionAudioAutoplayPendingRef.current) return;
+    if (!micCheckPassed) return;
+    if (questionAudioMuted) return;
+    if (!(permission || microphoneSkipped) || !voiceIdentifierConfirmed) return;
+    if (!questionAudio) return;
+
+    questionAudioAutoplayPendingRef.current = false;
+
+    var audioEl = questionAudio;
+    function runPlay() {
+      if (questionAudioMuted) return;
+      try {
+        audioEl.currentTime = 0;
+        audioEl.play().catch(function (err) {
+          console.warn("Audio autoplay failed:", err);
+        });
+        setIsAudioPlaying(true);
+      } catch (e) {
+        console.warn("Audio play error:", e);
       }
-    };
-  }, []);
+    }
+
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(runPlay);
+      });
+    } else {
+      setTimeout(runPlay, 0);
+    }
+  }, [
+    currentQuestionImagesLoaded,
+    questionAudio,
+    micCheckPassed,
+    questionAudioMuted,
+    voiceIdentifierConfirmed,
+    permission,
+    microphoneSkipped,
+    sessionCompleted,
+    ageConfirmed,
+    currentIndex,
+  ]);
 
   React.useEffect(function cleanupPreviousQuestionAudio() {
     return function () {
@@ -2121,10 +2155,7 @@ const handleReadingValidationRetry = function () {
     const q = questions[index];
     if (!q) return;
 
-    if (questionAudioAutoplayTimerRef.current) {
-      clearTimeout(questionAudioAutoplayTimerRef.current);
-      questionAudioAutoplayTimerRef.current = null;
-    }
+    questionAudioAutoplayPendingRef.current = false;
     if (questionAudioRef.current) {
       try {
         questionAudioRef.current.pause();
@@ -2289,19 +2320,9 @@ const handleReadingValidationRetry = function () {
       };
       questionAudioRef.current = audio;
       setQuestionAudio(audio);
-      // Play audio automatically only after mic-check is passed.
+      // Autoplay runs in autoplayQuestionAudioAfterImagesReady once photos + loading gate clear.
       if (micCheckPassed) {
-        questionAudioAutoplayTimerRef.current = setTimeout(function () {
-          questionAudioAutoplayTimerRef.current = null;
-          if (questionAudioMuted) {
-            setIsAudioPlaying(false);
-            return;
-          }
-          audio.play().catch(function (err) {
-            console.warn('Audio autoplay failed:', err);
-          });
-          setIsAudioPlaying(true);
-        }, 100);
+        questionAudioAutoplayPendingRef.current = true;
       }
     }
 
