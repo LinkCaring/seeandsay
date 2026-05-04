@@ -136,7 +136,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const multiWrongClicksRef = React.useRef(0);
   const multiAutoHintDoneRef = React.useRef(false);
   const comprehensionAdvanceLockRef = React.useRef(false);
-  /** Ordered (2-step): one rescue tap on correct second image after wrong path or duplicate correct-first. */
+  /** Ordered (2-step): rescue tap after duplicate first; four-image questions use a 3-click cap (partial if clicks 2–3 are first→second). */
   const orderedRescueActiveRef = React.useRef(false);
   const orderedRescueTargetRef = React.useRef(null); // 1-based image index
   const [incompleteSummaryConfirmOpen, setIncompleteSummaryConfirmOpen] = React.useState(false);
@@ -1801,6 +1801,7 @@ const handleReadingValidationRetry = function () {
         } else {
           var expFirst = orderedAnswers[0];
           var expSecond = orderedAnswers[1];
+          var fourImageOrdered = images.length === 4;
 
           if (orderedRescueActiveRef.current) {
             if (imgIndex === orderedRescueTargetRef.current) {
@@ -1812,6 +1813,57 @@ const handleReadingValidationRetry = function () {
               orderedRescueTargetRef.current = null;
               finalizeComprehensionResult("failure");
             }
+            return;
+          }
+
+          if (fourImageOrdered) {
+            if (orderedClickSequence.length === 0) {
+              setOrderedClickSequence([imgIndex]);
+              if (imgIndex !== expFirst) {
+                openHintProgrammatic();
+              }
+              return;
+            }
+
+            if (orderedClickSequence.length === 1) {
+              var firstPick4 = orderedClickSequence[0];
+              if (imgIndex === firstPick4) {
+                if (firstPick4 === expFirst) {
+                  openHintProgrammatic();
+                  orderedRescueActiveRef.current = true;
+                  orderedRescueTargetRef.current = expSecond;
+                } else {
+                  finalizeComprehensionResult("failure");
+                }
+                return;
+              }
+              var pair4 = [firstPick4, imgIndex];
+              setOrderedClickSequence(pair4);
+              if (firstPick4 === expFirst && imgIndex === expSecond) {
+                setClickedCorrect(true);
+                if (hintEverOpenedRef.current) {
+                  finalizeComprehensionResult("partial");
+                } else {
+                  finalizeComprehensionSuccess();
+                }
+                return;
+              }
+              return;
+            }
+
+            if (orderedClickSequence.length === 2) {
+              var a4 = orderedClickSequence[0];
+              var b4 = orderedClickSequence[1];
+              setOrderedClickSequence([a4, b4, imgIndex]);
+              if (b4 === expFirst && imgIndex === expSecond) {
+                setClickedCorrect(true);
+                finalizeComprehensionResult("partial");
+              } else {
+                finalizeComprehensionResult("failure");
+              }
+              return;
+            }
+
             return;
           }
 
@@ -4612,12 +4664,13 @@ questionType === "C"
       },
       (function () {
         const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
+        const shouldUseFiveUp = isPortraitMobile && currentImageCount === 5;
         const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
         const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
 
         const comprehensionGridStyle = shouldUseSingleColumn?
          { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }
-          :shouldUseThreeUp? { display: "flex", flexDirection: "column", gap: "12px" }
+          :shouldUseThreeUp || shouldUseFiveUp ? { display: "flex", flexDirection: "column", gap: "12px" }
           : shouldUseTwoColumnGrid
             ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
             : (isTwoRow ? { display: "flex", flexDirection: "column", gap: "6px" } : imagesGridStyle);
@@ -4740,6 +4793,32 @@ questionType === "C"
           );
         }
 
+        if (shouldUseFiveUp) {
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName + " images-container--five-up",
+              style: comprehensionGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "C",
+            },
+            React.createElement(
+              "div",
+              { className: "images-container--five-up-top" },
+              images.slice(0, 4).map(function (img, i) {
+                return renderImage(img, i, "");
+              })
+            ),
+            React.createElement(
+              "div",
+              { className: "images-container--five-up-bottom" },
+              images.slice(4, 5).map(function (img, i) {
+                return renderImage(img, 4 + i, "");
+              })
+            )
+          );
+        }
+
         return React.createElement(
           "div",
           {
@@ -4766,11 +4845,12 @@ questionType === "E"
       (function () {
         const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
         const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
+        const shouldUseFiveUp = isPortraitMobile && currentImageCount === 5;
         const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
 
         const expressionGridStyle = shouldUseSingleColumn?
          { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }
-          : shouldUseThreeUp? { display: "flex", flexDirection: "column", gap: "12px" }
+          : shouldUseThreeUp || shouldUseFiveUp ? { display: "flex", flexDirection: "column", gap: "12px" }
           : shouldUseTwoColumnGrid
             ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }
             : imagesGridStyle;
@@ -4816,6 +4896,32 @@ questionType === "E"
               { className: "images-container--three-up-bottom" },
               images.slice(2, 3).map(function (img, i) {
                 return renderExpressionImage(img, 2 + i);
+              })
+            )
+          );
+        }
+
+        if (shouldUseFiveUp) {
+          return React.createElement(
+            "div",
+            {
+              className: imagesContainerClassName + " images-container--five-up",
+              style: expressionGridStyle,
+              "data-count": currentImageCount,
+              "data-question-type": "E",
+            },
+            React.createElement(
+              "div",
+              { className: "images-container--five-up-top" },
+              images.slice(0, 4).map(function (img, i) {
+                return renderExpressionImage(img, i);
+              })
+            ),
+            React.createElement(
+              "div",
+              { className: "images-container--five-up-bottom" },
+              images.slice(4, 5).map(function (img, i) {
+                return renderExpressionImage(img, 4 + i);
               })
             )
           );

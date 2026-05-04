@@ -372,7 +372,8 @@ p {
 }
 
 /* Six choices: same tile size — less inner padding so the illustration reads larger */
-.app-container[data-page="test"][data-test-phase="questions"] .images-container[data-count="6"] .image-wrapper {
+.app-container[data-page="test"][data-test-phase="questions"] .images-container[data-count="6"] .image-wrapper,
+.app-container[data-page="test"][data-test-phase="questions"] .images-container[data-count="5"] .image-wrapper {
   padding: clamp(2px, 0.9vw, 5px);
 }
 
@@ -3030,6 +3031,30 @@ button {
   max-width: 48%;
 }
 
+/* Five choices on portrait: 2×2 like four-image layout, fifth centered on third row */
+.images-container--five-up {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.images-container--five-up-top {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.images-container--five-up-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+}
+
+.images-container--five-up-bottom .image-wrapper {
+  width: 100%;
+  max-width: 48%;
+}
+
   .image-wrapper {
     width: 100%;
     max-width: none;
@@ -4262,8 +4287,9 @@ button {
   max-height: min(19vw, 130px);
 }
 
-/* Six images: let the asset use the full inner tile (was capped ~150px, leaving empty parchment) */
-.images-container[data-count="6"] .image {
+/* Six (and five-up) images: let the asset use the full inner tile (was capped ~150px, leaving empty parchment) */
+.images-container[data-count="6"] .image,
+.images-container[data-count="5"] .image {
   width: 100%;
   max-width: none !important;
   max-height: none !important;
