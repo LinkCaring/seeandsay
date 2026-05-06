@@ -1392,8 +1392,10 @@ const handleReadingValidationRetry = function () {
         tryAgainAudioRef.current = new Audio("resources/questions_audio/try_again.mp3");
       }
       const a = tryAgainAudioRef.current;
+      var replayQuestionIdx = getCurrentQuestionIndex();
       a.onended = function () {
         if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+        if (getCurrentQuestionIndex() !== replayQuestionIdx) return;
         if (questionType !== "C" && questionType !== "E") return;
         replayQuestionAudio();
       };
@@ -2284,6 +2286,13 @@ const handleReadingValidationRetry = function () {
         questionAudio.currentTime = 0;
       } catch (e) {}
       setIsAudioPlaying(false);
+    }
+    if (tryAgainAudioRef.current) {
+      try {
+        tryAgainAudioRef.current.pause();
+        tryAgainAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      tryAgainAudioRef.current.onended = null;
     }
     // Clear previous question visuals immediately to avoid stale-image flash while switching.
     setCurrentQuestionImagesLoaded(false);
@@ -3652,7 +3661,7 @@ function renderExpectedAnswerNote() {
       : "pending";
     function expressionPhaseLabel(phaseKey) {
       if (lang === "en") {
-        if (phaseKey === "queued") return "Queued";
+        if (phaseKey === "queued") return "Feedback generation will start shortly";
         if (phaseKey === "processing_started") return "Started";
         if (phaseKey === "preparing_audio") return "Processing audio";
         if (phaseKey === "scoring_questions") return "Scoring questions";
@@ -3661,7 +3670,7 @@ function renderExpectedAnswerNote() {
         if (phaseKey === "failed") return "Failed";
         return "Pending";
       }
-      if (phaseKey === "queued") return "ממתין בתור";
+      if (phaseKey === "queued") return "יצירת המשוב תתחיל בקרוב";
       if (phaseKey === "processing_started") return "התחיל עיבוד";
       if (phaseKey === "preparing_audio") return "מעבד שמע";
       if (phaseKey === "scoring_questions") return "מחשב ציונים";
