@@ -41,7 +41,7 @@ database_name = os.environ.get("DATABASE_NAME")
 # Initialize MongoDB storage manager
 storage = SeeSayMongoStorage(mongodb_url, database_name)
 GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "100"))
-GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "20"))
+GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "40"))
 GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
 GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "500"))
 EXPRESSION_IMPRESSION_SAMPLE_CAP = int(os.environ.get("EXPRESSION_IMPRESSION_SAMPLE_CAP", "10"))
@@ -174,6 +174,27 @@ def _aggregate_expression_ai(per_question_rows):
         "max_segment_seconds": GEMINI_MAX_SEGMENT_SECONDS,
     }
 
+
+def _build_pending_expression_ai_payload(test_id, started_at, expression_question_count, phase, processed_questions, per_question_rows=None):
+    rows = per_question_rows or []
+    return {
+        "status": "pending",
+        "test_id": test_id,
+        "started_at": started_at,
+        "per_question": rows,
+        "summary": _aggregate_expression_ai(rows),
+        "meta": {
+            "expression_question_count": expression_question_count,
+            "progress": {
+                "phase": phase,
+                "processed_questions": processed_questions,
+                "total_questions": expression_question_count,
+                "last_updated_at": datetime.utcnow().isoformat() + "Z",
+            },
+        },
+        "expressive_language_impression": {"status": "pending"},
+    }
+
 # FastAPI setup
 app = FastAPI(title="See&Say Backend")
 
@@ -243,23 +264,15 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     updated_transcription = {"updated_transcription": "None", "success": False, "parent_speaker": "None"}
     test_id = str(uuid.uuid4())
     expression_items = _parse_expression_results_from_full_array(test.full_array)
-    pending_expression_ai = {
-        "status": "pending",
-        "test_id": test_id,
-        "started_at": datetime.utcnow().isoformat() + "Z",
-        "per_question": [],
-        "summary": {
-            "score_avg": None,
-            "score_0_1_2": [],
-            "counts": {"0": 0, "1": 0, "2": 0},
-            "daily_limit": GEMINI_DAILY_LIMIT,
-            "max_segment_seconds": GEMINI_MAX_SEGMENT_SECONDS,
-        },
-        "meta": {
-            "expression_question_count": len(expression_items),
-        },
-        "expressive_language_impression": {"status": "pending"},
-    }
+    started_at = datetime.utcnow().isoformat() + "Z"
+    pending_expression_ai = _build_pending_expression_ai_payload(
+        test_id=test_id,
+        started_at=started_at,
+        expression_question_count=len(expression_items),
+        phase="queued",
+        processed_questions=0,
+        per_question_rows=[],
+    )
 
     success = storage.add_test_to_user(
         user_id=test.userId,
@@ -288,6 +301,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         test.childGender,
         test.ageYears,
         test.ageMonths,
+        started_at,
     )
 
     return {
@@ -298,10 +312,11 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     }
 
 
-def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_gender, age_years, age_months):
+def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_gender, age_years, age_months, progress_cb=None):
     expression_ai_rows = []
     impression_pool = []
     expression_items = _parse_expression_results_from_full_array(full_array)
+    total_expression_items = len(expression_items)
     timestamp_marks = _parse_question_timestamps(timestamps)
     decoded_audio_bytes = None
     decode_audio_error = None
@@ -311,7 +326,10 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
         decode_audio_error = str(e)
         logger.warning(f"Failed decoding test audio for expression slicing: {e}")
 
-    for question_number, headlight_result in expression_items:
+    if callable(progress_cb):
+        progress_cb("preparing_audio", 0, total_expression_items, expression_ai_rows)
+
+    for idx, (question_number, headlight_result) in enumerate(expression_items):
         rubric = EXPRESSION_RUBRICS.get(str(question_number))
         if not rubric:
             expression_ai_rows.append({
@@ -325,22 +343,11 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 "timestamp_start_sec": None,
                 "timestamp_end_sec": None,
             })
+            if callable(progress_cb):
+                progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
 
         start_sec, end_sec = _timestamp_window_for_question(question_number, timestamp_marks)
-        if start_sec is not None and end_sec is not None and (end_sec - start_sec) > GEMINI_MAX_SEGMENT_SECONDS:
-            expression_ai_rows.append({
-                "question_number": int(question_number),
-                "headlight_result": headlight_result,
-                "ai_score": 1,
-                "ai_confidence": 0.0,
-                "ai_reason_short": "segment_too_long",
-                "ai_flags": ["segment_too_long", "needs_manual_review"],
-                "ai_speaker_observation": None,
-                "timestamp_start_sec": start_sec,
-                "timestamp_end_sec": end_sec,
-            })
-            continue
         if start_sec is None:
             expression_ai_rows.append({
                 "question_number": int(question_number),
@@ -353,6 +360,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 "timestamp_start_sec": start_sec,
                 "timestamp_end_sec": end_sec,
             })
+            if callable(progress_cb):
+                progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
         if decoded_audio_bytes is None:
             expression_ai_rows.append({
@@ -367,6 +376,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 "timestamp_end_sec": end_sec,
                 "audio_decode_error": decode_audio_error,
             })
+            if callable(progress_cb):
+                progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
 
         normalized_gender = str(child_gender or "").strip().lower()
@@ -376,15 +387,18 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             else rubric.get("question_text_boy")
         ) or rubric.get("question_text_fallback") or ""
 
+        effective_end_sec = end_sec if end_sec is not None else (start_sec + GEMINI_MAX_SEGMENT_SECONDS)
+        if effective_end_sec - start_sec > GEMINI_MAX_SEGMENT_SECONDS:
+            effective_end_sec = start_sec + GEMINI_MAX_SEGMENT_SECONDS
+
         prompt_with_window = (
             question_text
             + (
-                f"\n\nRelevant answer window (seconds in full recording): start={start_sec}, end={end_sec if end_sec is not None else 'end_of_recording'}"
+                f"\n\nRelevant answer window (seconds in full recording): start={start_sec}, end={effective_end_sec}"
                 if start_sec is not None else ""
             )
         )
 
-        effective_end_sec = end_sec if end_sec is not None else (start_sec + GEMINI_MAX_SEGMENT_SECONDS)
         try:
             sliced_audio_bytes = slice_audio_window_bytes(
                 audio_bytes=decoded_audio_bytes,
@@ -408,6 +422,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 "timestamp_start_sec": start_sec,
                 "timestamp_end_sec": end_sec,
             })
+            if callable(progress_cb):
+                progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
 
         goal_bits = [
@@ -449,6 +465,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 "timestamp_start_sec": start_sec,
                 "timestamp_end_sec": end_sec,
             })
+            if callable(progress_cb):
+                progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
 
         ai = score_expression_with_gemini_bytes(
@@ -479,8 +497,12 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             "timestamp_start_sec": start_sec,
             "timestamp_end_sec": end_sec,
         })
+        if callable(progress_cb):
+            progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
 
     expression_ai_summary = _aggregate_expression_ai(expression_ai_rows)
+    if callable(progress_cb):
+        progress_cb("building_impression", total_expression_items, total_expression_items, expression_ai_rows)
 
     ay = int(age_years) if age_years is not None else 0
     am = int(age_months) if age_months is not None else 0
@@ -545,14 +567,37 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
         "completed_at": datetime.utcnow().isoformat() + "Z",
         "per_question": expression_ai_rows,
         "summary": expression_ai_summary,
+        "meta": {
+            "expression_question_count": total_expression_items,
+            "progress": {
+                "phase": "done",
+                "processed_questions": total_expression_items,
+                "total_questions": total_expression_items,
+                "last_updated_at": datetime.utcnow().isoformat() + "Z",
+            },
+        },
         "expressive_language_impression": expressive_language_impression,
     }
 
 
-def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audio_file64, child_gender, age_years, age_months):
+def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audio_file64, child_gender, age_years, age_months, started_at):
+    total_expression_items = len(_parse_expression_results_from_full_array(full_array))
+
+    def emit_progress(phase, processed_questions, total_questions, rows_snapshot):
+        payload = _build_pending_expression_ai_payload(
+            test_id=test_id,
+            started_at=started_at,
+            expression_question_count=total_questions,
+            phase=phase,
+            processed_questions=processed_questions,
+            per_question_rows=list(rows_snapshot),
+        )
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+
+    emit_progress("processing_started", 0, total_expression_items, [])
     try:
         payload = _compute_expression_ai_payload(
-            full_array, timestamps, audio_file64, child_gender, age_years, age_months
+            full_array, timestamps, audio_file64, child_gender, age_years, age_months, progress_cb=emit_progress
         )
     except Exception as e:
         logger.error(f"Background expression AI failed for testId {test_id}: {e}")
@@ -562,6 +607,15 @@ def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audi
             "error": str(e),
             "per_question": [],
             "summary": _aggregate_expression_ai([]),
+            "meta": {
+                "expression_question_count": total_expression_items,
+                "progress": {
+                    "phase": "failed",
+                    "processed_questions": 0,
+                    "total_questions": total_expression_items,
+                    "last_updated_at": datetime.utcnow().isoformat() + "Z",
+                },
+            },
             "expressive_language_impression": {
                 "status": "failed",
                 "reason": "pipeline_error",

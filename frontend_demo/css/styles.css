@@ -3031,7 +3031,7 @@ button {
   max-width: 48%;
 }
 
-/* Five choices on portrait: 2×2 like four-image layout, fifth centered on third row */
+/* Five choices on portrait: centered single on first row, then two rows of two */
 .images-container--five-up {
   display: flex;
   flex-direction: column;
