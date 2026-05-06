@@ -27,6 +27,6 @@ Maintain the running changelog file using this exact section order inside each d
 # Running Changelog Behavior
 
 - Maintain one running changelog Markdown file and append new entries for each completed change until the user says otherwise.
-- **See & Say repo:** use the active period file under `frontend_demo/` named like `CHANGES_YYYY-MM-DD_MM-DD.md` (example: `frontend_demo/CHANGES_2026-04-28_05-02.md` for 28 Apr–2 May 2026). When the calendar window rolls, create the next dated `CHANGES_*.md` and switch append targets. Do **not** substitute `FRONTEND_DEMO_CHANGELOG.md` unless the user explicitly asks for that digest only.
+- **See & Say repo:** use the active period file under `changes/` named like `CHANGES_YYYY-MM-DD_MM-DD.md` (example: `changes/CHANGES_2026-05-06_05-09.md` for 6–9 May 2026). When the calendar window rolls, create the next dated `CHANGES_*.md` and switch append targets. Do **not** substitute `FRONTEND_DEMO_CHANGELOG.md` unless the user explicitly asks for that digest only.
 - Write each changelog entry as one brief sentence.
 - Keep normal conversational reply style in chat; this structure is for the changelog file only.

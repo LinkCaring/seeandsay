@@ -12,7 +12,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
-  var EXPRESSION_EVAL_DELAY_MS = 20000;
+  var EXPRESSION_EVAL_DELAY_MS = 40000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
   const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "failure" | null
@@ -45,6 +45,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [expressionAdvanceLock, setExpressionAdvanceLock] = React.useState(false);
   const [expressionEvalMsLeft, setExpressionEvalMsLeft] = React.useState(EXPRESSION_EVAL_DELAY_MS);
   const expressionEvalDeadlineRef = React.useRef(null);
+  const expressionEvalPausedRemainingRef = React.useRef(EXPRESSION_EVAL_DELAY_MS);
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -568,7 +569,7 @@ function blobToBase64(blob) {
   }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
 
 
-  // Expression evaluation timer - opens traffic evaluation after 20 seconds.
+  // Expression evaluation timer - opens traffic evaluation after 40 seconds.
   React.useEffect(function () {
   if (sessionCompleted || questionType !== "E") {
     setEvaluationEnabled(false);
@@ -576,6 +577,7 @@ function blobToBase64(blob) {
     setExpressionAdvanceLock(false);
     setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
     expressionEvalDeadlineRef.current = null;
+    expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
     return;
   }
 
@@ -583,6 +585,7 @@ function blobToBase64(blob) {
   setExpressionTrafficSubmitted(false);
   setExpressionAdvanceLock(false);
   setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+  expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
   expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
 
   const timer = setTimeout(function () {
@@ -595,6 +598,29 @@ function blobToBase64(blob) {
     clearTimeout(timer);
   };
 }, [currentIndex, questionType, sessionCompleted]);
+
+  React.useEffect(function pauseAwareExpressionTimer() {
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
+    if (isPaused) {
+      if (expressionEvalDeadlineRef.current) {
+        var remainingMs = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
+        expressionEvalPausedRemainingRef.current = remainingMs;
+        setExpressionEvalMsLeft(remainingMs);
+        expressionEvalDeadlineRef.current = null;
+      }
+      return;
+    }
+    if (!expressionEvalDeadlineRef.current) {
+      var resumeMs = Math.max(0, expressionEvalPausedRemainingRef.current || 0);
+      if (resumeMs > 0) {
+        expressionEvalDeadlineRef.current = Date.now() + resumeMs;
+        setExpressionEvalMsLeft(resumeMs);
+      } else {
+        setEvaluationEnabled(true);
+        setExpressionEvalMsLeft(0);
+      }
+    }
+  }, [isPaused, sessionCompleted, questionType, evaluationEnabled]);
 
   React.useEffect(function tickExpressionEvalCountdown() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalDeadlineRef.current) return;
@@ -1129,7 +1155,7 @@ const handleReadingValidationRetry = function () {
     };
   }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
 
-  // Expression only: open traffic popup after 20s (evaluationEnabled) or when showContinue triggers it
+  // Expression only: open traffic popup after 40s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
     if (sessionCompleted || isPaused) {
       setTrafficPopupOpen(false);
@@ -1366,8 +1392,18 @@ const handleReadingValidationRetry = function () {
         tryAgainAudioRef.current = new Audio("resources/questions_audio/try_again.mp3");
       }
       const a = tryAgainAudioRef.current;
+      a.onended = function () {
+        if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+        if (questionType !== "C" && questionType !== "E") return;
+        replayQuestionAudio();
+      };
       a.currentTime = 0;
-      a.play().catch(function () {});
+      a.play().catch(function () {
+        // If try-again fails to play (autoplay policy, decode issue), still attempt immediate question replay.
+        if (!questionAudioMuted && !isPausedRef.current && !sessionCompletedRef.current) {
+          replayQuestionAudio();
+        }
+      });
     } catch (e) {}
   };
 
@@ -3602,6 +3638,38 @@ function renderExpectedAnswerNote() {
       (!expressionAiResult ||
         expressionAiStatus === "pending" ||
         expressionAiLoading);
+    const expressionAiProgress = expressionAiResult && expressionAiResult.meta && expressionAiResult.meta.progress
+      ? expressionAiResult.meta.progress
+      : null;
+    const expressionAiProcessed = expressionAiProgress && typeof expressionAiProgress.processed_questions === "number"
+      ? expressionAiProgress.processed_questions
+      : 0;
+    const expressionAiTotal = expressionAiProgress && typeof expressionAiProgress.total_questions === "number"
+      ? expressionAiProgress.total_questions
+      : exprStats.total;
+    const expressionAiPhase = expressionAiProgress && expressionAiProgress.phase
+      ? String(expressionAiProgress.phase)
+      : "pending";
+    function expressionPhaseLabel(phaseKey) {
+      if (lang === "en") {
+        if (phaseKey === "queued") return "Queued";
+        if (phaseKey === "processing_started") return "Started";
+        if (phaseKey === "preparing_audio") return "Processing audio";
+        if (phaseKey === "scoring_questions") return "Scoring questions";
+        if (phaseKey === "building_impression") return "Building summary";
+        if (phaseKey === "done") return "Done";
+        if (phaseKey === "failed") return "Failed";
+        return "Pending";
+      }
+      if (phaseKey === "queued") return "ממתין בתור";
+      if (phaseKey === "processing_started") return "התחיל עיבוד";
+      if (phaseKey === "preparing_audio") return "מעבד שמע";
+      if (phaseKey === "scoring_questions") return "מחשב ציונים";
+      if (phaseKey === "building_impression") return "מכין סיכום";
+      if (phaseKey === "done") return "הושלם";
+      if (phaseKey === "failed") return "נכשל";
+      return "ממתין";
+    }
     const ageMatchedForDisplay =
       !hasExpressionQuestions || expressionAiResolved ? ageMatchedStats : ageMatchedCompStats;
     const strengtheningGoalsShown = expressionAiResolved ? strengtheningGoals : strengtheningGoalsComp;
@@ -3810,27 +3878,59 @@ function renderExpectedAnswerNote() {
       hasExpressionQuestions && lastCompletedTestId && expressionFeedbackPending
         ? React.createElement(
             "div",
-            { style: { marginTop: "12px", textAlign: "center" } },
+            { style: { marginTop: "12px", textAlign: "center", display: "grid", gap: "8px", justifyItems: "center" } },
+            React.createElement(
+              "div",
+              {
+                style: {
+                  width: "min(100%, 560px)",
+                  padding: "10px 12px",
+                  borderRadius: "10px",
+                  border: "1px solid #d5dbe3",
+                  background: "#f5f7fa",
+                  color: "#34495e",
+                  fontSize: "14px",
+                  lineHeight: 1.4
+                }
+              },
+              React.createElement(
+                "div",
+                { style: { fontWeight: 700, marginBottom: "4px" } },
+                lang === "en"
+                  ? "Expression AI status: " + expressionPhaseLabel(expressionAiPhase)
+                  : "סטטוס משוב הבעה: " + expressionPhaseLabel(expressionAiPhase)
+              ),
+              React.createElement(
+                "div",
+                null,
+                lang === "en"
+                  ? ("Progress: " + expressionAiProcessed + "/" + expressionAiTotal + " questions")
+                  : ("התקדמות: " + expressionAiProcessed + "/" + expressionAiTotal + " שאלות")
+              )
+            ),
             React.createElement(
               "button",
               {
                 type: "button",
-                disabled: true,
+                disabled: expressionAiLoading,
+                onClick: refreshExpressionAiStatus,
                 style: {
                   padding: "10px 18px",
                   fontSize: "15px",
-                  backgroundColor: "#9aa3b2",
+                  backgroundColor: expressionAiLoading ? "#9aa3b2" : "#6c8fb0",
                   color: "white",
                   border: "none",
                   borderRadius: "8px",
-                  cursor: "not-allowed",
-                  opacity: 0.9,
+                  cursor: expressionAiLoading ? "not-allowed" : "pointer",
+                  opacity: 0.95,
                   maxWidth: "min(100%, 520px)"
                 }
               },
-              lang === "en"
-                ? "Expression AI feedback (0–2 scoring + summary) will be ready shortly…"
-                : "משוב הבעה מה-AI (ציון 0–2 והתרשמות) יהיה זמין בקרוב…"
+              expressionAiLoading
+                ? (lang === "en" ? "Refreshing..." : "מרענן...")
+                : (lang === "en"
+                  ? "Refresh AI status"
+                  : "רענון סטטוס AI")
             )
           )
         : null,
@@ -4804,16 +4904,23 @@ questionType === "C"
             },
             React.createElement(
               "div",
+              { className: "images-container--five-up-bottom" },
+              images.slice(4, 5).map(function (img, i) {
+                return renderImage(img, 4 + i, "");
+              })
+            ),
+            React.createElement(
+              "div",
               { className: "images-container--five-up-top" },
-              images.slice(0, 4).map(function (img, i) {
+              images.slice(0, 2).map(function (img, i) {
                 return renderImage(img, i, "");
               })
             ),
             React.createElement(
               "div",
-              { className: "images-container--five-up-bottom" },
-              images.slice(4, 5).map(function (img, i) {
-                return renderImage(img, 4 + i, "");
+              { className: "images-container--five-up-top" },
+              images.slice(2, 4).map(function (img, i) {
+                return renderImage(img, 2 + i, "");
               })
             )
           );
@@ -4912,16 +5019,23 @@ questionType === "E"
             },
             React.createElement(
               "div",
+              { className: "images-container--five-up-bottom" },
+              images.slice(4, 5).map(function (img, i) {
+                return renderExpressionImage(img, 4 + i);
+              })
+            ),
+            React.createElement(
+              "div",
               { className: "images-container--five-up-top" },
-              images.slice(0, 4).map(function (img, i) {
+              images.slice(0, 2).map(function (img, i) {
                 return renderExpressionImage(img, i);
               })
             ),
             React.createElement(
               "div",
-              { className: "images-container--five-up-bottom" },
-              images.slice(4, 5).map(function (img, i) {
-                return renderExpressionImage(img, 4 + i);
+              { className: "images-container--five-up-top" },
+              images.slice(2, 4).map(function (img, i) {
+                return renderExpressionImage(img, 2 + i);
               })
             )
           );
