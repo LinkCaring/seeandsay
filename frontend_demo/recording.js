@@ -17,6 +17,8 @@ const SessionRecorder = (function() {
   // Pause tracking
   let pauseStartTime = null;
   let totalPausedTime = 0; // Total milliseconds paused
+  let finalRecordingBlob = null;
+  let finalRecordingMeta = null;
 
   // Get browser-supported audio mime type (prioritize MP4/AAC for MP3-compatible output)
   function getSupportedMimeType() {
@@ -127,6 +129,8 @@ const SessionRecorder = (function() {
   // options.preserveQuestionTimestamps — keep questionTimestamps / session clock (voice re-verify mid-test)
   async function startContinuousRecording(options) {
     try {
+      // Remove legacy large payload key to free quota from older versions.
+      localStorage.removeItem("sessionRecordingFinal");
       var preserveTs = options && options.preserveQuestionTimestamps;
       // Request microphone access
       const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -160,30 +164,15 @@ const SessionRecorder = (function() {
         const mp3Blob = await convertToMP3(originalBlob);
         const url = URL.createObjectURL(mp3Blob);
         
-        // Save final MP3 recording to localStorage for persistence through page refresh
-        const reader = new FileReader();
-        reader.onloadend = function() {
-          try {
-            const base64data = reader.result;
-            localStorage.setItem("sessionRecordingFinal", JSON.stringify({
-              audio: base64data,
-              mimeType: "audio/mpeg", // MP3 mime type
-              timestamp: Date.now()
-            }));
-            console.log("✅ Saved MP3 recording to localStorage");
-          } catch (e) {
-            console.warn("Failed to save final recording:", e);
-          }
+        finalRecordingBlob = mp3Blob;
+        finalRecordingMeta = {
+          mimeType: "audio/mpeg",
+          timestamp: Date.now()
         };
-        
-        reader.onerror = function() {
-          console.warn("Error reading recording blob");
-        };
-        
-        reader.readAsDataURL(mp3Blob);
-        
+        // Keep only lightweight metadata in localStorage to avoid quota overflows.
+        localStorage.setItem("sessionRecordingFinalMeta", JSON.stringify(finalRecordingMeta));
         localStorage.setItem("sessionRecordingUrl", url);
-        console.log("✅ Session recording completed and converted to MP3, length:", audioChunks.length);
+        console.log("✅ Session recording completed and converted to MP3, length:", audioChunks.length, "size:", mp3Blob.size);
       };
 
       // Start recording
@@ -320,24 +309,13 @@ const SessionRecorder = (function() {
 
   // Get final recording URL
   async function getFinalRecordingUrl() {
+    if (finalRecordingBlob) {
+      return URL.createObjectURL(finalRecordingBlob);
+    }
     const stored = localStorage.getItem("sessionRecordingUrl");
     if (stored) {
       return stored;
     }
-    
-    // Try to reconstruct from localStorage data
-    const finalData = localStorage.getItem("sessionRecordingFinal");
-    if (finalData) {
-      try {
-        const data = JSON.parse(finalData);
-        currentMimeType = data.mimeType || currentMimeType; // Update mime type
-        const blob = dataURLtoBlob(data.audio);
-        return URL.createObjectURL(blob);
-      } catch (e) {
-        console.error("Failed to reconstruct recording:", e);
-      }
-    }
-    
     return null;
   }
 
@@ -356,15 +334,28 @@ const SessionRecorder = (function() {
 
   // Get final recording data for upload
   async function getFinalRecordingData() {
-    const finalData = localStorage.getItem("sessionRecordingFinal");
-    if (finalData) {
-      try {
-        return JSON.parse(finalData);
-      } catch (e) {
-        console.error("Failed to parse final recording data:", e);
-      }
+    if (!finalRecordingBlob) {
+      return null;
     }
-    return null;
+    return {
+      recordingBlob: finalRecordingBlob,
+      mimeType: (finalRecordingMeta && finalRecordingMeta.mimeType) || "audio/mpeg",
+      timestamp: (finalRecordingMeta && finalRecordingMeta.timestamp) || Date.now()
+    };
+  }
+
+  function setFinalRecordingBlob(blob, meta) {
+    if (!blob) return;
+    finalRecordingBlob = blob;
+    finalRecordingMeta = {
+      mimeType: (meta && meta.mimeType) || blob.type || "audio/mpeg",
+      timestamp: (meta && meta.timestamp) || Date.now()
+    };
+    try {
+      localStorage.setItem("sessionRecordingFinalMeta", JSON.stringify(finalRecordingMeta));
+    } catch (e) {
+      console.warn("Failed to persist recording metadata:", e);
+    }
   }
 
   // Check if recording is active
@@ -494,28 +485,19 @@ const SessionRecorder = (function() {
 
   // Get recording and text data for backend upload
   async function getRecordingAndText() {
-    const finalData = localStorage.getItem("sessionRecordingFinal");
     const timestampText = getTimestampText();
-    
-    if (!finalData) {
+
+    if (!finalRecordingBlob) {
       console.warn("No recording data found");
       return null;
     }
-    
-    try {
-      const data = JSON.parse(finalData);
-      const blob = dataURLtoBlob(data.audio);
-      
-      return {
-        recordingBlob: blob,           // Audio blob (MP3 format)
-        mimeType: data.mimeType,       // MIME type (should be "audio/mpeg")
-        timestampText: timestampText,  // Timestamp text for questions
-        recordingDate: data.timestamp  // When the recording was created
-      };
-    } catch (e) {
-      console.error("Failed to prepare recording data:", e);
-      return null;
-    }
+
+    return {
+      recordingBlob: finalRecordingBlob,                                         // Audio blob (MP3 format)
+      mimeType: (finalRecordingMeta && finalRecordingMeta.mimeType) || "audio/mpeg",
+      timestampText: timestampText,                                              // Timestamp text for questions
+      recordingDate: (finalRecordingMeta && finalRecordingMeta.timestamp) || Date.now()
+    };
   }
 
   // Reset timestamps (for restarting recording)
@@ -533,7 +515,10 @@ const SessionRecorder = (function() {
     localStorage.removeItem("sessionRecordingActive");
     localStorage.removeItem("sessionRecordingUrl");
     localStorage.removeItem("sessionRecordingFinal");
+    localStorage.removeItem("sessionRecordingFinalMeta");
     localStorage.removeItem("sessionRecordingChunks");
+    finalRecordingBlob = null;
+    finalRecordingMeta = null;
     if (!preserveTs) {
       localStorage.removeItem("recordingStartTime");
       localStorage.removeItem("questionTimestamps");
@@ -566,21 +551,10 @@ const SessionRecorder = (function() {
 
   // Get final recording URL (synchronous version for immediate use)
   function getFinalRecordingUrlSync() {
-    // Don't use the stored URL as it becomes invalid after page refresh
-    // Always reconstruct from localStorage data
-    const finalData = localStorage.getItem("sessionRecordingFinal");
-    if (finalData) {
-      try {
-        const data = JSON.parse(finalData);
-        currentMimeType = data.mimeType || "audio/mpeg";
-        const blob = dataURLtoBlob(data.audio);
-        const url = URL.createObjectURL(blob);
-        // Update the stored URL for this session
-        localStorage.setItem("sessionRecordingUrl", url);
-        return url;
-      } catch (e) {
-        console.error("Failed to reconstruct recording:", e);
-      }
+    if (finalRecordingBlob) {
+      const url = URL.createObjectURL(finalRecordingBlob);
+      localStorage.setItem("sessionRecordingUrl", url);
+      return url;
     }
     return null;
   }
@@ -595,6 +569,7 @@ const SessionRecorder = (function() {
     getFinalRecordingUrl: getFinalRecordingUrl,
     getFinalRecordingUrlSync: getFinalRecordingUrlSync,
     getFinalRecordingData: getFinalRecordingData,
+    setFinalRecordingBlob: setFinalRecordingBlob,
     getCurrentMimeType: getCurrentMimeType,
     getCurrentFileExtension: getCurrentFileExtension,
     isRecordingActive: isRecordingActive,
