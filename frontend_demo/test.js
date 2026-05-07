@@ -793,6 +793,36 @@ function blobToBase64(blob) {
     return from + " - " + to;
   }
 
+  function parseAgeTokenToMonths(token) {
+    if (!token) return null;
+    var t = String(token).trim();
+    if (!t) return null;
+    var m = t.match(/^(\d+):(\d{1,2})$/);
+    if (m) {
+      var y = parseInt(m[1], 10);
+      var mm = parseInt(m[2], 10);
+      if (!Number.isFinite(y) || !Number.isFinite(mm)) return null;
+      return y * 12 + mm;
+    }
+    var yOnly = parseInt(t, 10);
+    if (Number.isFinite(yOnly)) return yOnly * 12;
+    return null;
+  }
+
+  function getAgeGroupStartMonths(ageGroup) {
+    if (!ageGroup) return null;
+    var parts = String(ageGroup).split("-");
+    return parseAgeTokenToMonths(parts[0]);
+  }
+
+  function shouldApplyAdaptiveWrongLogic(questionObj) {
+    if (!questionObj) return true;
+    var childMonths = totalMonths();
+    var startMonths = getAgeGroupStartMonths(questionObj.age_group);
+    if (startMonths == null) return true;
+    return startMonths > childMonths;
+  }
+
   // =============================================================================
   // EVENT HANDLERS
   // =============================================================================
@@ -1634,6 +1664,32 @@ const handleReadingValidationRetry = function () {
     return dedupeQuestionResultsKeepLastAttempt(rows || questionResults).length;
   }
 
+  function countAnsweredByType(rows, typeLabel) {
+    const normalizedType = typeLabel === "expression" ? "expression" : "comprehension";
+    const deduped = dedupeQuestionResultsKeepLastAttempt(rows || questionResults);
+    var count = 0;
+    for (var i = 0; i < deduped.length; i++) {
+      var r = deduped[i];
+      var rType = r && r.questionType;
+      if (!rType) {
+        var qn = parseInt(r && r.questionNumber, 10);
+        var q = Number.isFinite(qn) ? questions[qn - 1] : null;
+        rType = getQuestionTypeLabel(q);
+      }
+      if (rType === normalizedType) count += 1;
+    }
+    return count;
+  }
+
+  function countQuestionsByType(typeLabel) {
+    const normalizedType = typeLabel === "expression" ? "expression" : "comprehension";
+    var count = 0;
+    for (var i = 0; i < questions.length; i++) {
+      if (getQuestionTypeLabel(questions[i]) === normalizedType) count += 1;
+    }
+    return count;
+  }
+
   function finalizeComprehensionResult(result) {
     if (comprehensionAdvanceLockRef.current) return;
     comprehensionAdvanceLockRef.current = true;
@@ -1674,16 +1730,26 @@ const handleReadingValidationRetry = function () {
 
   function requestFinishTest() {
     if (sessionCompleted) return;
-    var n = questions.length;
-    if (n === 0) {
+    if (questions.length === 0) {
       completeSession(questionResults);
       return;
     }
-    if (countUniqueQuestionsAnswered(questionResults) < n) {
-      setIncompleteSummaryConfirmOpen(true);
+
+    var shouldShowIncompletePopup = false;
+    if (questionType === "E") {
+      var exprTotal = countQuestionsByType("expression");
+      var exprAnswered = countAnsweredByType(questionResults, "expression");
+      shouldShowIncompletePopup = exprTotal > 0 && exprAnswered < exprTotal;
     } else {
-      completeSession(questionResults);
+      shouldShowIncompletePopup = countUniqueQuestionsAnswered(questionResults) < questions.length;
     }
+
+    if (shouldShowIncompletePopup) {
+      setIncompleteSummaryConfirmOpen(true);
+      return;
+    }
+
+    completeSession(questionResults);
   }
 
   const handleClick = function (img, event) {
@@ -2054,13 +2120,16 @@ const handleReadingValidationRetry = function () {
         console.log("Recorded result for question", questionNumber, ":", resultString);
 
         var qtLabel = getQuestionTypeLabel(currentQuestion);
+        var adaptiveLogicEnabledForQuestion = shouldApplyAdaptiveWrongLogic(currentQuestion);
         if (qtLabel === "comprehension") {
-          consecutiveCompFailRef.current = resultString === "wrong"
+          consecutiveExprFailRef.current = 0; // Keep comprehension streak independent from expression streak.
+          consecutiveCompFailRef.current = adaptiveLogicEnabledForQuestion && resultString === "wrong"
             ? consecutiveCompFailRef.current + 1
             : 0;
         }
         if (qtLabel === "expression") {
-          consecutiveExprFailRef.current = resultString === "wrong"
+          consecutiveCompFailRef.current = 0; // Keep expression streak independent from comprehension streak.
+          consecutiveExprFailRef.current = adaptiveLogicEnabledForQuestion && resultString === "wrong"
             ? consecutiveExprFailRef.current + 1
             : 0;
         }
@@ -2089,8 +2158,16 @@ const handleReadingValidationRetry = function () {
       if (currentIdx < questions.length - 1) {
         updateCurrentQuestionIndex(currentIdx + 1);
       } else {
-        var answeredCount = dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
-        if (answeredCount >= questions.length) {
+        var shouldFinishAtLastQuestion = false;
+        if (questionType === "E") {
+          var exprTotalAtEnd = countQuestionsByType("expression");
+          var exprAnsweredAtEnd = countAnsweredByType(updatedQuestionResults, "expression");
+          shouldFinishAtLastQuestion = exprTotalAtEnd === 0 || exprAnsweredAtEnd >= exprTotalAtEnd;
+        } else {
+          var answeredCount = dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
+          shouldFinishAtLastQuestion = answeredCount >= questions.length;
+        }
+        if (shouldFinishAtLastQuestion) {
           completeSession(updatedQuestionResults);
         } else {
           setIncompleteSummaryConfirmOpen(true);
@@ -2557,7 +2634,7 @@ const handleReadingValidationRetry = function () {
 
       // Poll until recording is ready, then send to backend
       var pollAttempts = 0;
-      var maxAttempts = 50; // Max 5 seconds (50 * 100ms)
+      var maxAttempts = 300; // Max 30 seconds (300 * 100ms)
 
       var checkRecordingReady = async function () {
         pollAttempts++;
@@ -2575,20 +2652,14 @@ const handleReadingValidationRetry = function () {
               console.log("✅ Audio combined successfully");
             }
 
-            // Store final audio (combined or test-only) for download, then show completion screen
-            const reader2 = new FileReader();
-            reader2.onloadend = function () {
-              const base64data = reader2.result;
-              localStorage.setItem("sessionRecordingFinal", JSON.stringify({
-                audio: base64data,
-                mimeType: "audio/mpeg",
-                timestamp: Date.now()
-              }));
-              const url = URL.createObjectURL(finalBlob);
-              localStorage.setItem("sessionRecordingUrl", url);
-              setSessionCompleted(true);
-            };
-            reader2.readAsDataURL(finalBlob);
+            // Keep final audio in memory to avoid localStorage quota failures.
+            SessionRecorder.setFinalRecordingBlob(finalBlob, {
+              mimeType: "audio/mpeg",
+              timestamp: Date.now()
+            });
+            const url = URL.createObjectURL(finalBlob);
+            localStorage.setItem("sessionRecordingUrl", url);
+            setSessionCompleted(true);
 
             const reader = new FileReader();
             reader.onloadend = async function () {
@@ -4076,11 +4147,21 @@ function renderExpectedAnswerNote() {
                 var successCount = 0;
                 var partialCount = 0;
                 var wrongCount = 0;
+                var gradeMatchedCount = 0;
+                var gradeComparedCount = 0;
                 rows.forEach(function (r) {
                   var s = Number(r && r.ai_score);
                   if (s === 2) successCount += 1;
                   else if (s === 1) partialCount += 1;
                   else wrongCount += 1;
+
+                  var qn = String((r && r.question_number) != null ? r.question_number : "");
+                  var parentResult = parentExprByQ[qn];
+                  if (parentResult == null) return;
+                  if (!(s === 0 || s === 1 || s === 2)) return;
+                  var parentGrade = parentResult === "correct" ? 2 : parentResult === "partly" ? 1 : 0;
+                  gradeComparedCount += 1;
+                  if (parentGrade === s) gradeMatchedCount += 1;
                 });
                 var aiStats = {
                   correct: successCount,
@@ -4095,6 +4176,13 @@ function renderExpectedAnswerNote() {
                     "p",
                     { style: { margin: "0 0 8px", fontSize: "14px" } },
                     statsLine("מודל AI (0–2)", "AI model (0–2)", aiStats)
+                  ),
+                  React.createElement(
+                    "p",
+                    { style: { margin: "0 0 8px", fontSize: "14px", fontWeight: 600 } },
+                    lang === "en"
+                      ? ("Grade match (parent vs AI): " + gradeMatchedCount + " out of " + gradeComparedCount + " questions")
+                      : ("התאמה בציון (הורים מול AI): " + gradeMatchedCount + " מתוך " + gradeComparedCount + " שאלות")
                   ),
                   React.createElement(
                     "div",
