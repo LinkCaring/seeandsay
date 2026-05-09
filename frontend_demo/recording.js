@@ -125,6 +125,31 @@ const SessionRecorder = (function() {
     return getFileExtension(currentMimeType);
   }
 
+  function ensureTimingState() {
+    if (!recordingStartTime) {
+      const stored = localStorage.getItem("recordingStartTime");
+      if (stored) {
+        recordingStartTime = parseInt(stored, 10);
+      } else {
+        console.warn("Recording start time not found");
+        return false;
+      }
+    }
+    if (totalPausedTime === 0) {
+      const storedPausedTime = localStorage.getItem("totalPausedTime");
+      if (storedPausedTime) {
+        totalPausedTime = parseInt(storedPausedTime, 10);
+      }
+    }
+    return true;
+  }
+
+  function getElapsedMs() {
+    if (!ensureTimingState()) return null;
+    const currentTime = Date.now();
+    return Math.max(0, currentTime - recordingStartTime - totalPausedTime);
+  }
+
   // Start continuous session recording
   // options.preserveQuestionTimestamps — keep questionTimestamps / session clock (voice re-verify mid-test)
   async function startContinuousRecording(options) {
@@ -370,29 +395,8 @@ const SessionRecorder = (function() {
 
   // Mark question start with timestamp
   function markQuestionStart(questionNumber) {
-    if (!recordingStartTime) {
-      // Try to recover from localStorage if page was refreshed
-      const stored = localStorage.getItem("recordingStartTime");
-      if (stored) {
-        recordingStartTime = parseInt(stored, 10);
-      } else {
-        console.warn("Recording start time not found");
-        return;
-      }
-    }
-    
-    // Recover totalPausedTime if not in memory
-    if (totalPausedTime === 0) {
-      const storedPausedTime = localStorage.getItem("totalPausedTime");
-      if (storedPausedTime) {
-        totalPausedTime = parseInt(storedPausedTime, 10);
-      }
-      console.log(totalPausedTime, "total")
-
-    }
-    
-    const currentTime = Date.now();
-    let elapsedMs = currentTime - recordingStartTime - totalPausedTime; // Exclude paused time
+    let elapsedMs = getElapsedMs();
+    if (elapsedMs == null) return;
     
     // Check if this is the first question 1 marking - ensure it's always at 0 seconds
     // Check if there are any existing question 1 timestamps (handle both string and number)
@@ -410,13 +414,39 @@ const SessionRecorder = (function() {
     
     questionTimestamps.push({
       questionNumber: questionNumber,
-      timestamp: elapsedMs
+      timestamp: elapsedMs,
+      eventType: "start"
     });
     
     // Save to localStorage for persistence
     localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
     
     console.log("📝 Marked question", questionNumber, "at", formatTimestamp(elapsedMs));
+  }
+
+  function markQuestionEnd(questionNumber) {
+    const elapsedMs = getElapsedMs();
+    if (elapsedMs == null) return;
+    const questionNumStr = String(questionNumber || "");
+    if (!questionNumStr) return;
+
+    const last = questionTimestamps.length > 0 ? questionTimestamps[questionTimestamps.length - 1] : null;
+    if (
+      last &&
+      String(last.questionNumber) === questionNumStr &&
+      last.eventType === "end" &&
+      Math.abs((last.timestamp || 0) - elapsedMs) <= 250
+    ) {
+      return;
+    }
+
+    questionTimestamps.push({
+      questionNumber: questionNumber,
+      timestamp: elapsedMs,
+      eventType: "end"
+    });
+    localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
+    console.log("🏁 Marked question end", questionNumber, "at", formatTimestamp(elapsedMs));
   }
 
   // Format milliseconds to MM:SS
@@ -446,19 +476,35 @@ const SessionRecorder = (function() {
       return "[]";
     }
     
-    // Filter out PAUSED and RESUMED entries, only keep actual questions
+    // Filter out PAUSED and RESUMED entries, only keep actual questions.
     const questionEntries = questionTimestamps.filter(function(item) {
       return item.questionNumber !== "PAUSED" && item.questionNumber !== "RESUMED";
     });
-    
-    // Convert to Python tuple format: [(1,0),(2,65),(3,127)]
-    const timestampTuples = questionEntries.map(function(item) {
+
+    // Keep legacy tuple format from start markers for backward-compatible inspection.
+    const startEntries = questionEntries.filter(function (item) {
+      return !item.eventType || item.eventType === "start";
+    });
+    const timestampTuples = startEntries.map(function(item) {
       const timeInSeconds = Math.floor(item.timestamp / 1000); // Convert ms to seconds, round down
       const questionNum = parseInt(item.questionNumber, 10);
       return "(" + questionNum + "," + timeInSeconds + ")";
     });
-    
-    return "[" + timestampTuples.join(",") + "]";
+
+    const events = questionEntries.map(function (item) {
+      return {
+        q: parseInt(item.questionNumber, 10),
+        t: Math.floor((item.timestamp || 0) / 1000),
+        type: item.eventType === "end" ? "end" : "start",
+      };
+    });
+
+    return JSON.stringify({
+      version: 2,
+      format: "question_events",
+      events: events,
+      legacyStarts: "[" + timestampTuples.join(",") + "]",
+    });
   }
 
   // Download timestamp text file
@@ -575,6 +621,7 @@ const SessionRecorder = (function() {
     isRecordingActive: isRecordingActive,
     isMediaRecorderLive: isMediaRecorderLive,
     markQuestionStart: markQuestionStart,
+    markQuestionEnd: markQuestionEnd,
     downloadTimestampFile: downloadTimestampFile,
     getTimestampText: getTimestampText,
     getRecordingAndText: getRecordingAndText,

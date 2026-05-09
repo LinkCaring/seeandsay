@@ -43,7 +43,7 @@ storage = SeeSayMongoStorage(mongodb_url, database_name)
 GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "100"))
 GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "40"))
 GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
-GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "500"))
+GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "2800"))
 EXPRESSION_IMPRESSION_SAMPLE_CAP = int(os.environ.get("EXPRESSION_IMPRESSION_SAMPLE_CAP", "10"))
 
 
@@ -122,29 +122,110 @@ def _parse_expression_results_from_full_array(full_array_str):
 
 def _parse_question_timestamps(timestamps_text):
     """
-    Frontend timestamps format: [(1,0),(2,65),(3,127)]
-    Returns list of tuples: [(question_number:int, second:int), ...] sorted by second.
+    Supports:
+    - Legacy frontend format: [(1,0),(2,65),(3,127)]
+    - Event payload format:
+      {"version":2,"format":"question_events","events":[{"q":33,"t":1543,"type":"start"},{"q":33,"t":1555,"type":"end"}]}
+    Returns dict with:
+      starts_by_q: first start second per question
+      ends_by_q: explicit end second per question (if provided)
+      ordered_starts: list[(question_number:int, second:int)] sorted by second
     """
+    parsed = {
+        "starts_by_q": {},
+        "ends_by_q": {},
+        "ordered_starts": [],
+    }
     if not timestamps_text:
-        return []
-    pairs = re.findall(r'\((\d+),\s*(\d+)\)', timestamps_text)
-    rows = [(int(q), int(t)) for q, t in pairs]
-    rows.sort(key=lambda x: x[1])
-    return rows
+        return parsed
+
+    text = str(timestamps_text).strip()
+    start_events = []
+    end_events = []
+
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+            events = payload.get("events") if isinstance(payload, dict) else None
+            if isinstance(events, list):
+                for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
+                    q = ev.get("q")
+                    t = ev.get("t")
+                    et = str(ev.get("type") or "start").lower()
+                    try:
+                        qn = int(q)
+                        sec = int(t)
+                    except Exception:
+                        continue
+                    if sec < 0:
+                        continue
+                    if et == "end":
+                        end_events.append((qn, sec))
+                    else:
+                        start_events.append((qn, sec))
+        except Exception:
+            # Fall back to legacy parser below.
+            start_events = []
+            end_events = []
+
+    if not start_events and not end_events:
+        pairs = re.findall(r'\((\d+),\s*(\d+)\)', text)
+        start_events = [(int(q), int(t)) for q, t in pairs]
+
+    start_events.sort(key=lambda x: x[1])
+    end_events.sort(key=lambda x: x[1])
+
+    parsed["ordered_starts"] = start_events
+    starts_by_q = parsed["starts_by_q"]
+    for qn, sec in start_events:
+        if str(qn) not in starts_by_q:
+            starts_by_q[str(qn)] = sec
+
+    ends_by_q = parsed["ends_by_q"]
+    for qn, sec in end_events:
+        key = str(qn)
+        start_sec = starts_by_q.get(key)
+        if start_sec is None or sec <= start_sec:
+            continue
+        if key not in ends_by_q:
+            ends_by_q[key] = sec
+
+    return parsed
 
 
-def _timestamp_window_for_question(qn, sorted_marks):
+def _timestamp_window_for_question(qn, marks_data):
     """
-    Calculates [start, end) window for a question using next timestamp as end when possible.
+    Calculates [start, end) window:
+      1) start from question start mark
+      2) end from explicit question end mark (if present)
+      3) fallback end from next start mark in timeline
     """
-    start = None
+    if not marks_data:
+        return None, None
+
+    key = str(qn)
+    starts_by_q = marks_data.get("starts_by_q") or {}
+    ends_by_q = marks_data.get("ends_by_q") or {}
+    ordered_starts = marks_data.get("ordered_starts") or []
+
+    start = starts_by_q.get(key)
+    if start is None:
+        return None, None
+
+    explicit_end = ends_by_q.get(key)
+    if explicit_end is not None and explicit_end > start:
+        return start, explicit_end
+
     end = None
-    for idx, (question_num, sec) in enumerate(sorted_marks):
-        if str(question_num) == str(qn):
-            start = sec
-            if idx + 1 < len(sorted_marks):
-                end = sorted_marks[idx + 1][1]
+    for idx, (question_num, sec) in enumerate(ordered_starts):
+        if str(question_num) == key and sec == start:
+            if idx + 1 < len(ordered_starts):
+                end = ordered_starts[idx + 1][1]
             break
+    if end is not None and end <= start:
+        end = None
     return start, end
 
 
@@ -175,6 +256,58 @@ def _aggregate_expression_ai(per_question_rows):
     }
 
 
+def _parent_result_to_score(parent_result):
+    norm = str(parent_result or "").strip().lower()
+    if norm == "correct":
+        return 2
+    if norm == "partly":
+        return 1
+    if norm == "wrong":
+        return 0
+    return None
+
+
+def _build_parent_ai_comparison(expression_items, per_question_rows):
+    parent_by_q = {}
+    for qn, parent_result in (expression_items or []):
+        parent_by_q[str(qn)] = parent_result
+
+    rows = []
+    match_count = 0
+    total_compared = 0
+    for row in (per_question_rows or []):
+        qn_raw = row.get("question_number")
+        qn_key = str(qn_raw)
+        parent_result = parent_by_q.get(qn_key)
+        parent_score = _parent_result_to_score(parent_result)
+        ai_score = row.get("ai_score")
+        ai_score_num = ai_score if ai_score in [0, 1, 2] else None
+        is_match = (
+            parent_score is not None
+            and ai_score_num is not None
+            and parent_score == ai_score_num
+        )
+        if parent_score is not None and ai_score_num is not None:
+            total_compared += 1
+        if is_match:
+            match_count += 1
+        rows.append({
+            "question_number": qn_raw,
+            "parent_result": parent_result,
+            "parent_score": parent_score,
+            "ai_score": ai_score_num,
+            "match": bool(is_match),
+        })
+
+    match_rate = (match_count / total_compared) if total_compared > 0 else None
+    return {
+        "match_count": match_count,
+        "total_compared": total_compared,
+        "match_rate": match_rate,
+        "rows": rows,
+    }
+
+
 def _build_pending_expression_ai_payload(test_id, started_at, expression_question_count, phase, processed_questions, per_question_rows=None):
     rows = per_question_rows or []
     return {
@@ -185,6 +318,13 @@ def _build_pending_expression_ai_payload(test_id, started_at, expression_questio
         "summary": _aggregate_expression_ai(rows),
         "meta": {
             "expression_question_count": expression_question_count,
+            "parent_ai_comparison": {
+                "status": "pending",
+                "match_count": 0,
+                "total_compared": 0,
+                "match_rate": None,
+                "rows": [],
+            },
             "progress": {
                 "phase": phase,
                 "processed_questions": processed_questions,
@@ -446,6 +586,10 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             "question_text": question_text,
             "context_hint": context_hint,
             "linguistic_goal_line": linguistic_goal_line,
+            # Broad PLS frame for narrative bucketing: CSV column "semantics" (not category PLS).
+            "pls_semantics_area": (rubric.get("semantics") or "").strip(),
+            # Optional finer tag from CSV "category PLS"; supplementary only for the model prompt.
+            "pls_category": (rubric.get("category_pls") or "").strip(),
         })
 
         allowed = storage.check_and_increment_daily_quota(
@@ -501,6 +645,7 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
 
     expression_ai_summary = _aggregate_expression_ai(expression_ai_rows)
+    parent_ai_comparison = _build_parent_ai_comparison(expression_items, expression_ai_rows)
     if callable(progress_cb):
         progress_cb("building_impression", total_expression_items, total_expression_items, expression_ai_rows)
 
@@ -540,6 +685,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                     "question_text": c["question_text"],
                     "context_hint": c.get("context_hint") or "",
                     "linguistic_goal_line": c.get("linguistic_goal_line") or "",
+                    "pls_semantics_area": c.get("pls_semantics_area") or "",
+                    "pls_category": c.get("pls_category") or "",
                     "audio_bytes": c["audio_bytes"],
                 })
             imp = summarize_expressive_language_impression_gemini(
@@ -569,6 +716,10 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
         "summary": expression_ai_summary,
         "meta": {
             "expression_question_count": total_expression_items,
+            "parent_ai_comparison": {
+                "status": "done",
+                **parent_ai_comparison,
+            },
             "progress": {
                 "phase": "done",
                 "processed_questions": total_expression_items,
@@ -609,6 +760,13 @@ def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audi
             "summary": _aggregate_expression_ai([]),
             "meta": {
                 "expression_question_count": total_expression_items,
+                "parent_ai_comparison": {
+                    "status": "failed",
+                    "match_count": 0,
+                    "total_compared": 0,
+                    "match_rate": None,
+                    "rows": [],
+                },
                 "progress": {
                     "phase": "failed",
                     "processed_questions": 0,
