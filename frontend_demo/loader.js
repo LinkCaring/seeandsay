@@ -10,7 +10,26 @@ const ImageLoader = (function() {
   let allQuestions = [];
 
   function getImageUrl(queryNumber, imageIndex) {
+    return "resources/test_assets/" + queryNumber + "/image_" + imageIndex + ".webp";
+  }
+
+  function getImageUrlPng(queryNumber, imageIndex) {
     return "resources/test_assets/" + queryNumber + "/image_" + imageIndex + ".png";
+  }
+
+  /** Match test.js: plain count or two-row "top|total". */
+  function parseImageCount(imageCount) {
+    if (imageCount == null || imageCount === "") return 1;
+    var s = String(imageCount);
+    if (s.indexOf("|") !== -1) {
+      var parts = s.split("|");
+      return parseInt(parts[1], 10) || parseInt(parts[0], 10) || 1;
+    }
+    return parseInt(s, 10) || 1;
+  }
+
+  function isMaskAnswerQuestion(q) {
+    return String(q.answer || "").trim() === "A";
   }
 
   function isExpressionQuestion(q) {
@@ -99,11 +118,12 @@ const ImageLoader = (function() {
     sorted.forEach(function(q) {
       if (!q.query_number || !q.image_count) return;
 
-      const count = parseInt(q.image_count, 10) || 1;
+      const count = parseImageCount(q.image_count);
       const targetQueue = isExpressionQuestion(q) ? exprQueue : compQueue;
+      const urlForIndex = isMaskAnswerQuestion(q) ? getImageUrlPng : getImageUrl;
 
       for (let i = 1; i <= count; i++) {
-        const url = getImageUrl(q.query_number, i);
+        const url = urlForIndex(q.query_number, i);
         if (!loadedImages.has(url) && !queuedImages.has(url)) {
           targetQueue.push(url);
           queuedImages.add(url);
@@ -131,15 +151,16 @@ const ImageLoader = (function() {
    * Loads current-question images immediately in parallel and removes them from backlog queues.
    * Keeps navigation/jumps responsive while dual FIFOs prefetch in the background.
    */
-  function prioritizeQuestion(queryNumber, imageCount) {
+  function prioritizeQuestion(queryNumber, imageCount, preferPng) {
     var qn = parseInt(queryNumber, 10);
     if (!qn) return;
-    var count = parseInt(imageCount, 10) || 1;
+    var count = parseImageCount(imageCount);
+    var urlForIndex = preferPng ? getImageUrlPng : getImageUrl;
     var urls = [];
     var u;
     var i;
     for (i = 1; i <= count; i++) {
-      urls.push(getImageUrl(qn, i));
+      urls.push(urlForIndex(qn, i));
     }
     for (i = 0; i < urls.length; i++) {
       u = urls[i];
@@ -158,10 +179,11 @@ const ImageLoader = (function() {
     });
   }
 
-  function areImagesLoaded(queryNumber, imageCount) {
-    const count = parseInt(imageCount, 10) || 1;
+  function areImagesLoaded(queryNumber, imageCount, preferPng) {
+    const count = parseImageCount(imageCount);
+    const urlForIndex = preferPng ? getImageUrlPng : getImageUrl;
     for (let i = 1; i <= count; i++) {
-      const url = getImageUrl(queryNumber, i);
+      const url = urlForIndex(queryNumber, i);
       if (!loadedImages.has(url)) {
         return false;
       }
@@ -179,6 +201,7 @@ const ImageLoader = (function() {
     prioritizeQuestion: prioritizeQuestion,
     areImagesLoaded: areImagesLoaded,
     isImageLoaded: isImageLoaded,
-    getImageUrl: getImageUrl
+    getImageUrl: getImageUrl,
+    getImageUrlPng: getImageUrlPng
   };
 })();

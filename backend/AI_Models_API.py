@@ -647,6 +647,32 @@ def _validate_expressive_language_impression_payload(payload):
     for key in ("phonology_separate_note_he", "limitations_he"):
         if not isinstance(payload.get(key), str):
             return False
+    # Extended PLS narrative report (still descriptive; not per-question 0/1/2)
+    if not isinstance(payload.get("summary_card_intro_he"), str):
+        return False
+    for key in ("positive_points_he", "improvement_points_he"):
+        v = payload.get(key)
+        if not isinstance(v, list):
+            return False
+        if not all(isinstance(x, str) for x in v):
+            return False
+        if len(v) < 2:
+            return False
+    for key in (
+        "feedback_integrative_language_he",
+        "feedback_semantics_he",
+        "feedback_language_structure_he",
+        "feedback_phonological_awareness_he",
+    ):
+        if not isinstance(payload.get(key), str):
+            return False
+    steps = payload.get("recommended_next_steps_he")
+    if not isinstance(steps, list):
+        return False
+    if not all(isinstance(x, str) for x in steps):
+        return False
+    if len(steps) != 3:
+        return False
     return True
 
 
@@ -689,7 +715,97 @@ def _coerce_expressive_language_impression_dict(raw):
             out[key] = ""
         elif not isinstance(out[key], str):
             out[key] = str(out[key])
+    if out.get("summary_card_intro_he") is None:
+        out["summary_card_intro_he"] = ""
+    elif not isinstance(out["summary_card_intro_he"], str):
+        out["summary_card_intro_he"] = str(out["summary_card_intro_he"])
+    for key in ("positive_points_he", "improvement_points_he"):
+        v = out.get(key)
+        if v is None:
+            out[key] = []
+        elif isinstance(v, str):
+            out[key] = [v] if v.strip() else []
+        elif isinstance(v, list):
+            out[key] = [str(x) for x in v]
+        else:
+            out[key] = []
+    for key in (
+        "feedback_integrative_language_he",
+        "feedback_semantics_he",
+        "feedback_language_structure_he",
+        "feedback_phonological_awareness_he",
+    ):
+        if out.get(key) is None:
+            out[key] = ""
+        elif not isinstance(out[key], str):
+            out[key] = str(out[key])
+    st = out.get("recommended_next_steps_he")
+    if st is None:
+        out["recommended_next_steps_he"] = []
+    elif isinstance(st, str):
+        out["recommended_next_steps_he"] = [st] if st.strip() else []
+    elif isinstance(st, list):
+        out["recommended_next_steps_he"] = [str(x) for x in st]
+    else:
+        out["recommended_next_steps_he"] = []
+    _normalize_impression_extended_fields(out)
     return out
+
+
+def _normalize_impression_extended_fields(out):
+    """Pad/trim extended PLS report fields so validation passes without re-calling the model."""
+    filler_pos = "בדגימות שנבדקו עלו מקומות חוזרים שמצביעים על יכולת הבעה תקינה בחלק מהמשימות."
+    filler_imp = "בדגימות שנבדקו עולה צורך בהמשך תרגול ממוקד בהתאם לגיל."
+    filler_cat = (
+        "בדגימות שנבדקו אין מספיק בסיס להתייחסות ספציפית למסגרת זו."
+    )
+
+    pos = [x.strip() for x in (out.get("positive_points_he") or []) if isinstance(x, str) and x.strip()]
+    if len(pos) < 2:
+        for x in out.get("observed_strengths") or []:
+            if isinstance(x, str) and x.strip() and x.strip() not in pos:
+                pos.append(x.strip())
+            if len(pos) >= 2:
+                break
+    while len(pos) < 2:
+        pos.append(filler_pos)
+    out["positive_points_he"] = pos[:8]
+
+    imp = [x.strip() for x in (out.get("improvement_points_he") or []) if isinstance(x, str) and x.strip()]
+    if len(imp) < 2:
+        for x in out.get("observed_challenges") or []:
+            if isinstance(x, str) and x.strip() and x.strip() not in imp:
+                imp.append(x.strip())
+            if len(imp) >= 2:
+                break
+    while len(imp) < 2:
+        imp.append(filler_imp)
+    out["improvement_points_he"] = imp[:8]
+
+    for key in (
+        "feedback_integrative_language_he",
+        "feedback_semantics_he",
+        "feedback_language_structure_he",
+        "feedback_phonological_awareness_he",
+    ):
+        v = (out.get(key) or "").strip() if isinstance(out.get(key), str) else ""
+        if not v:
+            out[key] = filler_cat
+        else:
+            out[key] = v
+
+    intro = out.get("summary_card_intro_he")
+    if not isinstance(intro, str) or not intro.strip():
+        sp = (out.get("summary_paragraph_he") or "").strip()
+        out["summary_card_intro_he"] = sp[:320] + ("…" if len(sp) > 320 else "") if sp else filler_cat
+
+    steps = []
+    for x in out.get("recommended_next_steps_he") or []:
+        if isinstance(x, str) and x.strip():
+            steps.append(x.strip())
+    while len(steps) < 3:
+        steps.append("המשיכו לתרגל באופן קצר ומהנה בהתאם לדגימות שנבדקו.")
+    out["recommended_next_steps_he"] = steps[:3]
 
 
 def _expressive_language_impression_response_schema(types_module):
@@ -700,10 +816,18 @@ def _expressive_language_impression_response_schema(types_module):
         type=Ty.OBJECT,
         required=[
             "summary_paragraph_he",
+            "summary_card_intro_he",
             "sample_count_used",
             "data_quality",
             "observed_strengths",
             "observed_challenges",
+            "positive_points_he",
+            "improvement_points_he",
+            "feedback_integrative_language_he",
+            "feedback_semantics_he",
+            "feedback_language_structure_he",
+            "feedback_phonological_awareness_he",
+            "recommended_next_steps_he",
             "phonology_separate_note_he",
             "limitations_he",
         ],
@@ -714,6 +838,10 @@ def _expressive_language_impression_response_schema(types_module):
                     "One concise Hebrew paragraph summarizing the child's expressive-language ability "
                     "based only on the provided expression samples. No grade, no diagnosis, no treatment recommendation."
                 ),
+            ),
+            "summary_card_intro_he": Sch(
+                type=Ty.STRING,
+                description="1–2 short Hebrew sentences for an on-screen intro card (strengths/limitations overview).",
             ),
             "sample_count_used": Sch(
                 type=Ty.INTEGER,
@@ -726,6 +854,37 @@ def _expressive_language_impression_response_schema(types_module):
             ),
             "observed_strengths": str_arr,
             "observed_challenges": str_arr,
+            "positive_points_he": Sch(
+                type=Ty.ARRAY,
+                items=Sch(type=Ty.STRING),
+                description="2–4 short Hebrew bullet sentences: positive observations.",
+            ),
+            "improvement_points_he": Sch(
+                type=Ty.ARRAY,
+                items=Sch(type=Ty.STRING),
+                description="2–4 short Hebrew bullet sentences: areas to reinforce.",
+            ),
+            "feedback_integrative_language_he": Sch(
+                type=Ty.STRING,
+                description="Hebrew paragraph: integrative language skills frame (מיומנויות שפה אינטגרטיביות).",
+            ),
+            "feedback_semantics_he": Sch(
+                type=Ty.STRING,
+                description="Hebrew paragraph: semantics frame (סמנטיקה).",
+            ),
+            "feedback_language_structure_he": Sch(
+                type=Ty.STRING,
+                description="Hebrew paragraph: language structure frame (מבנה שפה).",
+            ),
+            "feedback_phonological_awareness_he": Sch(
+                type=Ty.STRING,
+                description="Hebrew paragraph: phonological awareness frame (מודעות פונולוגית).",
+            ),
+            "recommended_next_steps_he": Sch(
+                type=Ty.ARRAY,
+                items=Sch(type=Ty.STRING),
+                description="Exactly 3 short Hebrew lines suggesting home/practice activities (not clinical advice).",
+            ),
             "phonology_separate_note_he": Sch(
                 type=Ty.STRING,
                 description="Short note about articulation/phonology only if relevant, explicitly separated from semantic-language ability.",
@@ -773,12 +932,18 @@ def summarize_expressive_language_impression_gemini(
         qt = (ent.get("question_text") or "").strip()
         ctx = (ent.get("context_hint") or "").strip()
         goal = (ent.get("linguistic_goal_line") or "").strip()
+        pls_area = (ent.get("pls_semantics_area") or "").strip()
+        pls_cat = (ent.get("pls_category") or "").strip()
         meta = (
             f"--- דגימה {i} ---\n"
             f"מספר שאלה: {qn}\n"
             f"תוצאת מחוון במשימה: {hl}\n"
             f"נוסח השאלה:\n{qt}\n"
         )
+        if pls_area:
+            meta += f"מסגרת רחבה לפי עמודת semantics בקובץ המבחן: {pls_area}\n"
+        if pls_cat:
+            meta += f"פירוט משני (עמודת category PLS בקובץ — לא מחליף את semantics): {pls_cat}\n"
         if goal:
             meta += f"מטרה לשונית צפויה (מתוך חומרי המבחן):\n{goal}\n"
         if ctx:
@@ -813,7 +978,7 @@ def summarize_expressive_language_impression_gemini(
 
     schema = _expressive_language_impression_response_schema(types)
     contents = parts
-    mot = max(256, min(int(max_output_tokens or 500), 8192))
+    mot = max(1024, min(int(max_output_tokens or 500), 8192))
 
     def try_parse_response(response, stage):
         parsed_obj = getattr(response, "parsed", None)

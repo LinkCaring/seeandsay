@@ -6,13 +6,231 @@
 function Welcome({ lang, setPage, onRequestStartTest }) {
   const isEn = lang === "en";
   const ENABLE_SCREEN1_INTRO_VIDEO = true;
-  const orderedScreens = ["screen1", "screen1_video", "screen2"];
+  const orderedScreens = ["screen1", "screen2_login", "screen1_video", "screen3"];
   // const orderedScreens = ["screen1", "screen2", "screen3", "screen4"];
   const [activeScreen, setActiveScreen] = React.useState("screen1");
   const [tipsOpen, setTipsOpen] = React.useState(false);
   const introVideoRef = React.useRef(null);
   const introVideoAutoplayBlockedRef = React.useRef(false);
+  const PRIVACY_POLICY_URL = "https://www.heb.linkcaring.com/privacy-policy";
+  const TERMS_OF_USE_URL = "https://www.heb.linkcaring.com/terms-of-use";
+  const [childName, setChildName] = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("childName") || "\"\""); } catch (e) { return ""; }
+  });
+  const [childGender, setChildGender] = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("childGender") || "\"\""); } catch (e) { return ""; }
+  });
+  const [childDob, setChildDob] = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("childDob") || "\"\""); } catch (e) { return ""; }
+  });
+  const [recordingConsent, setRecordingConsent] = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("recordingConsent") || "false"); } catch (e) { return false; }
+  });
+  const [legalConfirmation, setLegalConfirmation] = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("legalConfirmation") || "false"); } catch (e) { return false; }
+  });
+  const [micPermissionError, setMicPermissionError] = React.useState("");
+  const [loginSubmitting, setLoginSubmitting] = React.useState(false);
+  const [resumePromptStage, setResumePromptStage] = React.useState(null); // "beforeLogin" | null
+  const dobInputRef = React.useRef(null);
   const activeIndex = orderedScreens.indexOf(activeScreen);
+
+  function tr(key, fallback) {
+    if (window.I18N && typeof window.I18N.t === "function") {
+      return window.I18N.t(key);
+    }
+    return fallback || key;
+  }
+
+  function setPersistentValue(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {}
+  }
+
+  function hasInProgressTestState() {
+    try {
+      if (localStorage.getItem("sessionCompleted") === "true") return false;
+      if (localStorage.getItem("ageConfirmed") !== "true") return false;
+      if (localStorage.getItem("voiceIdentifierConfirmed") === "true") return true;
+      var idx = parseInt(localStorage.getItem("currentIndex") || "0", 10);
+      if (!isNaN(idx) && idx > 0) return true;
+      var qr = JSON.parse(localStorage.getItem("questionResults") || "[]");
+      return Array.isArray(qr) && qr.length > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function clearStoredTestRunKeepChildProfile() {
+    [
+      "currentIndex",
+      "questionResults",
+      "correctAnswers",
+      "partialAnswers",
+      "wrongAnswers",
+      "voiceIdentifierConfirmed",
+      "readingValidated",
+      "readingValidationResult",
+      "readingRecordingBlob",
+      "sessionCompleted",
+      "sessionRecordingStarted",
+      "testPaused",
+      "audioChunks",
+      "audioUrl",
+      "recPaused",
+      "sessionRecordingActive",
+      "sessionRecordingUrl",
+      "sessionRecordingFinal",
+      "sessionRecordingChunks",
+      "recordingStartTime",
+      "questionTimestamps",
+      "recordingPaused",
+      "pauseStartTime",
+      "totalPausedTime",
+      "ageInvalid",
+      "ageConfirmed",
+      "permission",
+      "microphoneSkipped",
+      "micCheckPassed",
+    ].forEach(function (key) {
+      try { localStorage.removeItem(key); } catch (e) {}
+    });
+    try {
+      sessionStorage.removeItem("seeandsayTempBackendUserId");
+    } catch (e) {}
+  }
+
+  function maybeAskResume(stage) {
+    if (!hasInProgressTestState()) return false;
+    setResumePromptStage(stage);
+    return true;
+  }
+
+  function continueFromPrompt() {
+    var stage = resumePromptStage;
+    setResumePromptStage(null);
+    if (stage === "beforeLogin") {
+      // Resume immediately from the saved test state.
+      setPersistentValue("forceFreshStartAfterMicCheck", false);
+      setPage("test");
+    }
+  }
+
+  function startNewFromPrompt() {
+    var stage = resumePromptStage;
+    setResumePromptStage(null);
+    if (stage === "beforeLogin") {
+      // User asked for a fresh run before login; clear prior persisted run and show login step.
+      clearStoredTestRunKeepChildProfile();
+      setPersistentValue("forceFreshStartAfterMicCheck", true);
+      setActiveScreen("screen2_login");
+    }
+  }
+
+  function deriveAgeFromDob(dobValue) {
+    if (!dobValue) return null;
+    var birth = new Date(dobValue + "T00:00:00");
+    if (Number.isNaN(birth.getTime())) return null;
+    var now = new Date();
+    var years = now.getFullYear() - birth.getFullYear();
+    var months = now.getMonth() - birth.getMonth();
+    var days = now.getDate() - birth.getDate();
+    if (days < 0) months -= 1;
+    if (months < 0) {
+      years -= 1;
+      months += 12;
+    }
+    var totalMonths = years * 12 + months;
+    return { years: years, months: months, totalMonths: totalMonths };
+  }
+
+  function ensureInternalUserId() {
+    try {
+      var existing = JSON.parse(localStorage.getItem("idDigits") || "\"\"");
+      if (existing && String(existing).trim() !== "") return String(existing).trim();
+    } catch (e) {}
+    var generatedId = "demo-" + Date.now() + "-" + Math.floor(Math.random() * 10000);
+    setPersistentValue("idDigits", generatedId);
+    return generatedId;
+  }
+
+  async function submitLoginWelcomeStep() {
+    if (loginSubmitting) return;
+    setMicPermissionError("");
+    if (!childName || !String(childName).trim()) {
+      alert(tr("test.start.invalidName", isEn ? "Please enter child name." : "נא למלא שם ילד/ה."));
+      return;
+    }
+    if (!childGender) {
+      alert(tr("test.start.invalidGender", isEn ? "Please select gender." : "נא לבחור מגדר."));
+      return;
+    }
+    if (!childDob) {
+      alert(tr("test.age.invalidInput", isEn ? "Please enter a valid age." : "אנא הזינו גיל תקין"));
+      return;
+    }
+    if (!recordingConsent) {
+      alert(tr("test.start.invalidConsent", isEn ? "Please approve recording consent." : "יש לאשר הסכמה להקלטה."));
+      return;
+    }
+    if (!legalConfirmation) {
+      alert(tr("test.start.invalidLegal", isEn ? "Please approve legal terms." : "יש לאשר תנאים ומדיניות."));
+      return;
+    }
+
+    var derivedAge = deriveAgeFromDob(childDob);
+    if (!derivedAge) {
+      alert(tr("test.age.invalidInput", isEn ? "Please enter a valid age." : "אנא הזינו גיל תקין"));
+      return;
+    }
+    if (derivedAge.totalMonths < 24 || derivedAge.totalMonths >= 72) {
+      setPersistentValue("ageInvalid", true);
+      alert(tr("test.age.invalid", isEn ? "Age is outside supported range." : "הגיל מחוץ לטווח הנתמך."));
+      return;
+    }
+
+    if (!("MediaRecorder" in window)) {
+      alert(tr("test.mic.unsupported", isEn ? "Microphone is not supported on this device." : "המיקרופון אינו נתמך במכשיר זה."));
+      return;
+    }
+
+    setLoginSubmitting(true);
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(function (track) { track.stop(); });
+
+      setPersistentValue("childName", String(childName).trim());
+      setPersistentValue("childGender", childGender);
+      setPersistentValue("childDob", childDob);
+      setPersistentValue("recordingConsent", !!recordingConsent);
+      setPersistentValue("legalConfirmation", !!legalConfirmation);
+      setPersistentValue("ageYears", String(derivedAge.years));
+      setPersistentValue("ageMonths", String(derivedAge.months));
+      setPersistentValue("ageInvalid", false);
+      setPersistentValue("ageConfirmed", true);
+      setPersistentValue("permission", true);
+      setPersistentValue("microphoneSkipped", false);
+      setPersistentValue("micCheckPassed", false);
+      setPersistentValue("voiceIdentifierConfirmed", true);
+      setPersistentValue("readingValidated", true);
+      setPersistentValue("readingValidationResult", null);
+      setPersistentValue("sessionRecordingStarted", false);
+      setPersistentValue("sessionCompleted", false);
+      setPersistentValue("forceFreshStartAfterMicCheck", true);
+
+      var internalUserId = ensureInternalUserId();
+      if (typeof createUser === "function") {
+        createUser(internalUserId, String(childName).trim() || "SomeUserName");
+      }
+
+      setActiveScreen("screen1_video");
+    } catch (err) {
+      setMicPermissionError(tr("test.mic.deniedInline", isEn ? "Microphone permission is required to continue." : "נדרשת הרשאת מיקרופון כדי להמשיך."));
+    } finally {
+      setLoginSubmitting(false);
+    }
+  }
 
   React.useEffect(function tryAutoplayIntroVideo() {
     if (activeScreen !== "screen1_video") return;
@@ -56,7 +274,11 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
 
   function goNext() {
     if (activeIndex < 0 || activeIndex >= orderedScreens.length - 1) return;
-    setActiveScreen(orderedScreens[activeIndex + 1]);
+    var next = orderedScreens[activeIndex + 1];
+    if (activeScreen === "screen1" && next === "screen2_login") {
+      if (maybeAskResume("beforeLogin")) return;
+    }
+    setActiveScreen(next);
   }
 
   function renderScreenBody() {
@@ -109,6 +331,103 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       );
     }
 
+    if (activeScreen === "screen2_login") {
+      return (
+        <section className="onboarding-screen onboarding-screen--s2">
+          <div className="onboarding-s1-unified-card">
+            <h2 className="onboarding-title" style={{ marginBottom: "12px" }}>
+              {isEn ? "Before we start" : "לפני שמתחילים"}
+            </h2>
+            <div className="age-screen" style={{ maxWidth: "100%", boxShadow: "none", background: "transparent", padding: 0 }}>
+              <input
+                type="text"
+                placeholder={tr("test.start.childName", isEn ? "Child name" : "שם הילד/ה")}
+                value={childName}
+                onChange={function (e) { setChildName(e.target.value); }}
+              />
+              <select
+                value={childGender}
+                onChange={function (e) { setChildGender(e.target.value); }}
+              >
+                <option value="" disabled>{tr("test.start.gender.placeholder", isEn ? "Select gender" : "בחרו מגדר")}</option>
+                <option value="female">{tr("test.start.gender.female", isEn ? "Girl" : "בת")}</option>
+                <option value="male">{tr("test.start.gender.male", isEn ? "Boy" : "בן")}</option>
+              </select>
+              <label
+                className="start-date-field"
+                onClick={function () {
+                  if (!dobInputRef.current) return;
+                  try {
+                    if (typeof dobInputRef.current.showPicker === "function") dobInputRef.current.showPicker();
+                    else {
+                      dobInputRef.current.focus();
+                      dobInputRef.current.click();
+                    }
+                  } catch (err) {
+                    dobInputRef.current.focus();
+                    dobInputRef.current.click();
+                  }
+                }}
+              >
+                <span className="start-date-icon" aria-hidden={true}>📅</span>
+                <span className="start-date-value">
+                  {childDob
+                    ? new Date(childDob + "T00:00:00").toLocaleDateString(isEn ? "en-US" : "he-IL")
+                    : tr("test.start.dob", isEn ? "Date of birth" : "תאריך לידה")}
+                </span>
+                <input
+                  ref={dobInputRef}
+                  type="date"
+                  value={childDob}
+                  aria-label={tr("test.start.dob", isEn ? "Date of birth" : "תאריך לידה")}
+                  onChange={function (e) { setChildDob(e.target.value); }}
+                />
+              </label>
+              <label className="start-consent-row">
+                <input
+                  type="checkbox"
+                  checked={recordingConsent}
+                  onChange={function (e) { setRecordingConsent(!!e.target.checked); }}
+                />
+                <span>{tr("test.start.recordingConsent", isEn ? "I agree to recording." : "מאשר/ת הסכמה להקלטה")}</span>
+              </label>
+              <label className="start-consent-row start-consent-row--legal">
+                <input
+                  type="checkbox"
+                  checked={legalConfirmation}
+                  onChange={function (e) { setLegalConfirmation(!!e.target.checked); }}
+                />
+                <span style={{ color: "#1c3b53" }}>
+                  {tr("test.start.legalConfirmation", isEn ? "I agree to" : "אני מאשר/ת את")}
+                  {isEn ? " " : ""}
+                  <a href={TERMS_OF_USE_URL} target="_blank" rel="noopener noreferrer" style={{ color: "#0b4f7d", fontWeight: 700, textDecoration: "underline" }} onClick={function (e) { e.stopPropagation(); }}>
+                    {tr("test.start.termsOfUseLink", isEn ? "Terms of Use" : "תנאי השימוש")}
+                  </a>
+                  {" "}
+                  {tr("test.start.and", isEn ? "and" : "ו-")}
+                  {isEn ? " " : ""}
+                  <a href={PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer" style={{ color: "#0b4f7d", fontWeight: 700, textDecoration: "underline" }} onClick={function (e) { e.stopPropagation(); }}>
+                    {tr("test.start.privacyPolicyLink", isEn ? "Privacy Policy" : "מדיניות הפרטיות")}
+                  </a>
+                  .
+                </span>
+              </label>
+              <button type="button" onClick={submitLoginWelcomeStep} disabled={loginSubmitting}>
+                {loginSubmitting
+                  ? (isEn ? "Checking..." : "בודקים...")
+                  : tr("test.cta.continue", isEn ? "Continue" : "המשך")}
+              </button>
+              {micPermissionError ? (
+                <p style={{ marginTop: "12px", color: "#b71c1c", fontSize: "14px", lineHeight: "1.5", textAlign: "center" }}>
+                  {micPermissionError}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     if (activeScreen === "screen1_video") {
       return (
         <section className="onboarding-screen onboarding-screen--intro-video-only">
@@ -121,18 +440,18 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
             preload="auto"
             onEnded={function () {
               introVideoAutoplayBlockedRef.current = false;
-              setActiveScreen("screen2");
+              setActiveScreen("screen3");
             }}
             onError={function () {
               introVideoAutoplayBlockedRef.current = false;
-              setActiveScreen("screen2");
+              setActiveScreen("screen3");
             }}
           />
         </section>
       );
     }
 
-    if (activeScreen === "screen2") {
+    if (activeScreen === "screen3") {
       return (
         <section className="onboarding-screen onboarding-screen--s2">
           <h2 className="onboarding-title">{isEn ? "How does it work?" : "איך זה עובד?"}</h2>
@@ -159,16 +478,6 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
             </article>
             <article className="onboarding-step-card">
               <span className="onboarding-step-card__badge">3</span>
-              <div className="onboarding-step-card__icon onboarding-step-card__icon--test-bulb" aria-hidden="true">
-                <span className="question-bottom-actions__emoji question-bottom-actions__emoji--hint">💡</span>
-              </div>
-              <div>
-                <h3>{isEn ? "When to use hints?" : "צריכים רמז?"}</h3>
-                <p>{isEn ? "Comprehension: use hint only when needed. Expression: compare response with expected style." : "לחצו על הנורה רק כשהילד לא מצליח לענות לבד"}</p>
-              </div>
-            </article>
-            <article className="onboarding-step-card">
-              <span className="onboarding-step-card__badge">4</span>
               <div className="onboarding-step-card__icon onboarding-step-card__icon--traffic-wrap">
                 <div
                   className="onboarding-step-traffic-preview"
@@ -202,11 +511,10 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               type="button"
               className="onboarding-btn onboarding-btn--primary"
               onClick={function () {
-                if (onRequestStartTest) onRequestStartTest();
-                else setPage("test");
+                setPage("test");
               }}
             >
-              {isEn ? "Start game" : "התחל משחק"}
+              {isEn ? "Start game" : "התחילו משחק"}
             </button>
           </div>
         </section>
@@ -279,7 +587,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
                 else setPage("test");
               }}
             >
-              {isEn ? "Start game" : "התחל משחק"}
+              {isEn ? "Start game" : "התחילו משחק"}
             </button>
           </div>
         </section>
@@ -292,8 +600,8 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     <div className="onboarding-flow">
       <div className="onboarding-frame">{renderScreenBody()}</div>
 
-      <div className="onboarding-nav" style={{ visibility: activeScreen === "screen1_video" ? "hidden" : "visible" }}>
-        {activeIndex >= 2
+      <div className="onboarding-nav" style={{ visibility: (activeScreen === "screen1_video" || activeScreen === "screen2_login") ? "hidden" : "visible" }}>
+        {activeIndex >= 1
           ? React.createElement(
               "button",
               { type: "button", className: "onboarding-nav-btn", onClick: goPrev },
@@ -306,7 +614,12 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               <span
                 key={screenId}
                 className={"onboarding-dot" + (idx === activeIndex ? " is-active" : "")}
-                onClick={function () { setActiveScreen(screenId); }}
+                onClick={function () {
+                  if (activeScreen === "screen1" && screenId === "screen2_login") {
+                    if (maybeAskResume("beforeLogin")) return;
+                  }
+                  setActiveScreen(screenId);
+                }}
                 role="button"
                 tabIndex={0}
                 aria-label={(isEn ? "Go to screen " : "מעבר למסך ") + (idx + 1)}
@@ -322,6 +635,28 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
             )
           : React.createElement("span", { className: "onboarding-nav-btn onboarding-nav-btn--ghost", "aria-hidden": true })}
       </div>
+      {resumePromptStage ? (
+        <div className="onboarding-modal-overlay" role="dialog" aria-modal="true" onClick={function () { setResumePromptStage(null); }}>
+          <div className="onboarding-modal" onClick={function (e) { e.stopPropagation(); }}>
+            <h2 className="onboarding-title">
+              {isEn ? "Continue previous game?" : "להמשיך משחק קודם?"}
+            </h2>
+            <p className="onboarding-subtitle" style={{ marginBottom: "16px" }}>
+              {isEn
+                ? "A saved game was found. Continue where you left off or start a new game."
+                : "נמצא משחק שמור. האם להתחיל משחק חדש או להמשיך מהמקום שהפסקתם?"}
+            </p>
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" }}>
+              <button type="button" className="onboarding-btn onboarding-btn--primary" onClick={continueFromPrompt}>
+                {isEn ? "Start where you left off" : "המשיכו מהמקום שהפסקתם"}
+              </button>
+              <button type="button" className="onboarding-btn onboarding-btn--secondary" onClick={startNewFromPrompt}>
+                {isEn ? "Start new game" : "התחילו משחק חדש"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {tipsOpen ? (
         <div className="onboarding-modal-overlay" role="dialog" aria-modal="true" onClick={function () { setTipsOpen(false); }}>
           <div className="onboarding-modal" onClick={function (e) { e.stopPropagation(); }}>

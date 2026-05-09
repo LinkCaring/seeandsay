@@ -15,7 +15,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   var EXPRESSION_EVAL_DELAY_MS = 40000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
-  const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "failure" | null
+  const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "midFailure" | "failure" | null
   const trafficPopupJustOpenedRef = React.useRef(false);
   // ============================================================================
   // STATE DECLARATIONS
@@ -44,8 +44,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [expressionTrafficSubmitted, setExpressionTrafficSubmitted] = React.useState(false);
   const [expressionAdvanceLock, setExpressionAdvanceLock] = React.useState(false);
   const [expressionEvalMsLeft, setExpressionEvalMsLeft] = React.useState(EXPRESSION_EVAL_DELAY_MS);
+  const [expressionEvalArmed, setExpressionEvalArmed] = React.useState(false);
   const expressionEvalDeadlineRef = React.useRef(null);
   const expressionEvalPausedRemainingRef = React.useRef(EXPRESSION_EVAL_DELAY_MS);
+  const expressionEvalArmedQuestionRef = React.useRef(null);
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -54,6 +56,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [lastCompletedTestId, setLastCompletedTestId] = React.useState(null);
   const [expressionAiResult, setExpressionAiResult] = React.useState(null);
   const [expressionAiLoading, setExpressionAiLoading] = React.useState(false);
+  /** Which PLS frame is selected in the narrative report wheel (integrative | semantics | structure | phonology). */
+  const [plsReportCategory, setPlsReportCategory] = React.useState("semantics");
 
   // Microphone persistent
   const [permission, setPermission] = usePersistentState("permission", false);
@@ -245,9 +249,69 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
+  const [forceFreshStartAfterMicCheck, setForceFreshStartAfterMicCheck] = usePersistentState("forceFreshStartAfterMicCheck", false);
 
   // Pause state (persistent)
   const [isPaused, setIsPaused] = usePersistentState("testPaused", false);
+  function enforceFreshRunStartFromQuestionOne() {
+    [
+      "currentIndex",
+      "questionResults",
+      "correctAnswers",
+      "partialAnswers",
+      "wrongAnswers",
+      "sessionCompleted",
+      "sessionRecordingStarted",
+      "testPaused",
+      "audioChunks",
+      "audioUrl",
+      "recPaused",
+      "sessionRecordingActive",
+      "sessionRecordingUrl",
+      "sessionRecordingFinal",
+      "sessionRecordingFinalMeta",
+      "sessionRecordingChunks",
+      "recordingStartTime",
+      "questionTimestamps",
+      "recordingPaused",
+      "pauseStartTime",
+      "totalPausedTime",
+      "readingRecordingBlob",
+      "forceFreshStartAfterMicCheck",
+    ].forEach(function (key) {
+      try { localStorage.removeItem(key); } catch (e) {}
+    });
+    if (SessionRecorder && SessionRecorder.resetTimestamps) {
+      SessionRecorder.resetTimestamps();
+    }
+    if (SessionRecorder && SessionRecorder.cleanup) {
+      SessionRecorder.cleanup({ preserveQuestionTimestamps: false });
+    }
+    setCurrentIndex(0);
+    setQuestionResults([]);
+    setCorrectAnswers(0);
+    setPartialAnswers(0);
+    setWrongAnswers(0);
+    setSessionCompleted(false);
+    setTrafficPopupOpen(false);
+    setTrafficPopupChoice(null);
+    setShowContinue(false);
+    setExpressionTrafficSubmitted(false);
+    setExpressionAdvanceLock(false);
+    setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+    setEvaluationEnabled(false);
+    setClickedCorrect(false);
+    setClickedMultiAnswers([]);
+    setAllClickedAnswers([]);
+    setMultiAttemptCount(0);
+    setOrderedClickSequence([]);
+    setMaskImage(null);
+    setMaskCanvas(null);
+    consecutiveCompFailRef.current = 0;
+    consecutiveExprFailRef.current = 0;
+    setForceFreshStartAfterMicCheck(false);
+  }
+
   const isPausedRef = React.useRef(isPaused);
   isPausedRef.current = isPaused;
   const sessionCompletedRef = React.useRef(sessionCompleted);
@@ -407,13 +471,22 @@ function blobToBase64(blob) {
   });
 }
 
-  function getImageFallbackUrls(url) {
+  function getImageFallbackUrls(url, pngFirst) {
     if (!url) return [];
+    if (pngFirst) {
+      if (/\.png$/i.test(url)) {
+        return [url, url.replace(/\.png$/i, ".webp")];
+      }
+      if (/\.webp$/i.test(url)) {
+        return [url.replace(/\.webp$/i, ".png"), url];
+      }
+      return [url];
+    }
     if (/\.png$/i.test(url)) {
-      return [url, url.replace(/\.png$/i, ".webp")];
+      return [url.replace(/\.png$/i, ".webp"), url];
     }
     if (/\.webp$/i.test(url)) {
-      return [url.replace(/\.webp$/i, ".png"), url];
+      return [url, url.replace(/\.webp$/i, ".png")];
     }
     return [url];
   }
@@ -422,7 +495,9 @@ function blobToBase64(blob) {
     const imgEl = event && event.currentTarget;
     if (!imgEl) return;
     const baseSrc = imgEl.getAttribute("data-base-src") || imgEl.getAttribute("src") || "";
-    const candidates = getImageFallbackUrls(baseSrc);
+    const pngFirstAttr = imgEl.getAttribute("data-fallback-png-first");
+    const pngFirst = pngFirstAttr === "1" || pngFirstAttr === "true";
+    const candidates = getImageFallbackUrls(baseSrc, pngFirst);
     const tried = Number(imgEl.getAttribute("data-fallback-index") || 0);
     const nextIdx = tried + 1;
     if (nextIdx >= candidates.length) return;
@@ -513,9 +588,66 @@ function blobToBase64(blob) {
   /** Active question `Audio` instance for synchronous pause/stop (state updates lag behind timers). */
   const questionAudioRef = React.useRef(null);
   const tryAgainAudioRef = React.useRef(null);
+  const firstQuestionRetryTimerRef = React.useRef(null);
+  const firstQuestionRetryAttemptRef = React.useRef(0);
+  const firstQuestionRetryQuestionRef = React.useRef(null);
+  const firstQuestionMicGateArmedRef = React.useRef(false);
+
+  function resetFirstQuestionRetryState() {
+    if (firstQuestionRetryTimerRef.current) {
+      clearTimeout(firstQuestionRetryTimerRef.current);
+      firstQuestionRetryTimerRef.current = null;
+    }
+    firstQuestionRetryAttemptRef.current = 0;
+    firstQuestionRetryQuestionRef.current = null;
+  }
+
+  function scheduleFirstQuestionAutoRetry(audioEl, questionNumber) {
+    if (!audioEl) return;
+    if (getSafeCurrentQuestionIndex() !== 0) return;
+    if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+    var qn = String(questionNumber || "");
+    if (!qn) return;
+    if (firstQuestionRetryQuestionRef.current !== qn) {
+      firstQuestionRetryQuestionRef.current = qn;
+      firstQuestionRetryAttemptRef.current = 0;
+    }
+    var attempt = firstQuestionRetryAttemptRef.current;
+    var retryDelays = [140, 320, 700];
+    if (attempt >= retryDelays.length) return;
+    if (firstQuestionRetryTimerRef.current) {
+      clearTimeout(firstQuestionRetryTimerRef.current);
+      firstQuestionRetryTimerRef.current = null;
+    }
+    firstQuestionRetryTimerRef.current = setTimeout(function () {
+      if (getSafeCurrentQuestionIndex() !== 0) return;
+      if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+      if (!audioEl || questionAudioRef.current !== audioEl) return;
+      try {
+        audioEl.currentTime = 0;
+        var retryPlay = audioEl.play();
+        if (retryPlay && typeof retryPlay.then === "function") {
+          retryPlay.then(function () {
+            setIsAudioPlaying(true);
+            resetFirstQuestionRetryState();
+          }).catch(function () {
+            firstQuestionRetryAttemptRef.current = attempt + 1;
+            scheduleFirstQuestionAutoRetry(audioEl, qn);
+          });
+        } else {
+          setIsAudioPlaying(true);
+          resetFirstQuestionRetryState();
+        }
+      } catch (e) {
+        firstQuestionRetryAttemptRef.current = attempt + 1;
+        scheduleFirstQuestionAutoRetry(audioEl, qn);
+      }
+    }, retryDelays[attempt]);
+  }
 
   function stopQuestionAudioForSessionComplete() {
     questionAudioAutoplayPendingRef.current = false;
+    resetFirstQuestionRetryState();
     if (questionAudioRef.current) {
       try {
         questionAudioRef.current.pause();
@@ -537,6 +669,15 @@ function blobToBase64(blob) {
     if (!sessionCompleted) return;
     stopQuestionAudioForSessionComplete();
   }, [sessionCompleted]);
+
+  React.useEffect(function cleanupFirstQuestionRetryTimer() {
+    return function () {
+      if (firstQuestionRetryTimerRef.current) {
+        clearTimeout(firstQuestionRetryTimerRef.current);
+        firstQuestionRetryTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // =============================================================================
   // TESTING SHORTCUTS
@@ -569,9 +710,22 @@ function blobToBase64(blob) {
   }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
 
 
+  function markExpressionTimestampAndArm(q) {
+    if (!q || q.query_type !== "הבעה") return;
+    var qNum = String(q.query_number || "");
+    if (!qNum) return;
+    if (expressionEvalArmedQuestionRef.current === qNum) return;
+
+    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && SessionRecorder && SessionRecorder.markQuestionStart) {
+      SessionRecorder.markQuestionStart(q.query_number);
+    }
+    expressionEvalArmedQuestionRef.current = qNum;
+    setExpressionEvalArmed(true);
+  }
+
   // Expression evaluation timer - opens traffic evaluation after 40 seconds.
   React.useEffect(function () {
-  if (sessionCompleted || questionType !== "E") {
+  if (sessionCompleted || questionType !== "E" || !expressionEvalArmed) {
     setEvaluationEnabled(false);
     setExpressionTrafficSubmitted(false);
     setExpressionAdvanceLock(false);
@@ -597,7 +751,7 @@ function blobToBase64(blob) {
   return function () {
     clearTimeout(timer);
   };
-}, [currentIndex, questionType, sessionCompleted]);
+}, [currentIndex, questionType, sessionCompleted, expressionEvalArmed]);
 
   React.useEffect(function pauseAwareExpressionTimer() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
@@ -637,6 +791,15 @@ function blobToBase64(blob) {
       clearInterval(intervalId);
     };
   }, [currentIndex, questionType, sessionCompleted, evaluationEnabled]);
+
+  React.useEffect(function armExpressionTimerWhenQuestionAudioUnavailable() {
+    if (sessionCompleted || questionType !== "E" || expressionEvalArmed) return;
+    if (!questionAudioMuted) return;
+    var idx = getSafeCurrentQuestionIndex();
+    var q = questions[idx];
+    if (!q || q.query_type !== "הבעה") return;
+    markExpressionTimestampAndArm(q);
+  }, [sessionCompleted, questionType, expressionEvalArmed, questionAudioMuted, currentIndex, questions]);
 
   React.useEffect(function () {
     setExpressionAdvanceLock(false);
@@ -965,16 +1128,9 @@ function blobToBase64(blob) {
 
           async function resumeTestSessionRecordingAfterReading() {
             if (!permission) return;
-            var preserveQuestionTimestamps = (function () {
-              try {
-                var qt = localStorage.getItem("questionTimestamps");
-                if (!qt || qt === "[]") return false;
-                var arr = JSON.parse(qt);
-                return Array.isArray(arr) && arr.length > 0;
-              } catch (e) {
-                return false;
-              }
-            })();
+            // Preserve timeline only when resuming from an in-test re-verification path.
+            // Fresh runs after welcome/login must always start with clean timestamps.
+            var preserveQuestionTimestamps = !!finishResume;
 
             SessionRecorder.cleanup({ preserveQuestionTimestamps: preserveQuestionTimestamps });
             if (!preserveQuestionTimestamps) {
@@ -1347,7 +1503,7 @@ const handleReadingValidationRetry = function () {
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
 
-    // All three buttons (green/orange/red) advance to next question
+    // All traffic options advance to next question; midFailure is display-only and still counts as failure in flow.
     handleContinue(result);
     trafficChoiceInProgressRef.current = false;
   }
@@ -1418,10 +1574,19 @@ const handleReadingValidationRetry = function () {
   const playTryAgainAudio = function () {
     if (questionAudioMuted) return;
     try {
+      var tryAgainSources = [
+        "resources/questions_audio/try_again.mp3",
+        "resources/questions_audio/try_again2.mp3",
+      ];
+      var selectedTryAgainSrc =
+        tryAgainSources[Math.floor(Math.random() * tryAgainSources.length)];
       if (!tryAgainAudioRef.current) {
-        tryAgainAudioRef.current = new Audio("resources/questions_audio/try_again.mp3");
+        tryAgainAudioRef.current = new Audio(selectedTryAgainSrc);
       }
       const a = tryAgainAudioRef.current;
+      if (a.src !== selectedTryAgainSrc) {
+        a.src = selectedTryAgainSrc;
+      }
       var replayQuestionIdx = getCurrentQuestionIndex();
       a.onended = function () {
         if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
@@ -1451,20 +1616,34 @@ const handleReadingValidationRetry = function () {
     questionAudioAutoplayPendingRef.current = false;
 
     var audioEl = questionAudio;
+    var currentIdxForAutoplay = getSafeCurrentQuestionIndex();
+    var currentQuestion = questions[currentIdxForAutoplay];
+    var isFirstQuestionAutoplay = currentIdxForAutoplay === 0;
+    var currentQuestionNumber = currentQuestion ? String(currentQuestion.query_number || "") : "";
     function runPlay() {
       if (questionAudioMuted) return;
       try {
         audioEl.currentTime = 0;
         audioEl.play().catch(function (err) {
           console.warn("Audio autoplay failed:", err);
+          if (isFirstQuestionAutoplay) {
+            scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
+          }
         });
         setIsAudioPlaying(true);
       } catch (e) {
         console.warn("Audio play error:", e);
+        if (isFirstQuestionAutoplay) {
+          scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
+        }
       }
     }
 
-    if (typeof requestAnimationFrame === "function") {
+    if (isFirstQuestionAutoplay && firstQuestionMicGateArmedRef.current) {
+      // Try first question immediately while the mic-check click activation is still fresh.
+      firstQuestionMicGateArmedRef.current = false;
+      runPlay();
+    } else if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(function () {
         requestAnimationFrame(runPlay);
       });
@@ -1482,6 +1661,7 @@ const handleReadingValidationRetry = function () {
     sessionCompleted,
     ageConfirmed,
     currentIndex,
+    questions,
   ]);
 
   React.useEffect(function cleanupPreviousQuestionAudio() {
@@ -2088,12 +2268,20 @@ const handleReadingValidationRetry = function () {
 
     if (currentQuestion) {
       let resultString = "";
+      let expressionCakeCategory = null;
       if (result === "success") {
         resultString = "correct";
+        expressionCakeCategory = "exact";
       } else if (result === "partial") {
         resultString = "partly";
+        expressionCakeCategory = "almost";
+      } else if (result === "midFailure") {
+        // Keep mapped as wrong for adaptive flow (including consecutive-failure rules).
+        resultString = "wrong";
+        expressionCakeCategory = "knew_not_say";
       } else if (result === "failure") {
         resultString = "wrong";
+        expressionCakeCategory = "not_there_yet";
       }
 
       if (resultString) {
@@ -2113,7 +2301,8 @@ const handleReadingValidationRetry = function () {
         updatedQuestionResults = nextBase.concat([{
           questionNumber: questionNumber,
           result: resultString,
-          questionType: questionTypeLabel
+          questionType: questionTypeLabel,
+          expressionCakeCategory: questionTypeLabel === "expression" ? expressionCakeCategory : null
         }]);
 
         setQuestionResults(updatedQuestionResults);
@@ -2341,8 +2530,41 @@ const handleReadingValidationRetry = function () {
     setQuestions(sorted);
   }
 
+  function markCurrentQuestionEndTimestamp() {
+    if (!(permission || microphoneSkipped) || !voiceIdentifierConfirmed) return;
+    if (!SessionRecorder || !SessionRecorder.markQuestionEnd) return;
+    var currentIdx = getSafeCurrentQuestionIndex();
+    if (currentIdx < 0 || currentIdx >= questions.length) return;
+    var currentQ = questions[currentIdx];
+    if (!currentQ || currentQ.query_number == null) return;
+    SessionRecorder.markQuestionEnd(currentQ.query_number);
+  }
+
   function updateCurrentQuestionIndex(newIndex) {
-    setCurrentIndex(newIndex);
+    var currentIdx = getSafeCurrentQuestionIndex();
+    var resolvedIndex =
+      typeof newIndex === "function"
+        ? newIndex(currentIdx)
+        : newIndex;
+    var parsedResolved = parseInt(resolvedIndex, 10);
+    if (!Number.isFinite(parsedResolved)) return;
+    if (parsedResolved === currentIdx) return;
+
+    // If leaving an expression question before its initial reading ends, mark its start now so
+    // downstream timestamp-based clipping never misses the question boundary.
+    try {
+      var currentQ = questions[currentIdx];
+      if (currentQ && currentQ.query_type === "הבעה" && !expressionEvalArmed) {
+        markExpressionTimestampAndArm(currentQ);
+      }
+    } catch (e) {}
+
+    markCurrentQuestionEndTimestamp();
+    if (parsedResolved !== 0) {
+      resetFirstQuestionRetryState();
+      firstQuestionMicGateArmedRef.current = false;
+    }
+    setCurrentIndex(parsedResolved);
   }
 
   function loadQuestion(index) {
@@ -2377,7 +2599,7 @@ const handleReadingValidationRetry = function () {
 
     // Mark question start timestamp for recording
     // Skip question 1 here as it will be marked when test starts
-    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && index > 0) {
+    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && index > 0 && q.query_type === "הבנה") {
       SessionRecorder.markQuestionStart(q.query_number);
     }
 
@@ -2415,20 +2637,22 @@ const handleReadingValidationRetry = function () {
       imgCount = parseInt(q.image_count, 10) || 1;
     }
 
-    const imgs = [];
-    for (let i = 1; i <= imgCount; i++) {
-      imgs.push(ImageLoader.getImageUrl(q.query_number, i));
-    }
-
-    // Parse answer field to determine answer type
+    // Parse answer field to determine answer type (needed before image URLs for mask questions)
     const answerStr = (q.answer || "").trim();
 
+    const imgs = [];
+    for (let i = 1; i <= imgCount; i++) {
+      imgs.push(
+        answerStr === "A"
+          ? ImageLoader.getImageUrlPng(q.query_number, i)
+          : ImageLoader.getImageUrl(q.query_number, i)
+      );
+    }
+
     if (answerStr === "A") {
-      // Mask answer type: load A.png as mask (falls back to A.webp via getImageFallbackUrls)
+      // Mask answer type: load A.png only (mask assets stay PNG for click-region detection)
       setAnswerType("mask");
       const maskUrl = "resources/test_assets/" + q.query_number + "/A.png";
-      const maskUrlCandidates = getImageFallbackUrls(maskUrl);
-      let maskUrlIdx = 0;
 
       // Load mask image and draw to canvas for pixel detection
       const mask = new Image();
@@ -2443,14 +2667,9 @@ const handleReadingValidationRetry = function () {
         setMaskImage(mask);
       };
       mask.onerror = function () {
-        maskUrlIdx += 1;
-        if (maskUrlIdx < maskUrlCandidates.length) {
-          mask.src = maskUrlCandidates[maskUrlIdx];
-          return;
-        }
-        console.error('Failed to load mask image:', maskUrlCandidates[0]);
+        console.error('Failed to load mask image:', maskUrl);
       };
-      mask.src = maskUrlCandidates[0];
+      mask.src = maskUrl;
 
       setTarget("");
       setMultiAnswers([]);
@@ -2506,6 +2725,8 @@ const handleReadingValidationRetry = function () {
 
     setImages(imgs);
     setQuestionType(q.query_type === "הבנה" ? "C" : "E");
+    setExpressionEvalArmed(false);
+    expressionEvalArmedQuestionRef.current = null;
     if ((permission || microphoneSkipped) && voiceIdentifierConfirmed) { //check if the microphone permission stage is over
       //play the audio
 
@@ -2515,9 +2736,15 @@ const handleReadingValidationRetry = function () {
       const audio = new Audio(audioUrl);
       audio.onended = function () {
         setIsAudioPlaying(false);
+        if (q.query_type === "הבעה") {
+          markExpressionTimestampAndArm(q);
+        }
       };
       audio.onerror = function () {
         console.warn('Audio file not found for question:', q.query_number);
+        if (q.query_type === "הבעה") {
+          markExpressionTimestampAndArm(q);
+        }
       };
       questionAudioRef.current = audio;
       setQuestionAudio(audio);
@@ -2598,6 +2825,7 @@ const handleReadingValidationRetry = function () {
     }
 
     const resultsArg = updatedQuestionResults !== undefined ? updatedQuestionResults : questionResults;
+    markCurrentQuestionEndTimestamp();
 
     if (!ensureSpeakerVerifiedBeforeFinish(resultsArg)) {
       return;
@@ -2743,6 +2971,10 @@ const handleReadingValidationRetry = function () {
     };
   }, [sessionCompleted, lastCompletedTestId, expressionAiResult, refreshExpressionAiStatus]);
 
+  React.useEffect(function resetPlsReportCategoryOnNewTest() {
+    setPlsReportCategory("semantics");
+  }, [lastCompletedTestId]);
+
   // After Finish was blocked because reading verify was still processing, resume completion automatically.
   React.useEffect(function autoCompleteWhenVerifyReadyAfterFinish() {
     if (!blockFinishUntilVerifyOverlay) return;
@@ -2793,7 +3025,8 @@ const handleReadingValidationRetry = function () {
       return;
     }
 
-    const loaded = ImageLoader.areImagesLoaded(q.query_number, q.image_count);
+    const preferPng = String(q.answer || "").trim() === "A";
+    const loaded = ImageLoader.areImagesLoaded(q.query_number, q.image_count, preferPng);
     setCurrentQuestionImagesLoaded(loaded);
   }
 
@@ -2802,7 +3035,11 @@ const handleReadingValidationRetry = function () {
     const idx = getSafeCurrentQuestionIndex();
     const q = idx >= 0 ? questions[idx] : null;
     if (q && q.query_number != null && q.image_count != null) {
-      ImageLoader.prioritizeQuestion(q.query_number, q.image_count);
+      ImageLoader.prioritizeQuestion(
+        q.query_number,
+        q.image_count,
+        String(q.answer || "").trim() === "A"
+      );
     }
     checkCurrentQuestionImages();
   }
@@ -2839,7 +3076,11 @@ const handleReadingValidationRetry = function () {
         loadQuestion(idx);
         const q = questions[idx];
         if (q && q.query_number != null && q.image_count != null) {
-          ImageLoader.prioritizeQuestion(q.query_number, q.image_count);
+          ImageLoader.prioritizeQuestion(
+            q.query_number,
+            q.image_count,
+            String(q.answer || "").trim() === "A"
+          );
         }
         checkCurrentQuestionImages();
       }
@@ -3013,7 +3254,7 @@ function renderBottomActions() {
     var hasExpressionHint = ENABLE_EXPRESSION_HINTS && !!(hintText && hintText.trim() !== "");
     var evalProgressRatio = Math.max(0, Math.min(1, expressionEvalMsLeft / EXPRESSION_EVAL_DELAY_MS));
     var evalSecondsLeft = Math.max(0, Math.ceil(expressionEvalMsLeft / 1000));
-    var showExpressionCountdown = !evaluationEnabled && !trafficPopupOpen && !showContinue;
+    var showExpressionCountdown = expressionEvalArmed && !evaluationEnabled && !trafficPopupOpen && !showContinue;
     return React.createElement(
       "div",
       { className: "question-bottom-actions question-bottom-actions--expression" },
@@ -3252,141 +3493,17 @@ function renderExpectedAnswerNote() {
   );
 }
 
-  if (!ageConfirmed && !ageInvalid) {
+  if (!ageConfirmed || ageInvalid) {
     return React.createElement(
       "div",
-      { className: "age-screen" },
-      React.createElement("input", {
-        type: "text",
-        placeholder: tr("test.start.childName"),
-        value: childName,
-        onChange: function (e) {
-          setChildName(e.target.value);
-        },
-      }),
-      React.createElement(
-        "select",
-        {
-          value: childGender,
-          onChange: function (e) {
-            setChildGender(e.target.value);
-          }
-        },
-        React.createElement("option", { value: "", disabled: true }, tr("test.start.gender.placeholder")),
-        React.createElement("option", { value: "female" }, tr("test.start.gender.female")),
-        React.createElement("option", { value: "male" }, tr("test.start.gender.male"))
-      ),
-      React.createElement(
-        "label",
-        {
-          className: "start-date-field",
-          onClick: function () {
-            if (!dobInputRef.current) return;
-            try {
-              if (typeof dobInputRef.current.showPicker === "function") {
-                dobInputRef.current.showPicker();
-              } else {
-                dobInputRef.current.focus();
-                dobInputRef.current.click();
-              }
-            } catch (err) {
-              dobInputRef.current.focus();
-              dobInputRef.current.click();
-            }
-          }
-        },
-        React.createElement("span", { className: "start-date-icon", "aria-hidden": true }, "📅"),
-        React.createElement("span", { className: "start-date-value" }, formatDobDisplay(childDob)),
-        React.createElement("input", {
-          ref: dobInputRef,
-          type: "date",
-          value: childDob,
-          "aria-label": tr("test.start.dob"),
-          onChange: function (e) {
-            setChildDob(e.target.value);
-          },
-        })
-      ),
-      React.createElement(
-        "label",
-        { className: "start-consent-row" },
-        React.createElement("input", {
-          type: "checkbox",
-          checked: recordingConsent,
-          onChange: function (e) {
-            setRecordingConsent(!!e.target.checked);
-          }
-        }),
-        React.createElement("span", null, tr("test.start.recordingConsent"))
-      ),
-      React.createElement(
-        "label",
-        { className: "start-consent-row start-consent-row--legal" },
-        React.createElement("input", {
-          type: "checkbox",
-          checked: legalConfirmation,
-          onChange: function (e) {
-            setLegalConfirmation(!!e.target.checked);
-          }
-        }),
-        React.createElement(
-          "span",
-          null,
-          tr("test.start.legalConfirmation"),
-          lang === "en" ? " " : "",
-          React.createElement(
-            "a",
-            {
-              href: TERMS_OF_USE_URL,
-              target: "_blank",
-              rel: "noopener noreferrer",
-              onClick: function (e) { e.stopPropagation(); }
-            },
-            tr("test.start.termsOfUseLink")
-          ),
-          " ",
-          tr("test.start.and"),
-          lang === "en" ? " " : "",
-          React.createElement(
-            "a",
-            {
-              href: PRIVACY_POLICY_URL,
-              target: "_blank",
-              rel: "noopener noreferrer",
-              onClick: function (e) { e.stopPropagation(); }
-            },
-            tr("test.start.privacyPolicyLink")
-          ),
-          "."
-        )
-      ),
+      { className: "age-invalid", style: { display: "flex", flexDirection: "column", gap: "14px", alignItems: "center" } },
+      React.createElement("div", null, lang === "en" ? "Please start from the welcome flow." : "נא להתחיל ממסכי הפתיחה."),
       React.createElement(
         "button",
-        {
-          onClick: confirmAge
-        },
-        tr("test.cta.continue")
-      ),
-      micPermissionError
-        ? React.createElement(
-            "p",
-            {
-              style: {
-                marginTop: "12px",
-                color: "#b71c1c",
-                fontSize: "14px",
-                lineHeight: "1.5",
-                textAlign: "center"
-              }
-            },
-            micPermissionError
-          )
-        : null
+        { className: "continue-button", type: "button", onClick: onHome },
+        lang === "en" ? "Back to welcome" : "חזרה לפתיחה"
+      )
     );
-  }
-
-  if (ageInvalid) {
-    return React.createElement("div", { className: "age-invalid" }, tr("test.age.invalid"));
   }
 
   if (permission && !microphoneSkipped && !micCheckPassed) {
@@ -3441,6 +3558,9 @@ function renderExpectedAnswerNote() {
                 className: "continue-button",
                 onClick: function () {
                   primeMediaPlaybackFromUserGesture();
+                  firstQuestionMicGateArmedRef.current = true;
+                  resetFirstQuestionRetryState();
+                  enforceFreshRunStartFromQuestionOne();
                   setMicCheckPassed(true);
                   setMicCheckReady(false);
                   stopMicrophoneCheck();
@@ -3647,10 +3767,6 @@ function renderExpectedAnswerNote() {
 
     const ageMatchedStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
     const ageMatchedCompStats = { correct: 0, partial: 0, wrong: 0, total: 0 };
-    const strengtheningGoals = [];
-    const strengtheningGoalSet = {};
-    const strengtheningGoalsComp = [];
-    const strengtheningGoalSetComp = {};
     questionResults.forEach(function (item) {
       const qNum = parseInt(item.questionNumber, 10);
       const q = questionByNumber[qNum];
@@ -3658,28 +3774,12 @@ function renderExpectedAnswerNote() {
       ageMatchedStats.total += 1;
       if (item.result === "correct") ageMatchedStats.correct += 1;
       else if (item.result === "partly") ageMatchedStats.partial += 1;
-      else if (item.result === "wrong") {
-        ageMatchedStats.wrong += 1;
-        const goal =
-          (q.test_goal || q.testGoal || q["TEST GOAL"] || q.test_goal_he || q.test_goal_en || "").toString().trim();
-        if (goal && !strengtheningGoalSet[goal]) {
-          strengtheningGoalSet[goal] = true;
-          strengtheningGoals.push(goal);
-        }
-      }
+      else if (item.result === "wrong") ageMatchedStats.wrong += 1;
       if (item.questionType === "comprehension") {
         ageMatchedCompStats.total += 1;
         if (item.result === "correct") ageMatchedCompStats.correct += 1;
         else if (item.result === "partly") ageMatchedCompStats.partial += 1;
-        else if (item.result === "wrong") {
-          ageMatchedCompStats.wrong += 1;
-          const goalC =
-            (q.test_goal || q.testGoal || q["TEST GOAL"] || q.test_goal_he || q.test_goal_en || "").toString().trim();
-          if (goalC && !strengtheningGoalSetComp[goalC]) {
-            strengtheningGoalSetComp[goalC] = true;
-            strengtheningGoalsComp.push(goalC);
-          }
-        }
+        else if (item.result === "wrong") ageMatchedCompStats.wrong += 1;
       }
     });
 
@@ -3695,6 +3795,41 @@ function renderExpectedAnswerNote() {
       else if (item.result === "partly") bucket.partial += 1;
       else if (item.result === "wrong") bucket.wrong += 1;
     });
+    // Cake-display-only variables (no impact on test-flow logic).
+    // Display-only cake categories for expression summary.
+    // Flow logic still uses result buckets: correct / partly / wrong.
+    const expressionCakeCounts = { exact: 0, almost: 0, knewNotSay: 0, notThereYet: 0, total: 0 };
+    questionResults.forEach(function (item) {
+      if (!item || item.questionType !== "expression") return;
+      expressionCakeCounts.total += 1;
+      var category = item.expressionCakeCategory;
+      if (!category) {
+        category = item.result === "correct"
+          ? "exact"
+          : item.result === "partly"
+            ? "almost"
+            : "not_there_yet";
+      }
+      if (category === "exact") expressionCakeCounts.exact += 1;
+      else if (category === "almost") expressionCakeCounts.almost += 1;
+      else if (category === "knew_not_say") expressionCakeCounts.knewNotSay += 1;
+      else expressionCakeCounts.notThereYet += 1;
+    });
+    const expressionCakeKnewButDidntSayCount = expressionCakeCounts.knewNotSay;
+    const expressionCakeNotThereYetCount = expressionCakeCounts.notThereYet;
+    const expressionCakeStats = {
+      exact: expressionCakeCounts.exact,
+      almost: expressionCakeCounts.almost,
+      knewNotSay: expressionCakeKnewButDidntSayCount,
+      notThereYet: expressionCakeNotThereYetCount,
+      total: expressionCakeCounts.total
+    };
+    const comprehensionCakeStats = {
+      correct: compStats.correct,
+      partial: compStats.partial,
+      wrong: compStats.wrong,
+      total: compStats.total
+    };
 
     const strongerLabel = (function () {
       if (compStats.correct > exprStats.correct) {
@@ -3705,6 +3840,11 @@ function renderExpectedAnswerNote() {
       }
       return lang === "en" ? "Balanced between comprehension and expression" : "מאוזן בין הבנה להבעה";
     })();
+    const totalStats = {
+      total: compStats.total + exprStats.total,
+      compTotal: compStats.total,
+      exprTotal: exprStats.total
+    };
 
     const hasExpressionQuestions = exprStats.total > 0;
     var expressionAiStatus = expressionAiResult && expressionAiResult.status;
@@ -3752,7 +3892,6 @@ function renderExpectedAnswerNote() {
     }
     const ageMatchedForDisplay =
       !hasExpressionQuestions || expressionAiResolved ? ageMatchedStats : ageMatchedCompStats;
-    const strengtheningGoalsShown = expressionAiResolved ? strengtheningGoals : strengtheningGoalsComp;
 
     const parentExprByQ = {};
     questionResults.forEach(function (item) {
@@ -3764,6 +3903,108 @@ function renderExpectedAnswerNote() {
       const title = lang === "en" ? titleEn : titleHe;
       return title + ": " + stats.correct + " ✔ / " + stats.partial + " ~ / " + stats.wrong + " ✖ מתוך " + stats.total;
     };
+    function buildVisualSummarySegments(stats, mode, customItems) {
+      var total = Math.max(1, Number(stats && stats.total) || 0);
+      if (Array.isArray(customItems) && customItems.length > 0) {
+        var customCursor = 0;
+        return customItems.map(function (item, index) {
+          var value = Number(item && item.value) || 0;
+          var pct = (value / total) * 100;
+          var seg = {
+            key: (item && item.key) || ("custom_" + index),
+            color: (item && item.color) || "#d5dde5",
+            value: value,
+            label: lang === "en" ? (item && item.labelEn) : (item && item.labelHe),
+            start: customCursor,
+            end: customCursor + pct
+          };
+          customCursor += pct;
+          return seg;
+        });
+      }
+      var isExpression = mode === "expression";
+      var items = [
+        {
+          key: "correct",
+          color: "#9EDFC2",
+          value: Number(stats && stats.correct) || 0,
+          labelEn: isExpression ? "Exactly" : "Succeeded",
+          labelHe: isExpression ? "בדיוק" : "הצליח"
+        },
+        {
+          key: "partial",
+          color: "#F4D474",
+          value: Number(stats && stats.partial) || 0,
+          labelEn: isExpression ? "Knew but didn't say" : "Not on first attempt",
+          labelHe: isExpression ? "כמעט ידע אבל לא אמר" : "לא בניסיון הראשון"
+        },
+        {
+          key: "wrong",
+          color: "#F3A8AF",
+          value: Number(stats && stats.wrong) || 0,
+          labelEn: "Not there yet",
+          labelHe: "לא הצליח"
+        }
+      ];
+      var cursor = 0;
+      return items.map(function (item) {
+        var pct = (item.value / total) * 100;
+        var seg = {
+          key: item.key,
+          color: item.color,
+          value: item.value,
+          label: lang === "en" ? item.labelEn : item.labelHe,
+          start: cursor,
+          end: cursor + pct
+        };
+        cursor += pct;
+        return seg;
+      });
+    }
+    function renderVisualSummaryCard(opts) {
+      var stats = opts && opts.stats ? opts.stats : { correct: 0, partial: 0, wrong: 0, total: 0 };
+      var segments = buildVisualSummarySegments(stats, opts.mode, opts.items);
+      var gradient = segments
+        .map(function (seg) {
+          return seg.color + " " + seg.start.toFixed(2) + "% " + seg.end.toFixed(2) + "%";
+        })
+        .join(", ");
+      return React.createElement(
+        "div",
+        { className: "session-visual-summary__card", key: opts.key },
+        React.createElement(
+          "h3",
+          { className: "session-visual-summary__card-title" },
+          lang === "en" ? opts.titleEn : opts.titleHe
+        ),
+        React.createElement("div", { className: "session-visual-summary__corner-emoji", "aria-hidden": "true" }, opts.cornerEmoji || ""),
+        React.createElement(
+          "div",
+          { className: "session-visual-summary__chart-wrap" },
+          React.createElement(
+            "div",
+            {
+              className: "session-visual-summary__donut",
+              style: { background: "conic-gradient(" + gradient + ")" }
+            },
+            React.createElement("div", { className: "session-visual-summary__donut-center" }, "\u263A")
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "session-visual-summary__legend" },
+          segments.map(function (seg) {
+            return React.createElement(
+              "div",
+              { className: "session-visual-summary__legend-row", key: opts.key + "-" + seg.key },
+              React.createElement("span", { className: "session-visual-summary__legend-dot", style: { backgroundColor: seg.color } }),
+              React.createElement("span", { className: "session-visual-summary__legend-label" }, seg.label),
+              React.createElement("span", { className: "session-visual-summary__legend-value" }, String(seg.value))
+            );
+          })
+        )
+      );
+    }
 
     function parentEvalLabel(result) {
       if (result === "correct") return lang === "en" ? "Success" : "הצליח";
@@ -3835,6 +4076,271 @@ function renderExpectedAnswerNote() {
       
       console.log("📥 Downloaded session data file with timestamps, results, and transcription");
     };
+    const buildExpressionAiReportPayload = function () {
+      if (!expressionAiResult) return;
+      var rows = Array.isArray(expressionAiResult.per_question) ? expressionAiResult.per_question : [];
+      return {
+        testId: lastCompletedTestId || "unknown",
+        rows: rows
+      };
+    };
+    const parentStatusForReport = function (parentResult) {
+      if (parentResult === "correct") return lang === "en" ? "Success" : "הצליח";
+      if (parentResult === "partly") return lang === "en" ? "Partial" : "חלקי";
+      if (parentResult === "wrong") return lang === "en" ? "Wrong / knew but didn't say" : "לא הצליח / ידע ולא אמר";
+      return "—";
+    };
+    const parentScoreForReport = function (parentResult) {
+      if (parentResult === "correct") return 2;
+      if (parentResult === "partly") return 1;
+      if (parentResult === "wrong") return 0;
+      return null;
+    };
+    const downloadExpressionAiReportDoc = function () {
+      var payload = buildExpressionAiReportPayload();
+      if (!payload) return;
+      var gradeMatchedCount = 0;
+      var gradeComparedCount = 0;
+      var rowsHtml = payload.rows.length
+        ? payload.rows.map(function (r) {
+            var qn = String((r && r.question_number) != null ? r.question_number : "");
+            var parentResult = parentExprByQ[qn];
+            var parentStatus = parentStatusForReport(parentResult);
+            var parentScore = parentScoreForReport(parentResult);
+            var aiScoreNum = (r && (r.ai_score === 0 || r.ai_score === 1 || r.ai_score === 2)) ? Number(r.ai_score) : null;
+            var isMatch = parentScore != null && aiScoreNum != null ? (parentScore === aiScoreNum) : null;
+            if (isMatch !== null) {
+              gradeComparedCount += 1;
+              if (isMatch) gradeMatchedCount += 1;
+            }
+            return "<tr>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ (qn || "—") +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ parentStatus +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ (parentScore == null ? "—" : String(parentScore)) +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_score) != null ? r.ai_score : "—") +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ (isMatch === null ? "—" : (isMatch ? (lang === "en" ? "Match" : "תואם") : (lang === "en" ? "Different" : "שונה"))) +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_reason_short) || "—") +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_speaker_observation) || "—") +"</td>" +
+              "</tr>";
+          }).join("")
+        : "<tr><td colspan='7' style='border:1px solid #bbb;padding:6px;'>No per-question AI rows.</td></tr>";
+      var html = "<html><head><meta charset='utf-8'><title>Expression AI Report</title></head><body style='font-family:Arial,sans-serif;padding:16px;'>" +
+        "<h2>Expression AI Feedback Report</h2>" +
+        "<p><strong>" + (lang === "en" ? "Parent vs AI match" : "התאמה הורה מול AI") + ":</strong> " + gradeMatchedCount + " / " + gradeComparedCount + "</p>" +
+        "<h3>Per-question rows</h3>" +
+        "<table style='border-collapse:collapse;width:100%;font-size:13px;'><thead><tr>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>Q#</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>" + (lang === "en" ? "Parent answer" : "תשובת הורה") + "</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>" + (lang === "en" ? "Parent score" : "ציון הורה") + "</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>AI score</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>" + (lang === "en" ? "Match" : "התאמה") + "</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>Reason</th>" +
+        "<th style='border:1px solid #bbb;padding:6px;'>Listen</th>" +
+        "</tr></thead><tbody>" + rowsHtml + "</tbody></table>" +
+        "</body></html>";
+      var blob = new Blob(["\ufeff", html], { type: "application/msword" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "expression_ai_feedback_" + payload.testId + ".doc";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    const plsFeedbackText = function (eli, catId) {
+      if (!eli) return "";
+      if (catId === "integrative") return String(eli.feedback_integrative_language_he || "").trim();
+      if (catId === "semantics") return String(eli.feedback_semantics_he || "").trim();
+      if (catId === "structure") return String(eli.feedback_language_structure_he || "").trim();
+      if (catId === "phonology") return String(eli.feedback_phonological_awareness_he || "").trim();
+      return "";
+    };
+    const buildPlsNarrativeViewModel = function (eli) {
+      if (!eli || eli.status !== "done") return null;
+      var pos = Array.isArray(eli.positive_points_he) && eli.positive_points_he.length
+        ? eli.positive_points_he
+        : (Array.isArray(eli.observed_strengths) ? eli.observed_strengths : []);
+      var imp = Array.isArray(eli.improvement_points_he) && eli.improvement_points_he.length
+        ? eli.improvement_points_he
+        : (Array.isArray(eli.observed_challenges) ? eli.observed_challenges : []);
+      var intro = String(eli.summary_card_intro_he || "").trim();
+      if (!intro) intro = String(eli.summary_paragraph_he || "").trim();
+      var steps = Array.isArray(eli.recommended_next_steps_he) ? eli.recommended_next_steps_he : [];
+      var hasExtended = !!(
+        (eli.feedback_semantics_he && String(eli.feedback_semantics_he).trim()) ||
+        (eli.feedback_integrative_language_he && String(eli.feedback_integrative_language_he).trim()) ||
+        (eli.feedback_language_structure_he && String(eli.feedback_language_structure_he).trim()) ||
+        (eli.feedback_phonological_awareness_he && String(eli.feedback_phonological_awareness_he).trim())
+      );
+      if (!intro && !pos.length && !imp.length) return null;
+      return { intro: intro, positive: pos, improvement: imp, steps: steps, hasExtended: hasExtended };
+    };
+    const renderPlsNarrativeReport = function (eli) {
+      var vm = buildPlsNarrativeViewModel(eli);
+      if (!vm) return null;
+      var plsCats = [
+        { id: "integrative", emoji: "💬", labelHe: "מיומנויות שפה אינטגרטיביות", labelEn: "Integrative language skills" },
+        { id: "semantics", emoji: "📚", labelHe: "סמנטיקה", labelEn: "Semantics" },
+        { id: "structure", emoji: "🧱", labelHe: "מבנה שפה", labelEn: "Language structure" },
+        { id: "phonology", emoji: "👂", labelHe: "מודעות פונולוגית", labelEn: "Phonological awareness" }
+      ];
+      var sel = plsCats.some(function (c) { return c.id === plsReportCategory; }) ? plsReportCategory : "semantics";
+      var selMeta = plsCats.filter(function (c) { return c.id === sel; })[0] || plsCats[1];
+      var feedbackBody = plsFeedbackText(eli, sel) || (lang === "en" ? "No category feedback available." : "אין משוב זמין לקטגוריה זו.");
+      var stepIcons = ["🧩", "💬", "👂"];
+      var heroBlock = React.createElement(
+        "div",
+        { className: "pls-narrative-report__hero" },
+        React.createElement("div", { className: "pls-narrative-report__hero-illus", "aria-hidden": "true" }, "🤖"),
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__hero-copy" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__hero-title" },
+            lang === "en" ? "Summary after AI analysis" : "סיכום לאחר ניתוח בינה מלאכותית"
+          ),
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__hero-text" },
+            vm.intro
+              ? vm.intro
+              : (lang === "en"
+                ? "Key insights from the sampled expression tasks — strengths and areas to reinforce."
+                : "תובנות מרכזיות מהדגימות שנבדקו — נקודות חוזק ותחומים לחיזוק.")
+          )
+        )
+      );
+      var colBlock = React.createElement(
+        "div",
+        { className: "pls-narrative-report__columns" },
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__col pls-narrative-report__col--positive" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__col-head" },
+            React.createElement("span", { className: "pls-narrative-report__col-icon", "aria-hidden": "true" }, "✅"),
+            lang === "en" ? "Positive points" : "נקודות חיוביות"
+          ),
+          React.createElement(
+            "ul",
+            { className: "pls-narrative-report__list" },
+            (vm.positive.length ? vm.positive : [lang === "en" ? "—" : "—"]).slice(0, 6).map(function (line, idx) {
+              return React.createElement("li", { key: "pos-" + idx }, line);
+            })
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__col pls-narrative-report__col--improve" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__col-head" },
+            React.createElement("span", { className: "pls-narrative-report__col-icon", "aria-hidden": "true" }, "📈"),
+            lang === "en" ? "Points to strengthen" : "נקודות לחיזוק / שיפור"
+          ),
+          React.createElement(
+            "ul",
+            { className: "pls-narrative-report__list" },
+            (vm.improvement.length ? vm.improvement : [lang === "en" ? "—" : "—"]).slice(0, 6).map(function (line, idx) {
+              return React.createElement("li", { key: "imp-" + idx }, line);
+            })
+          )
+        )
+      );
+      if (!vm.hasExtended) {
+        return React.createElement(
+          "div",
+          { className: "pls-narrative-report pls-narrative-report--legacy", dir: "rtl" },
+          heroBlock,
+          colBlock
+        );
+      }
+      return React.createElement(
+        "div",
+        { className: "pls-narrative-report", dir: "rtl" },
+        heroBlock,
+        colBlock,
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__wheel-wrap" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__wheel" },
+            React.createElement(
+              "div",
+              { className: "pls-narrative-report__wheel-center" },
+              lang === "en" ? "Choose a category — tap for feedback" : "בחרו קטגוריה — לחצו כדי לראות משוב"
+            ),
+            React.createElement(
+              "div",
+              { className: "pls-narrative-report__wheel-nodes" },
+              plsCats.map(function (c) {
+                var active = c.id === sel;
+                return React.createElement(
+                  "button",
+                  {
+                    key: c.id,
+                    type: "button",
+                    className: "pls-narrative-report__wheel-node" + (active ? " is-active" : ""),
+                    onClick: function () { setPlsReportCategory(c.id); }
+                  },
+                  React.createElement("span", { className: "pls-narrative-report__wheel-emoji", "aria-hidden": "true" }, c.emoji),
+                  React.createElement("span", { className: "pls-narrative-report__wheel-label" }, lang === "en" ? c.labelEn : c.labelHe)
+                );
+              })
+            )
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__by-cat" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__by-cat-title" },
+            lang === "en" ? "Feedback by category" : "משוב לפי קטגוריה"
+          ),
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__pill" },
+            lang === "en" ? selMeta.labelEn : selMeta.labelHe
+          ),
+          React.createElement("div", { className: "pls-narrative-report__by-cat-body" }, feedbackBody)
+        ),
+        React.createElement(
+          "div",
+          { className: "pls-narrative-report__next" },
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__next-title" },
+            lang === "en" ? "Recommended next steps" : "תכנים מומלצים להמשך"
+          ),
+          React.createElement(
+            "ul",
+            { className: "pls-narrative-report__next-list" },
+            (vm.steps.length >= 1 ? vm.steps.slice(0, 3) : []).map(function (title, idx) {
+              return React.createElement(
+                "li",
+                { key: "step-" + idx, className: "pls-narrative-report__next-row" },
+                React.createElement("span", { className: "pls-narrative-report__next-arrow", "aria-hidden": "true" }, "←"),
+                React.createElement("span", { className: "pls-narrative-report__next-ico", "aria-hidden": "true" }, stepIcons[idx] || "⭐"),
+                React.createElement("span", { className: "pls-narrative-report__next-text" }, title)
+              );
+            })
+          ),
+          React.createElement(
+            "div",
+            { className: "pls-narrative-report__next-foot" },
+            lang === "en"
+              ? "Suggestions are adapted to patterns seen in this evaluation sample."
+              : "התכנים מותאמים לממצאים שעלו בהערכה."
+          )
+        )
+      );
+    };
 
     return React.createElement(
   React.Fragment,
@@ -3871,90 +4377,108 @@ function renderExpectedAnswerNote() {
 
     React.createElement(
       "div",
-      { style: { width: "100%", padding: "8px 0 2px", textAlign: "center" } },
+      { className: "session-immediate-summary" },
       React.createElement(
         "div",
-        {
-          style: {
-            fontSize: "28px",
-            fontWeight: 800,
-            marginBottom: "6px",
-            color: "#20364a"
-          }
-        },
-        lang === "en" ? "Great job! 🏁" : "כל הכבוד! 🏁"
-      )
-    ),
-
-      // Age-matched summary: comprehension-only until expression AI is ready (then full age band)
-      React.createElement(
-        "div",
-        { style: { width: "min(100%, 720px)", margin: "8px auto 0", textAlign: "center" } },
+        { className: "session-immediate-summary__hero" },
+        React.createElement("div", { className: "session-immediate-summary__hero-icon", "aria-hidden": "true" }, "\ud83c\udfc6"),
         React.createElement(
-          "p",
-          { style: { margin: "0 0 6px", fontWeight: 700 } },
-          lang === "en"
-            ? (!hasExpressionQuestions || expressionAiResolved
-              ? "Age-matched results"
-              : "Comprehension (age-matched) — expression follows after AI")
-            : (!hasExpressionQuestions || expressionAiResolved
-              ? "סיכום לפי גיל הילד"
-              : "הבנה — סיכום לפי גיל (פרטי הבעה אחרי משוב AI)")
-        ),
-        React.createElement(
-          "p",
-          { style: { margin: 0 } },
-          lang === "en"
-            ? ("Your child answered " + ageMatchedForDisplay.correct + " correct, " + ageMatchedForDisplay.partial + " with help, and " + ageMatchedForDisplay.wrong + " incorrect out of " + ageMatchedForDisplay.total + " age-matched questions (" + expectedAgeGroupDisplay + ").")
-            : ("ענה נכון על " + ageMatchedForDisplay.correct + " תשובות מהשאלות המתאימות לגיל (" + expectedAgeGroupDisplay + "). " +
-               ageMatchedForDisplay.partial + " תשובות עם עזרה ו-" + ageMatchedForDisplay.wrong + " תשובות שגויות (מתוך " + ageMatchedForDisplay.total + ").")
+          "div",
+          { className: "session-immediate-summary__hero-copy" },
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__hero-title" },
+            lang === "en" ? "Great job — test completed" : "כל הכבוד — סיימתם את ההערכה"
+          ),
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__hero-subtitle" },
+            lang === "en"
+              ? "Here is a short game summary."
+              : "לפניכם סיכום קצר של המשחק"
+          )
         )
       ),
-      strengtheningGoalsShown.length > 0
-        ? React.createElement(
-            "div",
-            { style: { width: "min(100%, 720px)", margin: "10px auto 0", textAlign: "center" } },
-            React.createElement(
-              "p",
-              { style: { margin: "0 0 6px", fontWeight: 800 } },
-              lang === "en"
-                ? "It looks like these areas could use strengthening:"
-                : "נראה כי ישנו צורך בחיזוק התחומים הבאים:"
-            ),
-            React.createElement(
-              "div",
-              { style: { display: "grid", gap: "6px" } },
-              strengtheningGoalsShown.map(function (g) {
-                return React.createElement(
-                  "div",
-                  { key: g, style: { padding: "10px 12px", borderRadius: "14px", background: "rgba(66, 171, 199, 0.08)", border: "1px solid rgba(66, 171, 199, 0.18)" } },
-                  g
-                );
-              })
-            )
-          )
-        : null,
-      // By category: comprehension always; expression summary only after AI; single “waiting” control for expression AI
       React.createElement(
         "div",
-        { style: { display: "grid", gap: "6px", marginTop: "14px", textAlign: "center" } },
-        React.createElement("strong", null, lang === "en" ? "By category:" : "לפי קטגוריה:"),
-        React.createElement("span", null, statsLine("הבנה", "Comprehension", compStats)),
-        expressionAiResolved
-          ? React.createElement("span", null, statsLine("הבעה", "Expression", exprStats))
-          : hasExpressionQuestions
-            ? React.createElement(
-                "span",
-                { style: { fontSize: "14px", color: "#5a6b70" } },
-                lang === "en"
-                  ? "Expression: results will appear with AI feedback (parent + model)."
-                  : "הבעה: הסיכום יוצג יחד עם משוב ה-AI (הורים + מודל)."
-              )
-            : null,
-        expressionAiResolved
-          ? React.createElement("span", { style: { marginTop: "4px", fontWeight: 600 } }, strongerLabel)
-          : null
+        { className: "session-immediate-summary__stats" },
+        React.createElement(
+          "div",
+          { className: "session-immediate-summary__stats-title" },
+          lang === "en" ? "Overall snapshot" : "מבט כללי"
+        ),
+        React.createElement(
+          "div",
+          { className: "session-immediate-summary__stats-grid" },
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__stat-tile" },
+            React.createElement("span", { className: "session-immediate-summary__stat-label" }, lang === "en" ? "Age stage" : "גיל"),
+            React.createElement("span", { className: "session-immediate-summary__stat-value session-immediate-summary__stat-value--small" }, expectedAgeGroupDisplay)
+          ),
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__stat-tile session-immediate-summary__stat-tile--strong" },
+            React.createElement("span", { className: "session-immediate-summary__stat-label" }, lang === "en" ? "Total questions" : "סה\"כ שאלות"),
+            React.createElement("span", { className: "session-immediate-summary__stat-value" }, String(totalStats.total))
+          ),
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__stat-tile" },
+            React.createElement("span", { className: "session-immediate-summary__stat-label" }, lang === "en" ? "Expression questions" : "שאלות הבעה"),
+            React.createElement("span", { className: "session-immediate-summary__stat-value" }, String(totalStats.exprTotal))
+          ),
+          React.createElement(
+            "div",
+            { className: "session-immediate-summary__stat-tile" },
+            React.createElement("span", { className: "session-immediate-summary__stat-label" }, lang === "en" ? "Comprehension questions" : "שאלות הבנה"),
+            React.createElement("span", { className: "session-immediate-summary__stat-value" }, String(totalStats.compTotal))
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "session-immediate-summary__stats-note" },
+          lang === "en"
+            ? "The evaluation included comprehension and expression, and was adjusted to the selected age stage."
+            : "ההערכה כללה שאלות הבנה ושאלות הבעה, והותאמה לגיל הילד."
+        )
       ),
+      React.createElement(
+        "div",
+        { className: "session-visual-summary" },
+        renderVisualSummaryCard({
+          key: "comp",
+          mode: "comprehension",
+          cornerEmoji: "👂",
+          titleEn: "Comprehension questions summary",
+          titleHe: "סיכום שאלות הבנה",
+          stats: comprehensionCakeStats
+        }),
+        renderVisualSummaryCard({
+          key: "expr",
+          mode: "expression",
+          cornerEmoji: "🗣️",
+          titleEn: "Expression questions summary",
+          titleHe: "סיכום שאלות הבעה",
+          items: [
+            { key: "exact", color: "#9EDFC2", value: expressionCakeStats.exact, labelEn: "Exactly", labelHe: "בדיוק" },
+            { key: "almost", color: "#BFE7F8", value: expressionCakeStats.almost, labelEn: "Almost", labelHe: "כמעט" },
+            { key: "knew_not_say", color: "#F4D474", value: expressionCakeStats.knewNotSay, labelEn: "Knew but didn't say", labelHe: "ידע אבל לא אמר" },
+            { key: "not_there_yet", color: "#F3A8AF", value: expressionCakeStats.notThereYet, labelEn: "Not there yet", labelHe: "לא שם עדיין" }
+          ],
+          stats: expressionCakeStats
+        })
+      ),
+      expressionAiResolved
+        ? React.createElement("div", { className: "session-immediate-summary__balance" }, strongerLabel)
+        : null
+    ),
+      hasExpressionQuestions &&
+      expressionAiResult &&
+      expressionAiResult.expressive_language_impression &&
+      expressionAiResult.expressive_language_impression.status === "done"
+        ? renderPlsNarrativeReport(expressionAiResult.expressive_language_impression)
+        : null,
       hasExpressionQuestions && lastCompletedTestId && expressionFeedbackPending
         ? React.createElement(
             "div",
@@ -4014,319 +4538,100 @@ function renderExpectedAnswerNote() {
             )
           )
         : null,
-      // Download buttons container (recording MP3 + detailed results text only; no combined download)
-      React.createElement(
-        "div",
-        { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
-        // Download button for recording only - show if recording exists
-        hasSessionRecording
-      ? React.createElement(
-        "button",
-        {
-          style: {
-            padding: "10px 20px",
-            fontSize: "16px",
-            backgroundColor: "#42ABC7",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: "pointer"
-          },
-          onClick: downloadRecording
-        },
-        tr("test.done.downloadRecording")
-      )
-  : null,
-        // Detailed results (timestamps + per-question outcomes + transcript when available)
-        React.createElement(
-        "button",
-        {
-          style: {
-            padding: "10px 20px",
-            fontSize: "16px",
-            backgroundColor: "#4CAF50",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: "pointer",
-            opacity: 1
-          },
-          onClick: downloadTimestamps
-        },
-        tr("test.done.downloadTimestamps")
-      )
-      ),
       expressionAiResolved && hasExpressionQuestions && expressionAiResult
         ? React.createElement(
             "div",
             {
               style: {
                 marginTop: "18px",
-                width: "min(100%, 720px)",
+                width: "min(100%, 620px)",
                 marginLeft: "auto",
                 marginRight: "auto",
-                padding: "14px 14px 16px",
-                textAlign: "start",
+                padding: "14px 14px 14px",
+                textAlign: "center",
                 background: "#f7f8fd",
                 border: "1px solid #d7defb",
                 borderRadius: "12px",
                 display: "grid",
-                gap: "14px"
+                gap: "10px"
               }
             },
             React.createElement(
               "div",
-              { style: { fontWeight: 800, fontSize: "17px", textAlign: "center", color: "#20364a" } },
-              lang === "en" ? "Expression — parent traffic lights & AI" : "הבעה — מחוון הורים ומשוב AI"
+              { style: { fontWeight: 800, fontSize: "17px", color: "#20364a" } },
+              lang === "en" ? "AI feedback is ready" : "משוב ה-AI מוכן"
             ),
             React.createElement(
               "div",
-              null,
+              { style: { fontSize: "14px", color: "#4b5d6f" } },
+              lang === "en"
+                ? "AI details are available for download as a report file."
+                : "פרטי משוב ה-AI זמינים להורדה כקובץ דוח."
+            ),
+            React.createElement(
+              "div",
+              { style: { display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" } },
               React.createElement(
-                "div",
-                { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
-                lang === "en" ? "1. Parent evaluation (traffic lights)" : "1. הערכת הורים (מחוון)"
-              ),
-              React.createElement(
-                "p",
-                { style: { margin: "0 0 8px", fontSize: "14px" } },
-                statsLine(
-                  "הערכת הורים",
-                  "Parent evaluation",
-                  exprStats
-                )
-              ),
-              React.createElement(
-                "div",
-                { style: { overflowX: "auto" } },
-                (function () {
-                  var th = { padding: "8px 10px", border: "1px solid #cfd8ea", background: "#eef2fb", fontWeight: 700, fontSize: "13px" };
-                  var td = { padding: "8px 10px", border: "1px solid #e2e6f0", fontSize: "13px" };
-                  var qNums = Object.keys(parentExprByQ).sort(function (a, b) {
-                    return parseInt(a, 10) - parseInt(b, 10);
-                  });
-                  return React.createElement(
-                    "table",
-                    { style: { width: "100%", borderCollapse: "collapse", marginTop: "4px" } },
-                    React.createElement(
-                      "thead",
-                      null,
-                      React.createElement(
-                        "tr",
-                        null,
-                        React.createElement("th", { style: th }, lang === "en" ? "Q#" : "שאלה"),
-                        React.createElement("th", { style: th }, lang === "en" ? "Parent" : "הורים")
-                      )
-                    ),
-                    React.createElement(
-                      "tbody",
-                      null,
-                      qNums.map(function (qn) {
-                        return React.createElement(
-                          "tr",
-                          { key: "par-expr-" + qn },
-                          React.createElement("td", { style: td }, qn),
-                          React.createElement("td", { style: td }, parentEvalLabel(parentExprByQ[qn]))
-                        );
-                      })
-                    )
-                  );
-                })()
+                "button",
+                {
+                  type: "button",
+                  onClick: downloadExpressionAiReportDoc,
+                  style: {
+                    padding: "10px 14px",
+                    fontSize: "14px",
+                    backgroundColor: "#4a9a62",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "8px",
+                    cursor: "pointer",
+                    opacity: 0.96
+                  }
+                },
+                lang === "en" ? "Download Word" : "הורדת Word"
               )
-            ),
-            React.createElement(
-              "div",
-              null,
-              React.createElement(
-                "div",
-                { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
-                lang === "en" ? "2. AI scoring (0 / 1 / 2)" : "2. ציון AI (0 / 1 / 2)"
-              ),
-              (function () {
-                var rows = Array.isArray(expressionAiResult.per_question) ? expressionAiResult.per_question : [];
-                var successCount = 0;
-                var partialCount = 0;
-                var wrongCount = 0;
-                var gradeMatchedCount = 0;
-                var gradeComparedCount = 0;
-                rows.forEach(function (r) {
-                  var s = Number(r && r.ai_score);
-                  if (s === 2) successCount += 1;
-                  else if (s === 1) partialCount += 1;
-                  else wrongCount += 1;
-
-                  var qn = String((r && r.question_number) != null ? r.question_number : "");
-                  var parentResult = parentExprByQ[qn];
-                  if (parentResult == null) return;
-                  if (!(s === 0 || s === 1 || s === 2)) return;
-                  var parentGrade = parentResult === "correct" ? 2 : parentResult === "partly" ? 1 : 0;
-                  gradeComparedCount += 1;
-                  if (parentGrade === s) gradeMatchedCount += 1;
-                });
-                var aiStats = {
-                  correct: successCount,
-                  partial: partialCount,
-                  wrong: wrongCount,
-                  total: rows.length
-                };
-                return React.createElement(
-                  React.Fragment,
-                  null,
-                  React.createElement(
-                    "p",
-                    { style: { margin: "0 0 8px", fontSize: "14px" } },
-                    statsLine("מודל AI (0–2)", "AI model (0–2)", aiStats)
-                  ),
-                  React.createElement(
-                    "p",
-                    { style: { margin: "0 0 8px", fontSize: "14px", fontWeight: 600 } },
-                    lang === "en"
-                      ? ("Grade match (parent vs AI): " + gradeMatchedCount + " out of " + gradeComparedCount + " questions")
-                      : ("התאמה בציון (הורים מול AI): " + gradeMatchedCount + " מתוך " + gradeComparedCount + " שאלות")
-                  ),
-                  React.createElement(
-                    "div",
-                    { style: { overflowX: "auto" } },
-                    (function () {
-                      var th = { padding: "8px 10px", border: "1px solid #cfd8ea", background: "#eef2fb", fontWeight: 700, fontSize: "12px" };
-                      var td = { padding: "8px 10px", border: "1px solid #e2e6f0", fontSize: "12px" };
-                      var obsLabelsEn = {
-                        child_response_clear: "Clear child speech",
-                        single_speaker_examinee_clear: "Single speaker (lab/adult test)",
-                        no_audible_speech: "No audible speech",
-                        only_noise_or_unclear: "Noise / unclear only",
-                        adult_or_parent_only_no_child: "Adult/parent only (no child)",
-                        mixed_speakers_child_segment_unclear: "Mixed speakers — child unclear",
-                        manual_review_fallback: "Pipeline fallback / manual review",
-                      };
-                      var obsLabelsHe = {
-                        child_response_clear: "דיבור ילד ברור",
-                        single_speaker_examinee_clear: "דובר יחיד (בדיקה / מבוגר)",
-                        no_audible_speech: "אין דיבור ברור",
-                        only_noise_or_unclear: "רעש / לא ברור",
-                        adult_or_parent_only_no_child: "מבוגר בלבד (בלי ילד נפרד)",
-                        mixed_speakers_child_segment_unclear: "כמה דוברים — לא ניתן לבודד ילד",
-                        manual_review_fallback: "נפילת צינור / ביקורת ידנית",
-                      };
-                      return React.createElement(
-                        "table",
-                        { style: { width: "100%", borderCollapse: "collapse", marginTop: "4px" } },
-                        React.createElement(
-                          "thead",
-                          null,
-                          React.createElement(
-                            "tr",
-                            null,
-                            React.createElement("th", { style: th }, lang === "en" ? "Q#" : "שאלה"),
-                            React.createElement("th", { style: th }, lang === "en" ? "Parent" : "הורים"),
-                            React.createElement("th", { style: th }, "AI"),
-                            React.createElement("th", { style: th }, lang === "en" ? "Listen" : "שמיעה"),
-                            React.createElement("th", { style: th }, lang === "en" ? "Note" : "הערה")
-                          )
-                        ),
-                        React.createElement(
-                          "tbody",
-                          null,
-                          rows.map(function (r, idx) {
-                            var qn = String((r && r.question_number) != null ? r.question_number : "");
-                            var pr = parentExprByQ[qn];
-                            var score = Number(r && r.ai_score);
-                            var aiLabel = score === 2
-                              ? (lang === "en" ? "2" : "2")
-                              : score === 1
-                                ? "1"
-                                : "0";
-                            var obsKey = r && r.ai_speaker_observation;
-                            var obsHuman = obsKey
-                              ? ((lang === "en" ? obsLabelsEn : obsLabelsHe)[obsKey] || obsKey)
-                              : "";
-                            var reasonTxt = (r && r.ai_reason_short) ? String(r.ai_reason_short) : "";
-                            return React.createElement(
-                              "tr",
-                              { key: "expr-compare-" + idx },
-                              React.createElement("td", { style: td }, qn || "—"),
-                              React.createElement("td", { style: td }, parentEvalLabel(pr)),
-                              React.createElement("td", { style: td }, aiLabel),
-                              React.createElement("td", { style: td }, obsHuman || "—"),
-                              React.createElement("td", { style: td }, reasonTxt || "—")
-                            );
-                          })
-                        )
-                      );
-                    })()
-                  )
-                );
-              })()
-            ),
-            (function () {
-              var eli = expressionAiResult && expressionAiResult.expressive_language_impression;
-              if (!eli) return null;
-              return React.createElement(
-                "div",
-                null,
-                React.createElement(
-                  "div",
-                  { style: { fontWeight: 700, marginBottom: "6px", fontSize: "15px" } },
-                  lang === "en" ? "3. Short impression (AI, sample-based)" : "3. התרשמות קצרה (AI, לפי דגימות)"
-                ),
-                eli.status === "done" && eli.summary_paragraph_he
-                  ? React.createElement(
-                      "div",
-                      {
-                        style: {
-                          padding: "12px 12px",
-                          borderRadius: "10px",
-                          background: "linear-gradient(180deg, rgba(66, 171, 199, 0.09), rgba(91, 108, 245, 0.06))",
-                          border: "1px solid rgba(66, 171, 199, 0.22)"
-                        }
-                      },
-                      React.createElement(
-                        "p",
-                        { style: { margin: 0, fontSize: "15px", lineHeight: 1.55, color: "#2a3d4a" } },
-                        eli.summary_paragraph_he
-                      ),
-                      Array.isArray(eli.observed_strengths) && eli.observed_strengths.length > 0
-                        ? React.createElement(
-                            "p",
-                            { style: { margin: "10px 0 0", fontSize: "13px", color: "#445" } },
-                            (lang === "en" ? "Noted strengths: " : "נקודות חוזק: ") + eli.observed_strengths.join(" · ")
-                          )
-                        : null,
-                      Array.isArray(eli.observed_challenges) && eli.observed_challenges.length > 0
-                        ? React.createElement(
-                            "p",
-                            { style: { margin: "6px 0 0", fontSize: "13px", color: "#445" } },
-                            (lang === "en" ? "Patterns: " : "דפוסים: ") + eli.observed_challenges.join(" · ")
-                          )
-                        : null,
-                      eli.phonology_separate_note_he
-                        ? React.createElement(
-                            "p",
-                            { style: { margin: "8px 0 0", fontSize: "12px", color: "#556", fontStyle: "italic" } },
-                            lang === "en" ? ("Articulation: " + eli.phonology_separate_note_he) : ("היגוי: " + eli.phonology_separate_note_he)
-                          )
-                        : null,
-                      eli.limitations_he
-                        ? React.createElement(
-                            "p",
-                            { style: { margin: "8px 0 0", fontSize: "12px", color: "#666" } },
-                            lang === "en" ? ("Limitations: " + eli.limitations_he) : ("הגבלות: " + eli.limitations_he)
-                          )
-                        : null
-                    )
-                  : React.createElement(
-                      "p",
-                      { style: { margin: 0, fontSize: "14px", color: "#555" } },
-                      eli.limitations_he ||
-                        eli.reason ||
-                        (lang === "en"
-                          ? "Expressive-language impression was not generated for this session."
-                          : "לא נוצרה התרשמות הבעה למפגש זה.")
-                    )
-              );
-            })()
+            )
           )
-        : null
+        : null,
+      // Download buttons container (moved below AI area to keep immediate summary visual-first)
+      React.createElement(
+        "div",
+        { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
+        hasSessionRecording
+          ? React.createElement(
+              "button",
+              {
+                style: {
+                  padding: "10px 20px",
+                  fontSize: "16px",
+                  backgroundColor: "#42ABC7",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "8px",
+                  cursor: "pointer"
+                },
+                onClick: downloadRecording
+              },
+              tr("test.done.downloadRecording")
+            )
+          : null,
+        React.createElement(
+          "button",
+          {
+            style: {
+              padding: "10px 20px",
+              fontSize: "16px",
+              backgroundColor: "#4CAF50",
+              color: "white",
+              border: "none",
+              borderRadius: "8px",
+              cursor: "pointer",
+              opacity: 1
+            },
+            onClick: downloadTimestamps
+          },
+          tr("test.done.downloadTimestamps")
+        )
+      )
       )
     );
   }
@@ -4702,7 +5007,7 @@ function renderExpectedAnswerNote() {
               {
                 type: "button",
                 className: "traffic-option traffic-option--amber",
-                onClick: function () { handleTrafficPopupChoice("failure"); },
+                onClick: function () { handleTrafficPopupChoice("midFailure"); },
                 disabled: !!trafficPopupChoice,
               },
               React.createElement("div", { className: "traffic-option__title" }, tr("test.trafficPopup.midFailure.title"))
@@ -4906,6 +5211,7 @@ questionType === "C"
               alt: "option " + (i + 1),
               className: extraClassName === "top-row-big" ? "image top-row-big" : "image",
               "data-base-src": img,
+              "data-fallback-png-first": answerType === "mask" ? "1" : undefined,
               "data-fallback-index": "0",
               style: Object.assign(
                 { width: "100%", maxWidth: "100%" },
