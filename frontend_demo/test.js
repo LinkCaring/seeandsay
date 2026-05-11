@@ -2344,6 +2344,12 @@ const handleReadingValidationRetry = function () {
           return;
         }
       }
+      // If we just answered the last question in the active CSV-driven flow,
+      // always finish via the same completeSession path used by the Finish button.
+      if (currentIdx >= questions.length - 1) {
+        completeSession(updatedQuestionResults);
+        return;
+      }
       if (currentIdx < questions.length - 1) {
         updateCurrentQuestionIndex(currentIdx + 1);
       } else {
