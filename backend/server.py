@@ -40,7 +40,7 @@ database_name = os.environ.get("DATABASE_NAME")
 
 # Initialize MongoDB storage manager
 storage = SeeSayMongoStorage(mongodb_url, database_name)
-GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "100"))
+GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "150"))
 GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "40"))
 GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
 GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "2800"))

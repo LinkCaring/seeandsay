@@ -1962,6 +1962,49 @@ button {
   font-size: 14px;
 }
 
+/* Inline expression AI report (same data as Word export) — below visual summary on completion */
+.session-expression-ai-report {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 14px;
+  padding: 12px 10px 14px;
+  background: #fbfcff;
+  border: 1px solid #dbe5ef;
+  border-radius: 14px;
+  text-align: start;
+  direction: inherit;
+}
+
+.session-expression-ai-report__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #20364a;
+  text-align: center;
+}
+
+.session-expression-ai-report__matchline {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #3d5266;
+  text-align: center;
+}
+
+.session-expression-ai-report__scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.session-expression-ai-report__table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-family: "Rubik", var(--font-family), sans-serif;
+}
+
 .session-visual-summary {
   width: 100%;
   margin: 0;

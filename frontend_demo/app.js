@@ -244,7 +244,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 3"
+      "version 3.1"
     ),
     // Landscape orientation overlay — shown only in test mode + portrait
     React.createElement(
