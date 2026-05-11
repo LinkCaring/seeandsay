@@ -53,8 +53,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Transcription state
   const [transcription, setTranscription] = React.useState(null);
-  const [lastCompletedTestId, setLastCompletedTestId] = React.useState(null);
-  const [expressionAiResult, setExpressionAiResult] = React.useState(null);
+  const [lastCompletedTestId, setLastCompletedTestId] = usePersistentState("lastCompletedTestId", null);
+  const [expressionAiResult, setExpressionAiResult] = usePersistentState("expressionAiResult", null);
   const [expressionAiLoading, setExpressionAiLoading] = React.useState(false);
   /** Which PLS frame is selected in the narrative report wheel (integrative | semantics | structure | phonology). */
   const [plsReportCategory, setPlsReportCategory] = React.useState("semantics");
@@ -4076,14 +4076,7 @@ function renderExpectedAnswerNote() {
       
       console.log("📥 Downloaded session data file with timestamps, results, and transcription");
     };
-    const buildExpressionAiReportPayload = function () {
-      if (!expressionAiResult) return;
-      var rows = Array.isArray(expressionAiResult.per_question) ? expressionAiResult.per_question : [];
-      return {
-        testId: lastCompletedTestId || "unknown",
-        rows: rows
-      };
-    };
+
     const parentStatusForReport = function (parentResult) {
       if (parentResult === "correct") return lang === "en" ? "Success" : "הצליח";
       if (parentResult === "partly") return lang === "en" ? "Partial" : "חלקי";
@@ -4096,37 +4089,163 @@ function renderExpectedAnswerNote() {
       if (parentResult === "wrong") return 0;
       return null;
     };
-    const downloadExpressionAiReportDoc = function () {
-      var payload = buildExpressionAiReportPayload();
-      if (!payload) return;
+
+    const getExpressionAiReportRowModels = function () {
+      if (!expressionAiResult) return null;
+      var rawRows = Array.isArray(expressionAiResult.per_question) ? expressionAiResult.per_question : [];
       var gradeMatchedCount = 0;
       var gradeComparedCount = 0;
-      var rowsHtml = payload.rows.length
-        ? payload.rows.map(function (r) {
-            var qn = String((r && r.question_number) != null ? r.question_number : "");
-            var parentResult = parentExprByQ[qn];
-            var parentStatus = parentStatusForReport(parentResult);
-            var parentScore = parentScoreForReport(parentResult);
-            var aiScoreNum = (r && (r.ai_score === 0 || r.ai_score === 1 || r.ai_score === 2)) ? Number(r.ai_score) : null;
-            var isMatch = parentScore != null && aiScoreNum != null ? (parentScore === aiScoreNum) : null;
-            if (isMatch !== null) {
-              gradeComparedCount += 1;
-              if (isMatch) gradeMatchedCount += 1;
-            }
+      var rowModels = rawRows.map(function (r) {
+        var qn = String((r && r.question_number) != null ? r.question_number : "");
+        var parentResult = parentExprByQ[qn];
+        var parentStatus = parentStatusForReport(parentResult);
+        var parentScore = parentScoreForReport(parentResult);
+        var aiScoreNum = (r && (r.ai_score === 0 || r.ai_score === 1 || r.ai_score === 2)) ? Number(r.ai_score) : null;
+        var isMatch = parentScore != null && aiScoreNum != null ? (parentScore === aiScoreNum) : null;
+        if (isMatch !== null) {
+          gradeComparedCount += 1;
+          if (isMatch) gradeMatchedCount += 1;
+        }
+        var matchLabel =
+          isMatch === null
+            ? "—"
+            : isMatch
+              ? (lang === "en" ? "Match" : "תואם")
+              : (lang === "en" ? "Different" : "שונה");
+        return {
+          qn: qn || "—",
+          parentStatus: parentStatus,
+          parentScoreStr: parentScore == null ? "—" : String(parentScore),
+          aiScoreStr: String((r && r.ai_score) != null ? r.ai_score : "—"),
+          matchLabel: matchLabel,
+          reason: String((r && r.ai_reason_short) || "—"),
+          listen: String((r && r.ai_speaker_observation) || "—")
+        };
+      });
+      return {
+        rowModels: rowModels,
+        gradeMatchedCount: gradeMatchedCount,
+        gradeComparedCount: gradeComparedCount
+      };
+    };
+
+    const renderExpressionAiReportInline = function () {
+      if (!expressionAiResolved || !hasExpressionQuestions || !expressionAiResult) return null;
+      var pack = getExpressionAiReportRowModels();
+      if (!pack) return null;
+      var rowModels = pack.rowModels;
+      var thStyle = {
+        border: "1px solid #cfd8e6",
+        padding: "8px 6px",
+        fontSize: "12px",
+        background: "#eef2f8",
+        color: "#1f3d53",
+        fontWeight: 700
+      };
+      var tdStyle = {
+        border: "1px solid #e2e8f0",
+        padding: "8px 6px",
+        fontSize: "12px",
+        color: "#2c3e50",
+        textAlign: "start",
+        verticalAlign: "top",
+        wordBreak: "break-word"
+      };
+      function th(label, extraStyle) {
+        return React.createElement("th", { style: Object.assign({}, thStyle, extraStyle || {}), scope: "col" }, label);
+      }
+      function cell(text) {
+        return React.createElement("td", { style: tdStyle }, text);
+      }
+      var thead = React.createElement(
+        "thead",
+        null,
+        React.createElement(
+          "tr",
+          null,
+          th("Q#"),
+          th(lang === "en" ? "Parent answer" : "תשובת הורה"),
+          th(lang === "en" ? "Parent score" : "ציון הורה"),
+          th("AI score"),
+          th(lang === "en" ? "Reason" : "סיבה", { minWidth: "220px", width: "40%" }),
+          th(lang === "en" ? "Listen" : "האזנה")
+        )
+      );
+      var tbody;
+      if (rowModels.length === 0) {
+        tbody = React.createElement(
+          "tbody",
+          null,
+          React.createElement(
+            "tr",
+            null,
+            React.createElement(
+              "td",
+              { colSpan: 6, style: Object.assign({}, tdStyle, { textAlign: "center" }) },
+              lang === "en" ? "No per-question AI rows." : "אין שורות AI לפי שאלה."
+            )
+          )
+        );
+      } else {
+        tbody = React.createElement(
+          "tbody",
+          null,
+          rowModels.map(function (m, idx) {
+            return React.createElement(
+              "tr",
+              { key: "expr-ai-row-" + idx },
+              cell(m.qn),
+              cell(m.parentStatus),
+              cell(m.parentScoreStr),
+              cell(m.aiScoreStr),
+              cell(m.reason),
+              cell(m.listen)
+            );
+          })
+        );
+      }
+      return React.createElement(
+        "div",
+        { className: "session-expression-ai-report" },
+        React.createElement(
+          "h3",
+          { className: "session-expression-ai-report__title" },
+          lang === "en" ? "Expression AI feedback report" : "דוח משוב הבעה (AI)"
+        ),
+        React.createElement(
+          "p",
+          { className: "session-expression-ai-report__matchline" },
+          React.createElement("strong", null, lang === "en" ? "Parent vs AI match: " : "התאמה הורה מול AI: "),
+          String(pack.gradeMatchedCount) + " / " + String(pack.gradeComparedCount)
+        ),
+        React.createElement(
+          "div",
+          { className: "session-expression-ai-report__scroll" },
+          React.createElement("table", { className: "session-expression-ai-report__table" }, thead, tbody)
+        )
+      );
+    };
+
+    const downloadExpressionAiReportDoc = function () {
+      var pack = getExpressionAiReportRowModels();
+      if (!pack) return;
+      var testId = lastCompletedTestId || "unknown";
+      var rowsHtml = pack.rowModels.length
+        ? pack.rowModels.map(function (m) {
             return "<tr>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ (qn || "—") +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ parentStatus +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ (parentScore == null ? "—" : String(parentScore)) +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_score) != null ? r.ai_score : "—") +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ (isMatch === null ? "—" : (isMatch ? (lang === "en" ? "Match" : "תואם") : (lang === "en" ? "Different" : "שונה"))) +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_reason_short) || "—") +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ String((r && r.ai_speaker_observation) || "—") +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.qn +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.parentStatus +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.parentScoreStr +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.aiScoreStr +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.matchLabel +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.reason +"</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.listen +"</td>" +
               "</tr>";
           }).join("")
         : "<tr><td colspan='7' style='border:1px solid #bbb;padding:6px;'>No per-question AI rows.</td></tr>";
       var html = "<html><head><meta charset='utf-8'><title>Expression AI Report</title></head><body style='font-family:Arial,sans-serif;padding:16px;'>" +
         "<h2>Expression AI Feedback Report</h2>" +
-        "<p><strong>" + (lang === "en" ? "Parent vs AI match" : "התאמה הורה מול AI") + ":</strong> " + gradeMatchedCount + " / " + gradeComparedCount + "</p>" +
+        "<p><strong>" + (lang === "en" ? "Parent vs AI match" : "התאמה הורה מול AI") + ":</strong> " + pack.gradeMatchedCount + " / " + pack.gradeComparedCount + "</p>" +
         "<h3>Per-question rows</h3>" +
         "<table style='border-collapse:collapse;width:100%;font-size:13px;'><thead><tr>" +
         "<th style='border:1px solid #bbb;padding:6px;'>Q#</th>" +
@@ -4142,7 +4261,7 @@ function renderExpectedAnswerNote() {
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "expression_ai_feedback_" + payload.testId + ".doc";
+      a.download = "expression_ai_feedback_" + testId + ".doc";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -4469,6 +4588,7 @@ function renderExpectedAnswerNote() {
           stats: expressionCakeStats
         })
       ),
+      renderExpressionAiReportInline(),
       expressionAiResolved
         ? React.createElement("div", { className: "session-immediate-summary__balance" }, strongerLabel)
         : null
@@ -4565,8 +4685,8 @@ function renderExpectedAnswerNote() {
               "div",
               { style: { fontSize: "14px", color: "#4b5d6f" } },
               lang === "en"
-                ? "AI details are available for download as a report file."
-                : "פרטי משוב ה-AI זמינים להורדה כקובץ דוח."
+                ? "The same report is shown in the summary above. You can also download a Word file to share."
+                : "אותו דוח מוצג למעלה בסיכום. אפשר גם להוריד קובץ Word לשיתוף."
             ),
             React.createElement(
               "div",
