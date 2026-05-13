@@ -12,7 +12,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
-  var EXPRESSION_EVAL_DELAY_MS = 40000;
+  var EXPRESSION_EVAL_DELAY_MS = 30000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
   const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "midFailure" | "failure" | null
@@ -723,7 +723,7 @@ function blobToBase64(blob) {
     setExpressionEvalArmed(true);
   }
 
-  // Expression evaluation timer - opens traffic evaluation after 40 seconds.
+  // Expression evaluation timer - opens traffic evaluation after 30 seconds.
   React.useEffect(function () {
   if (sessionCompleted || questionType !== "E" || !expressionEvalArmed) {
     setEvaluationEnabled(false);
@@ -1341,7 +1341,7 @@ const handleReadingValidationRetry = function () {
     };
   }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
 
-  // Expression only: open traffic popup after 40s (evaluationEnabled) or when showContinue triggers it
+  // Expression only: open traffic popup after 30s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
     if (sessionCompleted || isPaused) {
       setTrafficPopupOpen(false);
