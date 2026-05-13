@@ -110,7 +110,7 @@ After per-question 0/1/2 scoring finishes, run **one** additional Gemini call on
 - CSV rubric fields in use: `expected_full`, `expected_partial`, `expected_wrong`, plus optional `semantics`, `category PLS`, `test goal`, `comments`, `hint` for impression context.
 - Daily and window guardrails are active through:
   - `GEMINI_DAILY_LIMIT` (default `100` in code)
-  - `GEMINI_MAX_SEGMENT_SECONDS` (default `20`)
+  - `GEMINI_MAX_SEGMENT_SECONDS` (default `30`)
 - After 0/1/2 scoring, **expressive-language impression** runs in the same background job (audio pool built from successful slices before the per-question scoring quota gate so slices stay available even if scoring quota is exhausted).
 - Audio is now sliced by question timestamp window before Gemini scoring:
   1. Decode session base64 once.
