@@ -41,7 +41,7 @@ database_name = os.environ.get("DATABASE_NAME")
 
 # Initialize MongoDB storage manager
 storage = SeeSayMongoStorage(mongodb_url, database_name)
-GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "200"))
+GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "350"))
 _raw_max_seg = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "30"))
 # Keep server trim cap >= frontend expression window (30s). Older .env files used 20.
 if _raw_max_seg < 30:
@@ -56,7 +56,7 @@ logger.info(
     "(override with env GEMINI_MAX_SEGMENT_SECONDS; minimum 30)",
     GEMINI_MAX_SEGMENT_SECONDS,
 )
-GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
+GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "350"))
 GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "2800"))
 EXPRESSION_IMPRESSION_SAMPLE_CAP = int(os.environ.get("EXPRESSION_IMPRESSION_SAMPLE_CAP", "10"))
 
