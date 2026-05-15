@@ -105,6 +105,186 @@ const SessionRecorder = (function() {
     });
   }
 
+  /**
+   * Serialize expression-clip MP3 encode so decodeAudioData does not run during question <audio> playback.
+   * Max 2 waiting jobs; session end flushes all. Upload concurrency stays separate in apiToMongo.
+   */
+  var EXPRESSION_CLIP_ENCODE_QUEUE_MAX =
+    typeof window !== "undefined" && window.SEEANDSAY_EXPRESSION_CLIP_ENCODE_QUEUE_MAX != null
+      ? Math.max(1, parseInt(window.SEEANDSAY_EXPRESSION_CLIP_ENCODE_QUEUE_MAX, 10) || 2)
+      : 2;
+  var expressionClipEncodeQueue = [];
+  var expressionClipEncodeInProgress = false;
+  var questionReadingActive = false;
+
+  function setQuestionReadingActive(active) {
+    questionReadingActive = !!active;
+  }
+
+  /** Safe gap before expression question reading: drain pending clip encodes (not during playback). */
+  function drainExpressionClipEncodeBeforeRead() {
+    if (questionReadingActive) {
+      return Promise.resolve();
+    }
+    return tryProcessExpressionClipEncodeQueue();
+  }
+
+  function completeExpressionClipEncodeJob(job, mp3Blob) {
+    var out = mp3Blob && mp3Blob.size > 0 ? mp3Blob : null;
+    cachedExpressionClipBlob = out;
+    cachedExpressionClipQuestion =
+      job.questionNumber != null && job.questionNumber !== ""
+        ? String(job.questionNumber)
+        : expressionClipActiveQuestion;
+    if (typeof job.stopResolve === "function") {
+      try {
+        job.stopResolve(out);
+      } catch (e) {}
+      job.stopResolve = null;
+    }
+    if (typeof job.promiseResolve === "function") {
+      job.promiseResolve(out);
+      job.promiseResolve = null;
+    }
+  }
+
+  function processOneExpressionClipEncodeJob(options) {
+    options = options || {};
+    var bypassReadingGate = !!options.bypassReadingGate;
+    if (expressionClipEncodeInProgress) {
+      return Promise.resolve();
+    }
+    if (!bypassReadingGate && questionReadingActive) {
+      return Promise.resolve();
+    }
+    if (expressionClipEncodeQueue.length === 0) {
+      return Promise.resolve();
+    }
+    var job = expressionClipEncodeQueue.shift();
+    expressionClipEncodeInProgress = true;
+    return Promise.resolve()
+      .then(function () {
+        return yieldBeforeMp3Encode();
+      })
+      .then(function () {
+        return convertToMP3(job.webmBlob);
+      })
+      .then(function (mp3Blob) {
+        completeExpressionClipEncodeJob(job, mp3Blob);
+      })
+      .catch(function (e) {
+        console.error("Expression clip MP3 convert failed:", e);
+        completeExpressionClipEncodeJob(job, job.webmBlob);
+      })
+      .finally(function () {
+        expressionClipEncodeInProgress = false;
+        tryProcessExpressionClipEncodeQueue();
+      });
+  }
+
+  function tryProcessExpressionClipEncodeQueue(options) {
+    return processOneExpressionClipEncodeJob(options).then(function () {
+      if (
+        !expressionClipEncodeInProgress &&
+        expressionClipEncodeQueue.length > 0 &&
+        (!questionReadingActive || (options && options.bypassReadingGate))
+      ) {
+        return tryProcessExpressionClipEncodeQueue(options);
+      }
+    });
+  }
+
+  function waitForExpressionClipEncodeIdle() {
+    return new Promise(function (resolve) {
+      function tick() {
+        if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length === 0) {
+          resolve();
+          return;
+        }
+        if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length > 0) {
+          processOneExpressionClipEncodeJob({ bypassReadingGate: true }).then(tick).catch(tick);
+          return;
+        }
+        setTimeout(tick, 40);
+      }
+      tick();
+    });
+  }
+
+  function waitForCachedExpressionClipMp3(maxMs) {
+    var limit = maxMs == null ? 120000 : maxMs;
+    var started = Date.now();
+    return new Promise(function (resolve) {
+      function tick() {
+        if (cachedExpressionClipBlob && cachedExpressionClipBlob.size > 0) {
+          resolve(cachedExpressionClipBlob);
+          return;
+        }
+        if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length === 0) {
+          resolve(null);
+          return;
+        }
+        if (Date.now() - started > limit) {
+          console.warn("[See&Say] Timed out waiting for expression clip MP3 encode");
+          resolve(null);
+          return;
+        }
+        if (!expressionClipEncodeInProgress && !questionReadingActive) {
+          tryProcessExpressionClipEncodeQueue();
+        } else if (
+          !expressionClipEncodeInProgress &&
+          expressionClipEncodeQueue.length > 0
+        ) {
+          processOneExpressionClipEncodeJob({ bypassReadingGate: true });
+        }
+        setTimeout(tick, 50);
+      }
+      tick();
+    });
+  }
+
+  function enqueueExpressionClipEncode(webmBlob, questionNumber, stopResolve) {
+    return new Promise(function (resolve, reject) {
+      function pushJob() {
+        var job = {
+          webmBlob: webmBlob,
+          questionNumber:
+            questionNumber != null && questionNumber !== ""
+              ? String(questionNumber)
+              : expressionClipActiveQuestion,
+          stopResolve: stopResolve,
+          promiseResolve: resolve,
+          promiseReject: reject,
+        };
+        expressionClipEncodeQueue.push(job);
+        if (!questionReadingActive) {
+          tryProcessExpressionClipEncodeQueue();
+        }
+      }
+
+      function drainQueueSlotForIncomingJob() {
+        if (expressionClipEncodeQueue.length < EXPRESSION_CLIP_ENCODE_QUEUE_MAX) {
+          return Promise.resolve();
+        }
+        console.warn(
+          "[See&Say] Expression clip encode queue full (" +
+            EXPRESSION_CLIP_ENCODE_QUEUE_MAX +
+            "); encoding one clip during reading to make room"
+        );
+        return processOneExpressionClipEncodeJob({ bypassReadingGate: true }).then(
+          drainQueueSlotForIncomingJob
+        );
+      }
+
+      drainQueueSlotForIncomingJob().then(pushJob).catch(reject);
+    });
+  }
+
+  function flushExpressionClipEncodeQueue() {
+    questionReadingActive = false;
+    return waitForExpressionClipEncodeIdle();
+  }
+
   /** Lazy singleton; null = not created yet, false = unavailable or hard-failed. */
   let mp3Worker = null;
   let mp3WorkerJobId = 0;
@@ -732,21 +912,8 @@ const SessionRecorder = (function() {
           (expressionAudioChunks[0] && expressionAudioChunks[0].type) ||
           "audio/webm";
         const originalBlob = new Blob(expressionAudioChunks, { type: blobType });
-        var mp3Blob = null;
-        try {
-          await yieldForQuestionAudioHandoff();
-          await yieldBeforeMp3Encode();
-          mp3Blob = await convertToMP3(originalBlob);
-        } catch (e) {
-          console.error("Expression clip MP3 convert failed:", e);
-          mp3Blob = originalBlob;
-        }
-        cachedExpressionClipBlob = mp3Blob && mp3Blob.size > 0 ? mp3Blob : null;
-        cachedExpressionClipQuestion = expressionClipActiveQuestion;
-        if (expressionStopResolve) {
-          expressionStopResolve(mp3Blob);
-          expressionStopResolve = null;
-        }
+        var stopResolve = expressionStopResolve;
+        expressionStopResolve = null;
         expressionMediaRecorder = null;
         expressionAudioChunks = [];
         if (expressionStream) {
@@ -754,6 +921,18 @@ const SessionRecorder = (function() {
             track.stop();
           });
           expressionStream = null;
+        }
+        try {
+          await enqueueExpressionClipEncode(
+            originalBlob,
+            expressionClipActiveQuestion,
+            stopResolve
+          );
+        } catch (e) {
+          console.error("Expression clip encode enqueue failed:", e);
+          if (typeof stopResolve === "function") {
+            stopResolve(null);
+          }
         }
       };
       recorder.start(4000);
@@ -781,9 +960,20 @@ const SessionRecorder = (function() {
     expressionClipSegmentStartedAt = null;
     if (!expressionMediaRecorder || expressionMediaRecorder.state === "inactive") {
       resetExpressionClipAutoStopScheduling();
-      // Auto-stop may still be encoding MP3; traffic submit must await that, not return null.
+      // Await in-flight stop, queued encode, or cached MP3 (30s cap before traffic).
       if (expressionClipStopPromise) {
         return expressionClipStopPromise;
+      }
+      if (
+        expressionClipEncodeInProgress ||
+        expressionClipEncodeQueue.length > 0
+      ) {
+        return waitForCachedExpressionClipMp3().then(function (blob) {
+          if (blob) {
+            return takeCachedExpressionClipBlob() || blob;
+          }
+          return takeCachedExpressionClipBlob();
+        });
       }
       var cached = takeCachedExpressionClipBlob();
       if (cached) {
@@ -1181,6 +1371,9 @@ const SessionRecorder = (function() {
     expressionClipStopPromise = null;
     discardCachedExpressionClipBlob();
     expressionClipActiveQuestion = null;
+    expressionClipEncodeQueue = [];
+    expressionClipEncodeInProgress = false;
+    questionReadingActive = false;
     if (expressionMediaRecorder && expressionMediaRecorder.state !== "inactive") {
       var pendingResolve = expressionStopResolve;
       expressionStopResolve = null;
@@ -1256,6 +1449,9 @@ const SessionRecorder = (function() {
     startExpressionClipRecording: startExpressionClipRecording,
     stopExpressionClipRecording: stopExpressionClipRecording,
     discardCachedExpressionClipBlob: discardCachedExpressionClipBlob,
+    setQuestionReadingActive: setQuestionReadingActive,
+    drainExpressionClipEncodeBeforeRead: drainExpressionClipEncodeBeforeRead,
+    flushExpressionClipEncodeQueue: flushExpressionClipEncodeQueue,
     isExpressionClipRecording: isExpressionClipRecording,
     isExpressionClipActive: isExpressionClipActive,
     freezeExpressionClipActiveCap: freezeExpressionClipActiveCap,

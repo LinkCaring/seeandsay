@@ -31,6 +31,202 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     });
   }
 
+  /**
+   * Wait for enough buffer before question MP3 play (all questions: autoplay + replay).
+   * Prefer canplaythrough; fallback after timeout if loadeddata is available.
+   */
+  function playAudioWhenReady(audioEl, options) {
+    options = options || {};
+    var timeoutMs = options.timeoutMs != null ? options.timeoutMs : 10000;
+    var isStale = options.isStale;
+
+    if (!audioEl) {
+      return Promise.resolve(null);
+    }
+
+    function canPlayThroughReady() {
+      return audioEl.readyState >= 4;
+    }
+
+    function hasLoadedData() {
+      return audioEl.readyState >= 2;
+    }
+
+    return new Promise(function (resolve) {
+      if (typeof isStale === "function" && isStale()) {
+        resolve(null);
+        return;
+      }
+      if (canPlayThroughReady()) {
+        resolve(audioEl.play());
+        return;
+      }
+
+      var settled = false;
+      function cleanup() {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timerId);
+        audioEl.removeEventListener("canplaythrough", onCanPlayThrough);
+        audioEl.removeEventListener("loadeddata", onLoadedData);
+      }
+      function tryPlay() {
+        if (typeof isStale === "function" && isStale()) {
+          cleanup();
+          resolve(null);
+          return;
+        }
+        cleanup();
+        try {
+          resolve(audioEl.play());
+        } catch (e) {
+          resolve(Promise.reject(e));
+        }
+      }
+      function onCanPlayThrough() {
+        tryPlay();
+      }
+      function onLoadedData() {
+        if (canPlayThroughReady()) {
+          tryPlay();
+        }
+      }
+
+      audioEl.addEventListener("canplaythrough", onCanPlayThrough);
+      audioEl.addEventListener("loadeddata", onLoadedData);
+      try {
+        if (audioEl.readyState === 0) {
+          audioEl.load();
+        }
+      } catch (eLoad) {}
+
+      var timerId = setTimeout(function () {
+        if (hasLoadedData()) {
+          console.warn(
+            "[See&Say] Question audio canplaythrough timeout; playing after loadeddata"
+          );
+        } else {
+          console.warn(
+            "[See&Say] Question audio still buffering; attempting play anyway"
+          );
+        }
+        tryPlay();
+      }, timeoutMs);
+    });
+  }
+
+  function applyQuestionAudioPlaySuccess(audioEl) {
+    if (!audioEl || questionAudioMuted) {
+      return;
+    }
+    if (questionAudioRef.current && questionAudioRef.current !== audioEl) {
+      return;
+    }
+    setIsAudioPlaying(true);
+  }
+
+  function handleQuestionAudioPlayFailure(err, audioEl, isFirstQuestion, questionNumber) {
+    console.warn("Question audio play failed:", err);
+    setIsAudioPlaying(false);
+    if (isFirstQuestion && audioEl) {
+      scheduleFirstQuestionAutoRetry(audioEl, questionNumber);
+    }
+  }
+
+  function getExpressionQuestionAudioDelayMs() {
+    if (
+      typeof window !== "undefined" &&
+      window.SEEANDSAY_EXPRESSION_QUESTION_AUDIO_DELAY_MS != null
+    ) {
+      var n = parseInt(window.SEEANDSAY_EXPRESSION_QUESTION_AUDIO_DELAY_MS, 10);
+      if (!Number.isNaN(n) && n >= 0) {
+        return n;
+      }
+    }
+    return 1000;
+  }
+
+  function delayMs(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, Math.max(0, ms));
+    });
+  }
+
+  function isExpressionQuestionRow(q) {
+    return !!(q && q.query_type === "הבעה");
+  }
+
+  /**
+   * Expression (הבעה): wait so prior clip encode/upload can finish off the reading hot path,
+   * then play. Worker only encodes MP3; decodeAudioData + base64 upload still use main thread.
+   */
+  function prepareThenPlayQuestionAudio(audioEl, options) {
+    options = options || {};
+    var isFirstQuestionAutoplay = !!options.isFirstQuestionAutoplay;
+    var questionNumber =
+      options.questionNumber != null ? String(options.questionNumber) : "";
+    var q = options.question;
+
+    if (!audioEl || questionAudioMuted) {
+      return;
+    }
+    if (questionAudioRef.current !== audioEl) {
+      return;
+    }
+
+    function doPlay() {
+      if (questionAudioMuted || questionAudioRef.current !== audioEl) {
+        return;
+      }
+      if (
+        SessionRecorder &&
+        SessionRecorder.setQuestionReadingActive
+      ) {
+        SessionRecorder.setQuestionReadingActive(true);
+      }
+      audioEl.currentTime = 0;
+      playAudioWhenReady(audioEl, {
+        isStale: function () {
+          return questionAudioRef.current !== audioEl;
+        },
+      })
+        .then(function (playP) {
+          if (!playP) return;
+          if (playP && typeof playP.then === "function") {
+            return playP.then(function () {
+              applyQuestionAudioPlaySuccess(audioEl);
+            });
+          }
+          applyQuestionAudioPlaySuccess(audioEl);
+        })
+        .catch(function (err) {
+          handleQuestionAudioPlayFailure(
+            err,
+            audioEl,
+            isFirstQuestionAutoplay,
+            questionNumber
+          );
+        });
+    }
+
+    var gapMs = isExpressionQuestionRow(q) ? getExpressionQuestionAudioDelayMs() : 0;
+    var chain = Promise.resolve();
+    if (
+      gapMs > 0 &&
+      SessionRecorder &&
+      SessionRecorder.drainExpressionClipEncodeBeforeRead
+    ) {
+      chain = SessionRecorder.drainExpressionClipEncodeBeforeRead();
+    }
+    chain
+      .then(function () {
+        return delayMs(gapMs);
+      })
+      .then(doPlay);
+  }
+
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
   var EXPRESSION_EVAL_DELAY_MS = 30000;
@@ -723,25 +919,27 @@ function blobToBase64(blob) {
       if (getSafeCurrentQuestionIndex() !== 0) return;
       if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
       if (!audioEl || questionAudioRef.current !== audioEl) return;
-      try {
-        audioEl.currentTime = 0;
-        var retryPlay = audioEl.play();
-        if (retryPlay && typeof retryPlay.then === "function") {
-          retryPlay.then(function () {
-            setIsAudioPlaying(true);
-            resetFirstQuestionRetryState();
-          }).catch(function () {
-            firstQuestionRetryAttemptRef.current = attempt + 1;
-            scheduleFirstQuestionAutoRetry(audioEl, qn);
-          });
-        } else {
-          setIsAudioPlaying(true);
+      audioEl.currentTime = 0;
+      playAudioWhenReady(audioEl, {
+        isStale: function () {
+          return questionAudioRef.current !== audioEl;
+        },
+      })
+        .then(function (retryPlay) {
+          if (!retryPlay) return;
+          if (retryPlay && typeof retryPlay.then === "function") {
+            return retryPlay.then(function () {
+              applyQuestionAudioPlaySuccess(audioEl);
+              resetFirstQuestionRetryState();
+            });
+          }
+          applyQuestionAudioPlaySuccess(audioEl);
           resetFirstQuestionRetryState();
-        }
-      } catch (e) {
-        firstQuestionRetryAttemptRef.current = attempt + 1;
-        scheduleFirstQuestionAutoRetry(audioEl, qn);
-      }
+        })
+        .catch(function () {
+          firstQuestionRetryAttemptRef.current = attempt + 1;
+          scheduleFirstQuestionAutoRetry(audioEl, qn);
+        });
     }, retryDelays[attempt]);
   }
 
@@ -1730,7 +1928,11 @@ const handleReadingValidationRetry = function () {
             }
             return null;
           }
-          return readBlobAsDataURL(blob).then(function (dataUrl) {
+          return delayMs(getExpressionQuestionAudioDelayMs()).then(function () {
+            return blob;
+          }).then(function (blobAfterGap) {
+            return readBlobAsDataURL(blobAfterGap);
+          }).then(function (dataUrl) {
             if (!dataUrl) return null;
             var tid = draftTestIdRef.current || tidForUpload;
             if (!tid) return null;
@@ -1832,11 +2034,14 @@ const handleReadingValidationRetry = function () {
   };
 
   const playQuestionAudio = function () {
-    if (questionAudio && !questionAudioMuted) {
-      questionAudio.currentTime = 0;
-      questionAudio.play();
-      setIsAudioPlaying(true);
-    }
+    var audioEl = questionAudioRef.current || questionAudio;
+    var idx = getSafeCurrentQuestionIndex();
+    var q = idx >= 0 ? questions[idx] : null;
+    prepareThenPlayQuestionAudio(audioEl, {
+      isFirstQuestionAutoplay: idx === 0,
+      questionNumber: q && q.query_number != null ? q.query_number : "",
+      question: q,
+    });
   };
 
   const replayQuestionAudio = function () {
@@ -1888,22 +2093,11 @@ const handleReadingValidationRetry = function () {
     var isFirstQuestionAutoplay = currentIdxForAutoplay === 0;
     var currentQuestionNumber = currentQuestion ? String(currentQuestion.query_number || "") : "";
     function runPlay() {
-      if (questionAudioMuted) return;
-      try {
-        audioEl.currentTime = 0;
-        audioEl.play().catch(function (err) {
-          console.warn("Audio autoplay failed:", err);
-          if (isFirstQuestionAutoplay) {
-            scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
-          }
-        });
-        setIsAudioPlaying(true);
-      } catch (e) {
-        console.warn("Audio play error:", e);
-        if (isFirstQuestionAutoplay) {
-          scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
-        }
-      }
+      prepareThenPlayQuestionAudio(audioEl, {
+        isFirstQuestionAutoplay: isFirstQuestionAutoplay,
+        questionNumber: currentQuestionNumber,
+        question: currentQuestion,
+      });
     }
 
     if (isFirstQuestionAutoplay && firstQuestionMicGateArmedRef.current) {
@@ -2850,6 +3044,12 @@ const handleReadingValidationRetry = function () {
     ) {
       SessionRecorder.discardCachedExpressionClipBlob();
     }
+    if (
+      SessionRecorder &&
+      SessionRecorder.setQuestionReadingActive
+    ) {
+      SessionRecorder.setQuestionReadingActive(false);
+    }
 
     questionAudioAutoplayPendingRef.current = false;
     if (questionAudioRef.current) {
@@ -3014,17 +3214,26 @@ const handleReadingValidationRetry = function () {
       const audioFolder = getQuestionAudioFolderByGender(childGender);
       const audioUrl = "resources/questions_audio/" + audioFolder + "/audio_" + q.query_number + ".mp3";
       const audio = new Audio(audioUrl);
-      audio.onended = function () {
+      audio.preload = "auto";
+      try {
+        audio.load();
+      } catch (eLoad) {}
+      function onQuestionReadingDone() {
         setIsAudioPlaying(false);
+        if (
+          SessionRecorder &&
+          SessionRecorder.setQuestionReadingActive
+        ) {
+          SessionRecorder.setQuestionReadingActive(false);
+        }
         if (q.query_type === "הבעה") {
           markExpressionTimestampAndArm(q);
         }
-      };
+      }
+      audio.onended = onQuestionReadingDone;
       audio.onerror = function () {
         console.warn('Audio file not found for question:', q.query_number);
-        if (q.query_type === "הבעה") {
-          markExpressionTimestampAndArm(q);
-        }
+        onQuestionReadingDone();
       };
       questionAudioRef.current = audio;
       setQuestionAudio(audio);
@@ -3156,6 +3365,16 @@ const handleReadingValidationRetry = function () {
     // Draft test: per-question expression clips + finalize (no monolithic session audio).
     if (draftTestId && permission && !microphoneSkipped) {
       (async function () {
+        if (
+          SessionRecorder &&
+          SessionRecorder.flushExpressionClipEncodeQueue
+        ) {
+          try {
+            await SessionRecorder.flushExpressionClipEncodeQueue();
+          } catch (e) {
+            console.warn("flushExpressionClipEncodeQueue:", e);
+          }
+        }
         if (SessionRecorder.stopExpressionClipRecording) {
           try {
             var stray = await SessionRecorder.stopExpressionClipRecording();
