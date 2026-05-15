@@ -1928,6 +1928,7 @@ const handleReadingValidationRetry = function () {
           if (workerDataUrl) {
             return { dataUrl: workerDataUrl, questionNumber: uploadQuestionNumber };
           }
+          // Main-thread base64 only when worker disabled or encode finished without dataUrl.
           return readBlobAsDataURL(blob).then(function (dataUrl) {
             return { dataUrl: dataUrl, questionNumber: uploadQuestionNumber };
           });

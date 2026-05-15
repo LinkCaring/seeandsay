@@ -127,20 +127,33 @@ function runEncodePcmJob(id, sampleRate, pcmAb, sampleCount) {
   var mp3 = encodeInt16ToMp3(int16, sampleRate);
   var outCopy = new Uint8Array(mp3.byteLength);
   outCopy.set(mp3);
+  var dataUrl = "data:audio/mpeg;base64," + uint8ToBase64Chunked(outCopy);
   self.postMessage(
     {
       id: id,
       ok: true,
       arrayBuffer: outCopy.buffer,
       byteLength: outCopy.byteLength,
+      dataUrl: dataUrl,
     },
     [outCopy.buffer]
   );
 }
 
+function workerDecodeInWorkerAvailable() {
+  return !!(self.OfflineAudioContext || self.webkitOfflineAudioContext);
+}
+
 self.onmessage = function (ev) {
   var msg = ev.data;
   if (!msg || !msg.type) {
+    return;
+  }
+  if (msg.type === "probe") {
+    self.postMessage({
+      type: "probeResult",
+      decodeInWorker: workerDecodeInWorkerAvailable(),
+    });
     return;
   }
   var id = msg.id;
