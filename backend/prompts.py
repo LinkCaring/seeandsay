@@ -74,9 +74,67 @@ Expected WRONG expression:
     return EXPRESSION_SCORING_SHARED_INSTRUCTIONS + "\n\n" + per_question_block
 
 
+COMPREHENSION_RESULT_LABELS_HE = {
+    "correct": "נכון (correct)",
+    "partly": "חלקי (partly)",
+    "wrong": "לא נכון (wrong)",
+}
+
+
+def build_comprehension_impression_block(comprehension_entries):
+    """
+    Text block for impression: all comprehension items grouped by result,
+    each line with question number, category_PLS, sub_category_PLS.
+    """
+    if not comprehension_entries:
+        return ""
+
+    buckets = {"correct": [], "partly": [], "wrong": []}
+    other = []
+    for ent in comprehension_entries:
+        r = (ent.get("headlight_result") or "").strip().lower()
+        if r in buckets:
+            buckets[r].append(ent)
+        else:
+            other.append(ent)
+
+    lines = [
+        "=== תוצאות משימות הבנה (הבנה) — אובייקטיביות ===",
+        "להלן כל שאלות ההבנה שענו עליהן במבחן, לפי תוצאת המלווה (נכון / חלקי / לא נכון).",
+        "לכל שורה: מספר שאלה, category_PLS, sub_category_PLS.",
+        "אל תשנה ואל תדרג מחדש תוצאות אלו — השתמש בהן יחד עם דגימות ההבעה (שמע) לסיכום משולב.",
+        "",
+    ]
+
+    def format_line(ent):
+        qn = ent.get("question_number")
+        cat = (ent.get("pls_category") or "").strip() or "—"
+        sub = (ent.get("pls_sub_category") or "").strip() or "—"
+        return f"שאלה {qn} | category_PLS: {cat} | sub_category_PLS: {sub}"
+
+    for key in ("correct", "partly", "wrong"):
+        group = buckets[key]
+        if not group:
+            continue
+        lines.append(f"[{COMPREHENSION_RESULT_LABELS_HE[key]}]")
+        for ent in sorted(group, key=lambda e: e.get("question_number") or 0):
+            lines.append(format_line(ent))
+        lines.append("")
+
+    if other:
+        lines.append("[אחר / לא מסווג]")
+        for ent in sorted(other, key=lambda e: e.get("question_number") or 0):
+            r = ent.get("headlight_result") or ""
+            lines.append(format_line(ent) + f" | תוצאה: {r}")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 EXPRESSIVE_LANGUAGE_IMPRESSION_INSTRUCTIONS_HE = """
-אתה מנתח דגימות הבעה של ילד מתוך משימת הערכה שפתית קצרה.
-תקבל עד 10 דגימות של שאלות הבעה. כל דגימה עשויה לכלול: גיל הילד, נוסח השאלה, תיאור התמונה או ההקשר, סוג המטרה הלשונית המצופה, ותמלול תשובת הילד או קטע שמע.
+אתה מנתח דגימות הבעה של ילד מתוך משימת הערכה שפתית קצרה, ובמידה שסופקו — גם את תוצאות משימות ההבנה (הבנה) מהמבחן.
+תחילה (אם קיים) יופיע בלוק טקסט של כל תוצאות ההבנה לפי נכון/חלקי/לא נכון עם category_PLS ו-sub_category_PLS; לאחר מכן עד 10 דגימות שמע של שאלות הבעה.
+כל דגימת הבעה עשויה לכלול: גיל הילד, נוסח השאלה, תיאור התמונה או ההקשר, סוג המטרה הלשונית המצופה, וקטע שמע של תשובת הילד.
 
 המטרה שלך אינה לתת ציון לכל תשובה ואינה לבצע אבחנה.
 המטרה היא לנסח התרשמות קצרה וזהירה על יכולת ההבעה של הילד על בסיס הדגימות בלבד.
@@ -118,12 +176,13 @@ EXPRESSIVE_LANGUAGE_IMPRESSION_INSTRUCTIONS_HE = """
 - אל תיתן אבחנה.
 - אל תמליץ על טיפול קליני.
 - אל תן ציונים 0/1/2 ואל תשכתב את הערכת ההורה — זהו סיכום תיאורי בלבד על בסיס הדגימות.
+- בתוצאות ההבנה: התייחס לתוצאות המלווה (נכון/חלקי/לא נכון) כעובדות; אל תדרג מחדש את ההבנה.
 - כתוב פסקה אחת בעברית, בניסוח מקצועי אך מובן להורים.
 - שמור על ניסוח זהיר: "נראה כי", "בדגימות שנבדקו", "עולה התרשמות", "ייתכן".
 - אם אין מספיק מידע, אמור זאת במפורש.
 
-לכל דגימה תוצג תווית מהעמודה semantics בקובץ המבחן — זוהי המסגרת הרחבה שמשמשת לחלוקה לארבע קבוצות המשוב (אינטגרטיבי / סמנטיקה / מבנה שפה / פונולוגיה).
-אם מצורפת שורה נוספת מעמודת category PLS בקובץ, היא פירוט משני בלבד (למשל אוצר מילים, מורפולוגיה) ואינה מחליפה את עמודת semantics לצורך המסגרת הרחבה.
+לכל דגימה תוצג תווית לפי עמודת category_PLS בקובץ המבחן — זוהי המסגרת הרחבה שמשמשת לחלוקה לארבע קבוצות המשוב (אינטגרטיבי / סמנטיקה / מבנה שפה / פונולוגיה).
+אם מצורפת שורה מעמודת sub_category_PLS בקובץ, היא פירוט משני בלבד (למשל אוצר מילים, מורפולוגיה) ואינה מחליפה את category_PLS לצורך המסגרת הרחבה.
 השתמש בכך כדי לנסח משוב נפרד לארבע המסגרות הרחבות הבאות (בעברית):
 1) מיומנויות שפה אינטגרטיביות
 2) סמנטיקה

@@ -57,7 +57,7 @@ Use this skill to implement reliable scoring for expression questions from recor
 ```
 
 ## Expressive-language impression (post-block, single multimodal call)
-After per-question 0/1/2 scoring finishes, run **one** additional Gemini call on **up to 10 randomly chosen** expression windows (same MP3 slices, same `GEMINI_MAX_SEGMENT_SECONDS` cap). Inputs include child age (years/months), Hebrew question text, CSV hints (`semantics`, `category PLS`, `test goal`, `comments`, `hint`), and the sliced audio per sample.
+After per-question 0/1/2 scoring finishes, run **one** additional Gemini call: a text block of **all** comprehension results from `full_array` (correct/partly/wrong + `category_PLS` / `sub_category_PLS` from server CSV, no hints/goals) plus **up to 10** randomly chosen expression windows with audio. Expression samples include Hebrew question text and CSV hints (`category_PLS`, `sub_category_PLS`, `test goal`, `comments`, `hint`).
 
 - **Purpose:** Careful parent-facing **impression** of expressive language (not diagnosis, not per-item grades). Hebrew instructions + structured JSON output.
 - **Output schema** (see `backend/AI_Models_API.py` — `summarize_expressive_language_impression_gemini`): `summary_paragraph_he`, `sample_count_used`, `data_quality`, `observed_strengths`, `observed_challenges`, `phonology_separate_note_he`, `limitations_he`.
@@ -107,7 +107,7 @@ After per-question 0/1/2 scoring finishes, run **one** additional Gemini call on
 
 ## Current Repo Checkpoint
 - Gemini expression scoring is integrated in `backend/server.py` under `/api/addTestToUser`.
-- CSV rubric fields in use: `expected_full`, `expected_partial`, `expected_wrong`, plus optional `semantics`, `category PLS`, `test goal`, `comments`, `hint` for impression context.
+- CSV rubric fields in use: `expected_full`, `expected_partial`, `expected_wrong`, plus optional `category_PLS`, `sub_category_PLS`, `test goal`, `comments`, `hint` for impression context.
 - Daily and window guardrails are active through:
   - `GEMINI_DAILY_LIMIT` (default `100` in code)
   - `GEMINI_MAX_SEGMENT_SECONDS` (default `30`)

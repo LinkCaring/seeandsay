@@ -13,6 +13,7 @@ import json
 import re
 import uuid
 import random
+import base64
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -41,83 +42,241 @@ database_name = os.environ.get("DATABASE_NAME")
 # Initialize MongoDB storage manager
 storage = SeeSayMongoStorage(mongodb_url, database_name)
 GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "200"))
-GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "30"))
+_raw_max_seg = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "30"))
+# Keep server trim cap >= frontend expression window (30s). Older .env files used 20.
+if _raw_max_seg < 30:
+    logger.warning(
+        "GEMINI_MAX_SEGMENT_SECONDS=%s is below 30; raising to 30 so stored clips match the 30s expression timer "
+        "(remove or update GEMINI_MAX_SEGMENT_SECONDS in your environment if you relied on the old value).",
+        _raw_max_seg,
+    )
+GEMINI_MAX_SEGMENT_SECONDS = max(30, _raw_max_seg)
+logger.info(
+    "Expression clip trim + Gemini scoring window cap: GEMINI_MAX_SEGMENT_SECONDS=%s "
+    "(override with env GEMINI_MAX_SEGMENT_SECONDS; minimum 30)",
+    GEMINI_MAX_SEGMENT_SECONDS,
+)
 GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
 GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "2800"))
 EXPRESSION_IMPRESSION_SAMPLE_CAP = int(os.environ.get("EXPRESSION_IMPRESSION_SAMPLE_CAP", "10"))
 
 
-def _load_expression_rubrics():
-    """
-    Loads expression-question rubric fields from the shared CSV.
-    Expected columns (order does not matter):
-      - query_boy / query_girl (preferred) or query (fallback)
-      - expected_full_ai (preferred) or expected_full (fallback)
-      - expected_partial
-      - expected_wrong
-    """
+def _csv_pls_category_primary(row: dict) -> str:
+    """Broad PLS theme per question: CSV ``category_PLS``; falls back to legacy ``semantics``."""
+    v = (row.get("category_PLS") or "").strip()
+    if v:
+        return v
+    return (row.get("semantics") or "").strip()
+
+
+def _csv_pls_category_sub(row: dict) -> str:
+    """Supplementary PLS detail: ``sub_category_PLS``; falls back to legacy ``category PLS``."""
+    v = (row.get("sub_category_PLS") or row.get("sub_category_pls") or "").strip()
+    if v:
+        return v
+    return (row.get("category PLS") or row.get("category_pls") or "").strip()
+
+
+def _expression_csv_path():
     csv_candidates = [
         os.path.join(os.path.dirname(__file__), "..", "frontend_demo", "resources", "query_database.csv"),
         os.path.join(os.path.dirname(__file__), "resources", "query_database.csv"),
     ]
-    csv_path = None
     for c in csv_candidates:
         if os.path.exists(c):
-            csv_path = c
-            break
-    if not csv_path:
-        logger.warning("Expression rubric CSV not found; Gemini expression scoring will be skipped.")
-        return {}
+            return c
+    return None
 
-    rubrics = {}
+
+def _load_question_rubrics_from_csv():
+    """
+    Loads expression (הבעה) and comprehension (הבנה) rubric rows from the shared CSV.
+    Returns (expression_rubrics, comprehension_rubrics).
+    """
+    csv_path = _expression_csv_path()
+    if not csv_path:
+        logger.warning("Question rubric CSV not found; Gemini expression scoring will be skipped.")
+        return {}, {}
+
+    expression_rubrics = {}
+    comprehension_rubrics = {}
     try:
         with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 qn = str((row.get("query_number") or "").strip())
                 qtype = (row.get("query_type") or "").strip()
-                if not qn or qtype != "הבעה":
+                if not qn:
                     continue
-                rubrics[qn] = {
-                    "question_text_boy": (row.get("query_boy") or "").strip(),
-                    "question_text_girl": (row.get("query_girl") or "").strip(),
-                    "question_text_fallback": (row.get("query") or "").strip(),
-                    "expected_full": (row.get("expected_full_ai") or row.get("expected_full") or "").strip(),
-                    "expected_partial": (row.get("expected_partial") or "").strip(),
-                    "expected_wrong": (row.get("expected_wrong") or "").strip(),
-                    "comments": (row.get("comments") or "").strip(),
-                    "facilitator_hint": (row.get("hint") or "").strip(),
-                    "semantics": (row.get("semantics") or "").strip(),
-                    "category_pls": (row.get("category PLS") or row.get("category_pls") or "").strip(),
-                    "test_goal": (row.get("test goal") or row.get("test_goal") or "").strip(),
-                }
+                pls_primary = _csv_pls_category_primary(row)
+                pls_sub = _csv_pls_category_sub(row)
+                if qtype == "הבעה":
+                    expression_rubrics[qn] = {
+                        "question_text_boy": (row.get("query_boy") or "").strip(),
+                        "question_text_girl": (row.get("query_girl") or "").strip(),
+                        "question_text_fallback": (row.get("query") or "").strip(),
+                        "expected_full": (row.get("expected_full_ai") or row.get("expected_full") or "").strip(),
+                        "expected_partial": (row.get("expected_partial") or "").strip(),
+                        "expected_wrong": (row.get("expected_wrong") or "").strip(),
+                        "comments": (row.get("comments") or "").strip(),
+                        "facilitator_hint": (row.get("hint") or "").strip(),
+                        "pls_category": pls_primary,
+                        "pls_sub_category": pls_sub,
+                        "test_goal": (row.get("test goal") or row.get("test_goal") or "").strip(),
+                    }
+                elif qtype == "הבנה":
+                    comprehension_rubrics[qn] = {
+                        "pls_category": pls_primary,
+                        "pls_sub_category": pls_sub,
+                    }
     except Exception as e:
-        logger.warning(f"Failed to load expression rubrics from CSV: {e}")
-        return {}
+        logger.warning(f"Failed to load question rubrics from CSV: {e}")
+        return {}, {}
 
-    return rubrics
-
-
-EXPRESSION_RUBRICS = _load_expression_rubrics()
+    return expression_rubrics, comprehension_rubrics
 
 
-def _parse_expression_results_from_full_array(full_array_str):
+EXPRESSION_RUBRICS, COMPREHENSION_RUBRICS = _load_question_rubrics_from_csv()
+
+
+def _parse_results_from_full_array(full_array_str, array_key):
     """
-    full_array is JSON-stringified object from frontend:
-      {"comprehension":"[(1,\"correct\")]", "expression":"[(7,\"partly\"),(8,\"wrong\")]"}
-    Returns list of tuples: [(question_number:str, headlight_result:str), ...]
+    Parse comprehension or expression tuples from full_array JSON.
+    Returns [(question_number:str, headlight_result:str), ...]
     """
     try:
         parsed = json.loads(full_array_str)
     except Exception:
         return []
 
-    expr = parsed.get("expression") if isinstance(parsed, dict) else None
-    if not isinstance(expr, str):
+    chunk = parsed.get(array_key) if isinstance(parsed, dict) else None
+    if not isinstance(chunk, str):
         return []
 
-    matches = re.findall(r'\((\d+),"([^"]+)"\)', expr)
+    matches = re.findall(r'\((\d+),"([^"]+)"\)', chunk)
     return [(m[0], m[1]) for m in matches]
+
+
+def _parse_expression_results_from_full_array(full_array_str):
+    return _parse_results_from_full_array(full_array_str, "expression")
+
+
+def _parse_comprehension_results_from_full_array(full_array_str):
+    return _parse_results_from_full_array(full_array_str, "comprehension")
+
+
+def _normalize_headlight_result(result: str) -> str:
+    r = (result or "").strip().lower()
+    if r in ("correct", "partly", "wrong"):
+        return r
+    if r in ("partial", "partially"):
+        return "partly"
+    if r in ("incorrect", "fail", "failed"):
+        return "wrong"
+    return r or "partly"
+
+
+def _build_comprehension_impression_entries(full_array_str):
+    """
+    Join comprehension traffic results from full_array with category_PLS / sub_category_PLS from CSV.
+    No hints, goals, or question text — results + PLS columns only.
+    """
+    items = _parse_comprehension_results_from_full_array(full_array_str)
+    if not items:
+        return []
+
+    entries = []
+    for question_number, headlight_result in items:
+        rubric = COMPREHENSION_RUBRICS.get(str(question_number)) or {}
+        entries.append({
+            "question_number": int(question_number),
+            "headlight_result": _normalize_headlight_result(headlight_result),
+            "pls_category": (rubric.get("pls_category") or "").strip(),
+            "pls_sub_category": (rubric.get("pls_sub_category") or "").strip(),
+        })
+
+    entries.sort(key=lambda e: e["question_number"])
+    return entries
+
+
+def _run_expressive_language_impression(
+    impression_pool,
+    full_array_str,
+    child_age_label_he,
+):
+    """
+    One impression Gemini call: optional comprehension text block + up to N expression audio samples.
+    Returns expressive_language_impression dict (status done/skipped/failed).
+    """
+    comprehension_entries = _build_comprehension_impression_entries(full_array_str)
+    k = min(EXPRESSION_IMPRESSION_SAMPLE_CAP, len(impression_pool)) if impression_pool else 0
+    chosen = random.sample(impression_pool, k=k) if k else []
+
+    if not chosen and not comprehension_entries:
+        return {
+            "status": "skipped",
+            "reason": "no_eligible_samples",
+            "sample_count_used": 0,
+            "comprehension_items_submitted": 0,
+            "data_quality": "limited",
+            "limitations_he": "לא נאספו דגימות הבעה עם קטע שמע תקין ולא נמצאו תוצאות הבנה.",
+        }
+
+    impression_allowed = storage.check_and_increment_daily_quota(
+        quota_key="gemini_expressive_language_impression",
+        date_key=datetime.utcnow().strftime("%Y-%m-%d"),
+        daily_limit=GEMINI_IMPRESSION_DAILY_LIMIT,
+    )
+    if not impression_allowed:
+        return {
+            "status": "skipped",
+            "reason": "quota_exceeded",
+            "sample_count_used": 0,
+            "comprehension_items_submitted": len(comprehension_entries),
+            "data_quality": "limited",
+            "limitations_he": "המכסה היומית לניתוח התרשמות הבעה נוצלה.",
+        }
+
+    entries = []
+    for c in chosen:
+        entries.append({
+            "question_number": c["question_number"],
+            "headlight_result": c["headlight_result"],
+            "question_text": c["question_text"],
+            "context_hint": c.get("context_hint") or "",
+            "linguistic_goal_line": c.get("linguistic_goal_line") or "",
+            "pls_semantics_area": c.get("pls_semantics_area") or "",
+            "pls_category": c.get("pls_category") or "",
+            "audio_bytes": c["audio_bytes"],
+        })
+
+    logger.info(
+        "Gemini expressive_language_impression: expression_samples=%s pool=%s comprehension_items=%s",
+        len(entries),
+        len(impression_pool),
+        len(comprehension_entries),
+    )
+    imp = summarize_expressive_language_impression_gemini(
+        entries,
+        child_age_label_he,
+        max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
+        comprehension_entries=comprehension_entries,
+    )
+    if imp:
+        return {
+            "status": "done",
+            **imp,
+            "samples_submitted": len(entries),
+            "comprehension_items_submitted": len(comprehension_entries),
+        }
+    return {
+        "status": "failed",
+        "reason": "model_unavailable_or_invalid_json",
+        "sample_count_used": 0,
+        "comprehension_items_submitted": len(comprehension_entries),
+        "data_quality": "limited",
+        "limitations_he": "לא ניתן היה להפיק התרשמות אוטומטית (שירות המודל או פלט לא תקין).",
+    }
 
 
 def _parse_question_timestamps(timestamps_text):
@@ -335,6 +494,494 @@ def _build_pending_expression_ai_payload(test_id, started_at, expression_questio
         "expressive_language_impression": {"status": "pending"},
     }
 
+
+def _trim_expression_clip_bytes(audio_bytes):
+    if not audio_bytes:
+        return None
+    try:
+        return slice_audio_window_bytes(
+            audio_bytes, 0, float(GEMINI_MAX_SEGMENT_SECONDS), output_format="mp3"
+        )
+    except Exception:
+        return audio_bytes
+
+
+def _store_trimmed_expression_clip_data_url(audio_file64: str) -> str:
+    """
+    Persist at most the first GEMINI_MAX_SEGMENT_SECONDS of each clip (MP3).
+    Clients may send longer blobs (e.g. delay until traffic tap); Mongo should not store that tail.
+    """
+    if not audio_file64 or not str(audio_file64).strip():
+        return audio_file64 or ""
+    try:
+        raw = decode_base64_to_bytes(audio_file64)
+    except Exception:
+        logger.warning("clip trim: decode failed, storing original payload")
+        return audio_file64
+    trimmed = _trim_expression_clip_bytes(raw)
+    if not trimmed:
+        return audio_file64
+    try:
+        b64 = base64.b64encode(trimmed).decode("ascii")
+        return "data:audio/mpeg;base64," + b64
+    except Exception as e:
+        logger.warning(f"clip trim: re-encode failed ({e}), storing original payload")
+        return audio_file64
+
+
+def _impression_pool_entry_from_clip_bytes(
+    question_number,
+    headlight_result,
+    clip_mp3_bytes,
+    child_gender,
+):
+    """Build impression_pool item (with audio_bytes) without calling Gemini scoring."""
+    rubric = EXPRESSION_RUBRICS.get(str(question_number))
+    if not rubric or not clip_mp3_bytes:
+        return None
+    normalized_gender = str(child_gender or "").strip().lower()
+    is_female = normalized_gender in ["female", "girl"]
+    question_text = (
+        rubric.get("question_text_girl") if is_female
+        else rubric.get("question_text_boy")
+    ) or rubric.get("question_text_fallback") or ""
+    goal_bits = [
+        (rubric.get("pls_category") or "").strip(),
+        (rubric.get("pls_sub_category") or "").strip(),
+        (rubric.get("test_goal") or "").strip(),
+    ]
+    linguistic_goal_line = " · ".join(g for g in goal_bits if g)
+    hint_lines = []
+    if (rubric.get("comments") or "").strip():
+        hint_lines.append((rubric.get("comments") or "").strip())
+    if (rubric.get("facilitator_hint") or "").strip():
+        hint_lines.append((rubric.get("facilitator_hint") or "").strip())
+    context_hint = "\n".join(hint_lines)
+    return {
+        "question_number": int(question_number),
+        "headlight_result": headlight_result,
+        "audio_bytes": clip_mp3_bytes,
+        "question_text": question_text,
+        "context_hint": context_hint,
+        "linguistic_goal_line": linguistic_goal_line,
+        # Keys kept for stored payloads / Gemini: broad = category_PLS, fine = sub_category_PLS.
+        "pls_semantics_area": (rubric.get("pls_category") or "").strip(),
+        "pls_category": (rubric.get("pls_sub_category") or "").strip(),
+    }
+
+
+def _score_expression_row_from_clip_audio(
+    question_number,
+    headlight_result,
+    clip_mp3_bytes,
+    child_gender,
+):
+    """
+    Score a single expression question from an already-segmented MP3 clip (≤ GEMINI_MAX_SEGMENT_SECONDS).
+    Returns (row_dict, impression_pool_entry_or_none).
+    """
+    rubric = EXPRESSION_RUBRICS.get(str(question_number))
+    if not rubric:
+        return {
+            "question_number": int(question_number),
+            "headlight_result": headlight_result,
+            "ai_score": 1,
+            "ai_confidence": 0.0,
+            "ai_reason_short": "missing_csv_rubric",
+            "ai_flags": ["needs_manual_review"],
+            "ai_speaker_observation": None,
+            "timestamp_start_sec": 0,
+            "timestamp_end_sec": None,
+            "score_complete": True,
+            "source": "clip",
+        }, None
+
+    normalized_gender = str(child_gender or "").strip().lower()
+    is_female = normalized_gender in ["female", "girl"]
+    question_text = (
+        rubric.get("question_text_girl") if is_female
+        else rubric.get("question_text_boy")
+    ) or rubric.get("question_text_fallback") or ""
+
+    prompt_with_window = (
+        question_text
+        + f"\n\nRelevant answer window: standalone expression clip (seconds 0–{GEMINI_MAX_SEGMENT_SECONDS} max)."
+    )
+
+    goal_bits = [
+        (rubric.get("pls_category") or "").strip(),
+        (rubric.get("pls_sub_category") or "").strip(),
+        (rubric.get("test_goal") or "").strip(),
+    ]
+    linguistic_goal_line = " · ".join(g for g in goal_bits if g)
+    hint_lines = []
+    if (rubric.get("comments") or "").strip():
+        hint_lines.append((rubric.get("comments") or "").strip())
+    if (rubric.get("facilitator_hint") or "").strip():
+        hint_lines.append((rubric.get("facilitator_hint") or "").strip())
+    context_hint = "\n".join(hint_lines)
+
+    pool_entry = _impression_pool_entry_from_clip_bytes(
+        question_number, headlight_result, clip_mp3_bytes, child_gender
+    )
+
+    allowed = storage.check_and_increment_daily_quota(
+        quota_key="gemini_expression_scoring",
+        date_key=datetime.utcnow().strftime("%Y-%m-%d"),
+        daily_limit=GEMINI_DAILY_LIMIT,
+    )
+    if allowed:
+        logger.info(
+            "Gemini expression score: question=%s audio_bytes=%s (clip window cap=%ss)",
+            question_number,
+            len(clip_mp3_bytes) if clip_mp3_bytes else 0,
+            GEMINI_MAX_SEGMENT_SECONDS,
+        )
+    if not allowed:
+        return {
+            "question_number": int(question_number),
+            "headlight_result": headlight_result,
+            "ai_score": 1,
+            "ai_confidence": 0.0,
+            "ai_reason_short": "quota_exceeded",
+            "ai_flags": ["quota_exceeded", "needs_manual_review"],
+            "ai_speaker_observation": None,
+            "timestamp_start_sec": 0,
+            "timestamp_end_sec": None,
+            "score_complete": True,
+            "source": "clip",
+        }, None
+
+    ai = score_expression_with_gemini_bytes(
+        audio_bytes=clip_mp3_bytes,
+        question_prompt=prompt_with_window,
+        expected_full=rubric.get("expected_full") or "",
+        expected_partial=rubric.get("expected_partial") or "",
+        expected_wrong=rubric.get("expected_wrong") or "",
+    )
+
+    if not ai:
+        ai = {
+            "score": 1,
+            "confidence": 0.0,
+            "reason_short": "gemini_unavailable",
+            "flags": ["needs_manual_review"],
+            "speaker_observation": "manual_review_fallback",
+        }
+
+    row = {
+        "question_number": int(question_number),
+        "headlight_result": headlight_result,
+        "ai_score": ai.get("score"),
+        "ai_confidence": ai.get("confidence"),
+        "ai_reason_short": ai.get("reason_short"),
+        "ai_flags": ai.get("flags"),
+        "ai_speaker_observation": ai.get("speaker_observation"),
+        "timestamp_start_sec": 0,
+        "timestamp_end_sec": None,
+        "score_complete": True,
+        "source": "clip",
+    }
+    return row, pool_entry
+
+
+def _merge_per_question_rows(existing_rows, new_row):
+    qn_key = str(new_row.get("question_number"))
+    out = [r for r in (existing_rows or []) if str(r.get("question_number")) != qn_key]
+    out.append(new_row)
+    out.sort(key=lambda r: int(r.get("question_number") or 0))
+    return out
+
+
+def _latest_clip_docs_by_question_number(clips):
+    by_q = {}
+    for c in clips or []:
+        if not isinstance(c, dict):
+            continue
+        qn = str(c.get("question_number") or "").strip()
+        if qn:
+            by_q[qn] = c
+    return by_q
+
+
+def _run_expression_clip_score_background(
+    user_id: int,
+    test_id: str,
+    question_number: int,
+    headlight_result: str,
+    audio_file64: str,
+    child_gender,
+    age_years,
+    age_months,
+):
+    test = storage.get_user_test_by_id(user_id, test_id)
+    if not test:
+        logger.warning(f"clip score: missing test user={user_id} test={test_id}")
+        return
+    expr_ai = test.get("expressionAI") or {}
+    started_at = expr_ai.get("started_at") or (datetime.utcnow().isoformat() + "Z")
+    meta = expr_ai.get("meta") or {}
+    expression_question_count = int(meta.get("expression_question_count") or 0)
+
+    try:
+        raw = decode_base64_to_bytes(audio_file64)
+    except Exception as e:
+        logger.warning(f"clip decode failed q={question_number}: {e}")
+        raw = None
+
+    clip_bytes = _trim_expression_clip_bytes(raw) if raw else None
+    if not clip_bytes:
+        new_row = {
+            "question_number": int(question_number),
+            "headlight_result": headlight_result,
+            "ai_score": 1,
+            "ai_confidence": 0.0,
+            "ai_reason_short": "audio_decode_failed",
+            "ai_flags": ["audio_decode_failed", "needs_manual_review"],
+            "ai_speaker_observation": None,
+            "timestamp_start_sec": 0,
+            "timestamp_end_sec": None,
+            "score_complete": True,
+            "source": "clip",
+        }
+    else:
+        new_row, _pool = _score_expression_row_from_clip_audio(
+            question_number, headlight_result, clip_bytes, child_gender
+        )
+
+    merged = _merge_per_question_rows(expr_ai.get("per_question") or [], new_row)
+    processed = len(
+        [
+            r
+            for r in merged
+            if r.get("score_complete")
+            and r.get("ai_score") in [0, 1, 2]
+        ]
+    )
+    phase = "scoring_clips"
+    payload = _build_pending_expression_ai_payload(
+        test_id=test_id,
+        started_at=started_at,
+        expression_question_count=expression_question_count,
+        phase=phase,
+        processed_questions=min(processed, expression_question_count),
+        per_question_rows=merged,
+    )
+    payload["expressive_language_impression"] = {"status": "pending"}
+    storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+
+
+def _run_finalize_expression_ai_from_clips_background(
+    user_id: int,
+    test_id: str,
+    full_array: str,
+    child_gender,
+    age_years,
+    age_months,
+    started_at: str,
+):
+    """
+    After finalize: fill any missing per-question scores from clips, build impression, mark done.
+    Reuses rows already marked score_complete from incremental clip scoring.
+    """
+    expression_items = _parse_expression_results_from_full_array(full_array)
+    total_expression_items = len(expression_items)
+    test = storage.get_user_test_by_id(user_id, test_id)
+    if not test:
+        logger.error(f"finalize expr AI: no test user={user_id} test={test_id}")
+        return
+
+    clips = test.get("expressionAudioClips") or []
+    latest_clips = _latest_clip_docs_by_question_number(clips)
+    stored_clip_qns = sorted(latest_clips.keys(), key=lambda x: int(x) if str(x).isdigit() else x)
+    logger.info(
+        "finalize_merge: test=%s expression_items=%s stored_clips=%s clip_docs_total=%s",
+        test_id,
+        len(expression_items),
+        len(stored_clip_qns),
+        len(clips or []),
+    )
+    expr_ai = test.get("expressionAI") or {}
+    existing_rows = expr_ai.get("per_question") or []
+    existing_by_qn = {str(r.get("question_number")): r for r in existing_rows}
+
+    def count_scored_rows(rows):
+        return len(
+            [
+                r
+                for r in (rows or [])
+                if r.get("score_complete") and r.get("ai_score") in [0, 1, 2]
+            ]
+        )
+
+    def merged_rows_snapshot(rows_out_partial):
+        """Union incremental finalize rows with clip scores already stored before finalize."""
+        by_qn = {str(r.get("question_number")): r for r in (existing_rows or [])}
+        for r in rows_out_partial or []:
+            qn = str(r.get("question_number") or "")
+            if qn:
+                by_qn[qn] = r
+        return list(by_qn.values())
+
+    def progress_scored_count(rows_out_partial):
+        """
+        Scored count for UI: rows_out so far plus background clip scores not yet visited in the loop.
+        Without this, the first loop iteration reports 1/N after merge reported 13/N.
+        """
+        out_qns = {str(r.get("question_number")) for r in (rows_out_partial or [])}
+        n = count_scored_rows(rows_out_partial)
+        for r in existing_rows or []:
+            qn = str(r.get("question_number") or "")
+            if not qn or qn in out_qns:
+                continue
+            if r.get("score_complete") and r.get("ai_score") in [0, 1, 2]:
+                n += 1
+        return min(total_expression_items, n)
+
+    last_reported_processed = 0
+
+    def emit_progress(phase, processed_questions, rows_out_partial):
+        nonlocal last_reported_processed
+        merged = merged_rows_snapshot(rows_out_partial)
+        processed = min(
+            total_expression_items,
+            max(processed_questions, progress_scored_count(rows_out_partial), last_reported_processed),
+        )
+        last_reported_processed = processed
+        payload = _build_pending_expression_ai_payload(
+            test_id=test_id,
+            started_at=started_at,
+            expression_question_count=total_expression_items,
+            phase=phase,
+            processed_questions=processed,
+            per_question_rows=merged,
+        )
+        payload["expressive_language_impression"] = {"status": "pending"}
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+
+    emit_progress("finalize_merge", progress_scored_count([]), [])
+
+    impression_pool = []
+    rows_out = []
+    missing_clip_questions = []
+
+    for idx, (question_number, headlight_result) in enumerate(expression_items):
+        qn_key = str(question_number)
+        clip_doc = latest_clips.get(qn_key)
+        prior = existing_by_qn.get(qn_key)
+        if prior and prior.get("score_complete") and prior.get("ai_score") in [0, 1, 2]:
+            rows_out.append(prior)
+            if clip_doc and clip_doc.get("audioFile64"):
+                try:
+                    raw = decode_base64_to_bytes(clip_doc.get("audioFile64"))
+                    clip_bytes = _trim_expression_clip_bytes(raw)
+                    if clip_bytes:
+                        pool_entry = _impression_pool_entry_from_clip_bytes(
+                            question_number, headlight_result, clip_bytes, child_gender
+                        )
+                        if pool_entry:
+                            impression_pool.append(pool_entry)
+                except Exception:
+                    pass
+            emit_progress("finalize_merge", progress_scored_count(rows_out), rows_out)
+            continue
+
+        if not clip_doc or not clip_doc.get("audioFile64"):
+            missing_clip_questions.append(str(question_number))
+            rows_out.append({
+                "question_number": int(question_number),
+                "headlight_result": headlight_result,
+                "ai_score": 1,
+                "ai_confidence": 0.0,
+                "ai_reason_short": "missing_clip_at_finalize",
+                "ai_flags": ["missing_clip_at_finalize", "needs_manual_review"],
+                "ai_speaker_observation": None,
+                "timestamp_start_sec": 0,
+                "timestamp_end_sec": None,
+                "score_complete": True,
+                "source": "clip",
+            })
+            emit_progress("finalize_merge", progress_scored_count(rows_out), rows_out)
+            continue
+
+        try:
+            raw = decode_base64_to_bytes(clip_doc.get("audioFile64"))
+            clip_bytes = _trim_expression_clip_bytes(raw)
+        except Exception:
+            clip_bytes = None
+
+        if not clip_bytes:
+            rows_out.append({
+                "question_number": int(question_number),
+                "headlight_result": headlight_result,
+                "ai_score": 1,
+                "ai_confidence": 0.0,
+                "ai_reason_short": "audio_decode_failed",
+                "ai_flags": ["audio_decode_failed", "needs_manual_review"],
+                "ai_speaker_observation": None,
+                "timestamp_start_sec": 0,
+                "timestamp_end_sec": None,
+                "score_complete": True,
+                "source": "clip",
+            })
+        else:
+            row, pool_entry = _score_expression_row_from_clip_audio(
+                question_number, headlight_result, clip_bytes, child_gender
+            )
+            rows_out.append(row)
+            if pool_entry:
+                impression_pool.append(pool_entry)
+        emit_progress("finalize_merge", progress_scored_count(rows_out), rows_out)
+
+    if missing_clip_questions:
+        logger.warning(
+            "finalize_merge missing_clip_at_finalize: test=%s count=%s questions=%s "
+            "(no audio in Mongo for these — client never POSTed expressionClip or POST failed). "
+            "stored_clip_qns=%s",
+            test_id,
+            len(missing_clip_questions),
+            missing_clip_questions,
+            stored_clip_qns,
+        )
+
+    expression_ai_summary = _aggregate_expression_ai(rows_out)
+    parent_ai_comparison = _build_parent_ai_comparison(expression_items, rows_out)
+
+    ay = int(age_years) if age_years is not None else 0
+    am = int(age_months) if age_months is not None else 0
+    child_age_label_he = f"{ay} שנים ו-{am} חודשים"
+
+    expressive_language_impression = _run_expressive_language_impression(
+        impression_pool,
+        full_array,
+        child_age_label_he,
+    )
+
+    final_payload = {
+        "status": "done",
+        "completed_at": datetime.utcnow().isoformat() + "Z",
+        "per_question": rows_out,
+        "summary": expression_ai_summary,
+        "meta": {
+            "expression_question_count": total_expression_items,
+            "parent_ai_comparison": {
+                "status": "done",
+                **parent_ai_comparison,
+            },
+            "progress": {
+                "phase": "done",
+                "processed_questions": total_expression_items,
+                "total_questions": total_expression_items,
+                "last_updated_at": datetime.utcnow().isoformat() + "Z",
+            },
+        },
+        "expressive_language_impression": expressive_language_impression,
+        "started_at": started_at,
+        "test_id": test_id,
+    }
+    storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=final_payload)
+
+
 # FastAPI setup
 app = FastAPI(title="See&Say Backend")
 
@@ -362,9 +1009,37 @@ class AddTestRequest(BaseModel):
     correct: Optional[int] = None
     partly: Optional[int] = None
     wrong: Optional[int] = None
-    audioFile64: str
-    timestamps: str
+    audioFile64: str = ""
+    timestamps: str = "{}"
     childGender: Optional[str] = None
+
+
+class CreateTestDraftRequest(BaseModel):
+    userId: int
+    expressionQuestionCount: int = 40
+
+
+class ExpressionClipRequest(BaseModel):
+    userId: int
+    questionNumber: int
+    headlightResult: str
+    audioFile64: str
+    childGender: Optional[str] = None
+    ageYears: Optional[int] = None
+    ageMonths: Optional[int] = None
+
+
+class FinalizeDraftTestRequest(BaseModel):
+    userId: int
+    ageYears: int
+    ageMonths: int
+    full_array: str
+    correct: Optional[int] = None
+    partly: Optional[int] = None
+    wrong: Optional[int] = None
+    timestamps: str = "{}"
+    childGender: Optional[str] = None
+
 
 class SpeakerVerificationRequest(BaseModel):
     userId: int
@@ -449,6 +1124,124 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         "test_id": test_id,
         "transcription": updated_transcription["updated_transcription"],
         "expression_ai": pending_expression_ai,
+    }
+
+
+@app.post("/api/createTestDraft")
+def create_test_draft(body: CreateTestDraftRequest):
+    test_id = str(uuid.uuid4())
+    started_at = datetime.utcnow().isoformat() + "Z"
+    pending_expression_ai = _build_pending_expression_ai_payload(
+        test_id=test_id,
+        started_at=started_at,
+        expression_question_count=max(1, int(body.expressionQuestionCount or 1)),
+        phase="draft",
+        processed_questions=0,
+        per_question_rows=[],
+    )
+    ok = storage.add_draft_test_to_user(
+        user_id=body.userId,
+        test_id=test_id,
+        expression_ai_pending=pending_expression_ai,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found or draft not created")
+    return {
+        "success": True,
+        "test_id": test_id,
+        "expression_ai": pending_expression_ai,
+    }
+
+
+@app.post("/api/tests/{test_id}/expressionClip")
+def post_expression_clip(
+    test_id: str,
+    body: ExpressionClipRequest,
+    background_tasks: BackgroundTasks,
+):
+    audio_stored = _store_trimmed_expression_clip_data_url(body.audioFile64)
+    clip_doc = {
+        "question_number": body.questionNumber,
+        "headlight_result": body.headlightResult,
+        "audioFile64": audio_stored,
+        "uploaded_at": datetime.utcnow().isoformat() + "Z",
+        "format": "mp3_data_url",
+        "trimmed_max_seconds": GEMINI_MAX_SEGMENT_SECONDS,
+    }
+    ok = storage.append_expression_audio_clip(
+        user_id=body.userId,
+        test_id=test_id,
+        clip_doc=clip_doc,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Test not found or clip not saved")
+    try:
+        raw_len = len(decode_base64_to_bytes(audio_stored))
+    except Exception:
+        raw_len = -1
+    logger.info(
+        "expressionClip accepted test=%s q=%s stored_mp3_bytes=%s trim_cap_s=%s (background Gemini score queued)",
+        test_id,
+        body.questionNumber,
+        raw_len,
+        GEMINI_MAX_SEGMENT_SECONDS,
+    )
+    background_tasks.add_task(
+        _run_expression_clip_score_background,
+        body.userId,
+        test_id,
+        body.questionNumber,
+        body.headlightResult,
+        audio_stored,
+        body.childGender,
+        body.ageYears,
+        body.ageMonths,
+    )
+    return {"success": True, "test_id": test_id}
+
+
+@app.post("/api/tests/{test_id}/finalizeTest")
+def finalize_draft_test_endpoint(
+    test_id: str,
+    body: FinalizeDraftTestRequest,
+    background_tasks: BackgroundTasks,
+):
+    updated_transcription = {"updated_transcription": "None", "success": False, "parent_speaker": "None"}
+    ok = storage.finalize_draft_test(
+        user_id=body.userId,
+        test_id=test_id,
+        age_years=body.ageYears,
+        age_months=body.ageMonths,
+        full_array=body.full_array,
+        correct=body.correct,
+        partly=body.partly,
+        wrong=body.wrong,
+        timestamps=body.timestamps,
+        updated_transcription=updated_transcription["updated_transcription"],
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Test not found or finalize failed")
+
+    test_row = storage.get_user_test_by_id(body.userId, test_id)
+    started_at = (test_row.get("expressionAI") or {}).get("started_at") or (
+        datetime.utcnow().isoformat() + "Z"
+    )
+    background_tasks.add_task(
+        _run_finalize_expression_ai_from_clips_background,
+        body.userId,
+        test_id,
+        body.full_array,
+        body.childGender,
+        body.ageYears,
+        body.ageMonths,
+        started_at,
+    )
+    expr = storage.get_test_expression_ai(body.userId, test_id)
+    return {
+        "success": True,
+        "test_id": test_id,
+        "transcription": updated_transcription["updated_transcription"],
+        "expression_ai": expr,
     }
 
 
@@ -567,8 +1360,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             continue
 
         goal_bits = [
-            (rubric.get("semantics") or "").strip(),
-            (rubric.get("category_pls") or "").strip(),
+            (rubric.get("pls_category") or "").strip(),
+            (rubric.get("pls_sub_category") or "").strip(),
             (rubric.get("test_goal") or "").strip(),
         ]
         linguistic_goal_line = " · ".join(g for g in goal_bits if g)
@@ -586,10 +1379,10 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             "question_text": question_text,
             "context_hint": context_hint,
             "linguistic_goal_line": linguistic_goal_line,
-            # Broad PLS frame for narrative bucketing: CSV column "semantics" (not category PLS).
-            "pls_semantics_area": (rubric.get("semantics") or "").strip(),
-            # Optional finer tag from CSV "category PLS"; supplementary only for the model prompt.
-            "pls_category": (rubric.get("category_pls") or "").strip(),
+            # Broad PLS frame: CSV category_PLS (stored key name kept for compatibility).
+            "pls_semantics_area": (rubric.get("pls_category") or "").strip(),
+            # Supplementary: CSV sub_category_PLS (stored key pls_category kept for compatibility).
+            "pls_category": (rubric.get("pls_sub_category") or "").strip(),
         })
 
         allowed = storage.check_and_increment_daily_quota(
@@ -653,61 +1446,11 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
     am = int(age_months) if age_months is not None else 0
     child_age_label_he = f"{ay} שנים ו-{am} חודשים"
 
-    expressive_language_impression = {
-        "status": "skipped",
-        "reason": "no_eligible_samples",
-        "sample_count_used": 0,
-        "data_quality": "limited",
-        "limitations_he": "לא נאספו דגימות הבעה עם קטע שמע תקין.",
-    }
-    if impression_pool:
-        k = min(EXPRESSION_IMPRESSION_SAMPLE_CAP, len(impression_pool))
-        chosen = random.sample(impression_pool, k=k) if k else []
-        impression_allowed = storage.check_and_increment_daily_quota(
-            quota_key="gemini_expressive_language_impression",
-            date_key=datetime.utcnow().strftime("%Y-%m-%d"),
-            daily_limit=GEMINI_IMPRESSION_DAILY_LIMIT,
-        )
-        if not impression_allowed:
-            expressive_language_impression = {
-                "status": "skipped",
-                "reason": "quota_exceeded",
-                "sample_count_used": 0,
-                "data_quality": "limited",
-                "limitations_he": "המכסה היומית לניתוח התרשמות הבעה נוצלה.",
-            }
-        else:
-            entries = []
-            for c in chosen:
-                entries.append({
-                    "question_number": c["question_number"],
-                    "headlight_result": c["headlight_result"],
-                    "question_text": c["question_text"],
-                    "context_hint": c.get("context_hint") or "",
-                    "linguistic_goal_line": c.get("linguistic_goal_line") or "",
-                    "pls_semantics_area": c.get("pls_semantics_area") or "",
-                    "pls_category": c.get("pls_category") or "",
-                    "audio_bytes": c["audio_bytes"],
-                })
-            imp = summarize_expressive_language_impression_gemini(
-                entries,
-                child_age_label_he,
-                max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
-            )
-            if imp:
-                expressive_language_impression = {
-                    "status": "done",
-                    **imp,
-                    "samples_submitted": len(entries),
-                }
-            else:
-                expressive_language_impression = {
-                    "status": "failed",
-                    "reason": "model_unavailable_or_invalid_json",
-                    "sample_count_used": 0,
-                    "data_quality": "limited",
-                    "limitations_he": "לא ניתן היה להפיק התרשמות אוטומטית (שירות המודל או פלט לא תקין).",
-                }
+    expressive_language_impression = _run_expressive_language_impression(
+        impression_pool,
+        full_array,
+        child_age_label_he,
+    )
 
     return {
         "status": "done",
