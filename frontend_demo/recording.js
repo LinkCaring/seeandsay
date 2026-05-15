@@ -108,26 +108,52 @@ const SessionRecorder = (function() {
 
   /**
    * Serialize expression-clip MP3 encode so decodeAudioData does not run during question <audio> playback.
-   * Max 2 waiting jobs; session end flushes all. Upload concurrency stays separate in apiToMongo.
+   * Session end flushes with force. Upload concurrency stays separate in apiToMongo.
    */
   var EXPRESSION_CLIP_ENCODE_QUEUE_MAX =
     typeof window !== "undefined" && window.SEEANDSAY_EXPRESSION_CLIP_ENCODE_QUEUE_MAX != null
-      ? Math.max(1, parseInt(window.SEEANDSAY_EXPRESSION_CLIP_ENCODE_QUEUE_MAX, 10) || 2)
-      : 2;
+      ? Math.max(1, parseInt(window.SEEANDSAY_EXPRESSION_CLIP_ENCODE_QUEUE_MAX, 10) || 6)
+      : 6;
   var expressionClipEncodeQueue = [];
   var expressionClipEncodeInProgress = false;
   var questionReadingActive = false;
 
-  function setQuestionReadingActive(active) {
-    questionReadingActive = !!active;
+  function mayEncodeDuringQuestionReading() {
+    return (
+      typeof window !== "undefined" &&
+      window.SEEANDSAY_CLIP_ENCODE_DURING_READING === true
+    );
   }
 
-  /** Safe gap before expression question reading: drain pending clip encodes (not during playback). */
+  function getEncodeQueueProcessOptions(force) {
+    if (force || mayEncodeDuringQuestionReading()) {
+      return { force: true };
+    }
+    return {};
+  }
+
+  function canProcessExpressionClipEncodeQueue(options) {
+    options = options || {};
+    return !!(options.force || !questionReadingActive || mayEncodeDuringQuestionReading());
+  }
+
+  function setQuestionReadingActive(active) {
+    questionReadingActive = !!active;
+    if (!questionReadingActive) {
+      tryProcessExpressionClipEncodeQueue();
+    }
+  }
+
+  /** Drain pending encodes when question audio is not playing. */
   function drainExpressionClipEncodeBeforeRead() {
-    if (questionReadingActive) {
+    if (questionReadingActive && !mayEncodeDuringQuestionReading()) {
       return Promise.resolve();
     }
     return tryProcessExpressionClipEncodeQueue();
+  }
+
+  function drainExpressionClipEncodeWhenIdle() {
+    return drainExpressionClipEncodeBeforeRead();
   }
 
   function normalizeExpressionClipQuestionKey(questionNumber) {
@@ -179,11 +205,10 @@ const SessionRecorder = (function() {
 
   function processOneExpressionClipEncodeJob(options) {
     options = options || {};
-    var bypassReadingGate = !!options.bypassReadingGate;
     if (expressionClipEncodeInProgress) {
       return Promise.resolve();
     }
-    if (!bypassReadingGate && questionReadingActive) {
+    if (!canProcessExpressionClipEncodeQueue(options)) {
       return Promise.resolve();
     }
     if (expressionClipEncodeQueue.length === 0) {
@@ -217,11 +242,12 @@ const SessionRecorder = (function() {
   }
 
   function tryProcessExpressionClipEncodeQueue(options) {
+    options = getEncodeQueueProcessOptions(options && options.force);
     return processOneExpressionClipEncodeJob(options).then(function () {
       if (
         !expressionClipEncodeInProgress &&
         expressionClipEncodeQueue.length > 0 &&
-        (!questionReadingActive || (options && options.bypassReadingGate))
+        canProcessExpressionClipEncodeQueue(options)
       ) {
         return tryProcessExpressionClipEncodeQueue(options);
       }
@@ -229,6 +255,7 @@ const SessionRecorder = (function() {
   }
 
   function waitForExpressionClipEncodeIdle() {
+    var forceOpts = getEncodeQueueProcessOptions(true);
     return new Promise(function (resolve) {
       function tick() {
         if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length === 0) {
@@ -236,7 +263,7 @@ const SessionRecorder = (function() {
           return;
         }
         if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length > 0) {
-          processOneExpressionClipEncodeJob({ bypassReadingGate: true }).then(tick).catch(tick);
+          processOneExpressionClipEncodeJob(forceOpts).then(tick).catch(tick);
           return;
         }
         setTimeout(tick, 40);
@@ -288,7 +315,13 @@ const SessionRecorder = (function() {
           promiseReject: reject,
         };
         expressionClipEncodeQueue.push(job);
-        tryProcessExpressionClipEncodeQueue({ bypassReadingGate: true });
+        if (expressionClipEncodeQueue.length > 2) {
+          console.warn(
+            "[See&Say] Expression clip encode queue depth:",
+            expressionClipEncodeQueue.length
+          );
+        }
+        tryProcessExpressionClipEncodeQueue();
       }
 
       pushJob();
@@ -304,7 +337,10 @@ const SessionRecorder = (function() {
   let clipWorker = null;
   let clipWorkerJobId = 0;
   const clipWorkerPending = new Map();
-  var clipWorkerFullPipelineWarned = false;
+  var clipWorkerProbeDone = false;
+  var clipWorkerDecodeInWorker = false;
+  var clipWorkerProbePromise = null;
+  var clipWorkerProbeResolver = null;
 
   function getClipWorkerScriptUrl() {
     var v = typeof window !== "undefined" && window._v ? window._v : Date.now();
@@ -354,6 +390,20 @@ const SessionRecorder = (function() {
       var w = new Worker(getClipWorkerScriptUrl());
       w.onmessage = function (ev) {
         var d = ev.data || {};
+        if (d.type === "probeResult") {
+          clipWorkerDecodeInWorker = !!d.decodeInWorker;
+          clipWorkerProbeDone = true;
+          console.log(
+            "[See&Say] Expression clip worker probe: decodeInWorker=",
+            clipWorkerDecodeInWorker
+          );
+          if (typeof clipWorkerProbeResolver === "function") {
+            var resolveProbe = clipWorkerProbeResolver;
+            clipWorkerProbeResolver = null;
+            resolveProbe(clipWorkerDecodeInWorker);
+          }
+          return;
+        }
         var pending = clipWorkerPending.get(d.id);
         if (!pending) {
           return;
@@ -380,12 +430,53 @@ const SessionRecorder = (function() {
         terminateClipWorkerHard("onerror");
       };
       clipWorker = w;
+      ensureClipWorkerProbed();
       return w;
     } catch (e) {
       console.warn("Expression clip worker could not start:", e);
       clipWorker = false;
       return null;
     }
+  }
+
+  function ensureClipWorkerProbed() {
+    if (clipWorkerProbeDone) {
+      return Promise.resolve(clipWorkerDecodeInWorker);
+    }
+    if (clipWorkerProbePromise) {
+      return clipWorkerProbePromise;
+    }
+    var w = initClipWorkerOnce();
+    if (!w) {
+      clipWorkerProbeDone = true;
+      clipWorkerDecodeInWorker = false;
+      return Promise.resolve(false);
+    }
+    clipWorkerProbePromise = new Promise(function (resolve) {
+      clipWorkerProbeResolver = resolve;
+      try {
+        w.postMessage({ type: "probe" });
+      } catch (e) {
+        clipWorkerProbeDone = true;
+        clipWorkerDecodeInWorker = false;
+        clipWorkerProbePromise = null;
+        clipWorkerProbeResolver = null;
+        resolve(false);
+        return;
+      }
+      setTimeout(function () {
+        if (clipWorkerProbeDone) {
+          return;
+        }
+        console.warn("[See&Say] Expression clip worker probe timed out");
+        clipWorkerProbeDone = true;
+        clipWorkerDecodeInWorker = false;
+        clipWorkerProbePromise = null;
+        clipWorkerProbeResolver = null;
+        resolve(false);
+      }, 5000);
+    });
+    return clipWorkerProbePromise;
   }
 
   function postClipWorkerJob(payload, transferList) {
@@ -537,37 +628,38 @@ const SessionRecorder = (function() {
 
   async function convertToMP3(blob) {
     if (isClipWorkerAllowed() && initClipWorkerOnce()) {
-      try {
-        var full = await convertToMP3ViaClipWorker(blob);
-        console.log(
-          "✅ MP3 conversion complete (clip worker), size:",
-          full.blob.size
-        );
-        return full;
-      } catch (e) {
-        if (!clipWorkerFullPipelineWarned) {
-          clipWorkerFullPipelineWarned = true;
+      await ensureClipWorkerProbed();
+      if (clipWorkerDecodeInWorker) {
+        try {
+          var full = await convertToMP3ViaClipWorker(blob);
+          console.log(
+            "✅ MP3 conversion complete (clip worker decode+encode), size:",
+            full.blob.size
+          );
+          return full;
+        } catch (e) {
           console.warn(
-            "Clip worker full pipeline failed, trying PCM worker + main decode:",
+            "Clip worker encodeWebm failed, trying PCM worker + main decode:",
             e
           );
         }
-        try {
-          var pcmOnly = await convertToMP3WithPcmWorker(blob);
-          console.log(
-            "✅ MP3 conversion complete (PCM worker + main decode), size:",
-            pcmOnly.blob.size
-          );
-          return pcmOnly;
-        } catch (e2) {
-          console.warn("PCM worker encode failed, using main thread:", e2);
-        }
+      }
+      try {
+        var pcmOnly = await convertToMP3WithPcmWorker(blob);
+        console.log(
+          "✅ MP3 conversion complete (PCM worker + main decode), size:",
+          pcmOnly.blob.size
+        );
+        return pcmOnly;
+      } catch (e2) {
+        console.warn("PCM worker encode failed, using main thread:", e2);
       }
     }
     var legacy = await convertToMP3OnMainThread(blob);
     return { blob: legacy, dataUrl: null };
   }
 
+  /** Main-thread decode + lame; only when worker unavailable and reading gate allows queue run. */
   async function convertToMP3OnMainThread(blob) {
     try {
       var decoded = await decodeBlobToMonoFloat32(blob);
@@ -1601,6 +1693,7 @@ const SessionRecorder = (function() {
     getExpressionClipDataUrlForQuestion: getExpressionClipDataUrlForQuestion,
     setQuestionReadingActive: setQuestionReadingActive,
     drainExpressionClipEncodeBeforeRead: drainExpressionClipEncodeBeforeRead,
+    drainExpressionClipEncodeWhenIdle: drainExpressionClipEncodeWhenIdle,
     flushExpressionClipEncodeQueue: flushExpressionClipEncodeQueue,
     isExpressionClipRecording: isExpressionClipRecording,
     isExpressionClipActive: isExpressionClipActive,
