@@ -10,6 +10,27 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return "audio_boy";
   };
 
+  function trafficResultToHeadlight(result) {
+    if (result === "success") return "correct";
+    if (result === "partial") return "partly";
+    return "wrong";
+  }
+
+  function readBlobAsDataURL(blob) {
+    return new Promise(function (resolve, reject) {
+      if (!blob) {
+        resolve(null);
+        return;
+      }
+      var reader = new FileReader();
+      reader.onloadend = function () {
+        resolve(reader.result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
   var EXPRESSION_EVAL_DELAY_MS = 30000;
@@ -47,7 +68,69 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [expressionEvalArmed, setExpressionEvalArmed] = React.useState(false);
   const expressionEvalDeadlineRef = React.useRef(null);
   const expressionEvalPausedRemainingRef = React.useRef(EXPRESSION_EVAL_DELAY_MS);
+  const expressionEvalEnableTimerRef = React.useRef(null);
   const expressionEvalArmedQuestionRef = React.useRef(null);
+
+  function clearExpressionEvalEnableTimer() {
+    if (expressionEvalEnableTimerRef.current != null) {
+      clearTimeout(expressionEvalEnableTimerRef.current);
+      expressionEvalEnableTimerRef.current = null;
+    }
+  }
+
+  function scheduleExpressionEvalEnable(ms) {
+    clearExpressionEvalEnableTimer();
+    var delay = Math.max(0, ms);
+    if (delay <= 0) {
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+      expressionEvalDeadlineRef.current = null;
+      return;
+    }
+    expressionEvalEnableTimerRef.current = setTimeout(function () {
+      expressionEvalEnableTimerRef.current = null;
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+      expressionEvalDeadlineRef.current = null;
+    }, delay);
+  }
+
+  function freezeExpressionEvalCountdown() {
+    clearExpressionEvalEnableTimer();
+    if (expressionEvalDeadlineRef.current) {
+      var remainingMs = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
+      expressionEvalPausedRemainingRef.current = remainingMs;
+      setExpressionEvalMsLeft(remainingMs);
+      expressionEvalDeadlineRef.current = null;
+    }
+    if (
+      typeof SessionRecorder !== "undefined" &&
+      SessionRecorder.freezeExpressionClipActiveCap
+    ) {
+      SessionRecorder.freezeExpressionClipActiveCap();
+    }
+  }
+
+  function resumeExpressionEvalCountdown() {
+    if (expressionEvalDeadlineRef.current) {
+      return;
+    }
+    var resumeMs = Math.max(0, expressionEvalPausedRemainingRef.current || 0);
+    if (resumeMs > 0) {
+      expressionEvalDeadlineRef.current = Date.now() + resumeMs;
+      setExpressionEvalMsLeft(resumeMs);
+      if (
+        typeof SessionRecorder !== "undefined" &&
+        SessionRecorder.alignExpressionClipActiveCapToUiMs
+      ) {
+        SessionRecorder.alignExpressionClipActiveCapToUiMs(resumeMs);
+      }
+      scheduleExpressionEvalEnable(resumeMs);
+    } else {
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+    }
+  }
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -56,6 +139,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [lastCompletedTestId, setLastCompletedTestId] = usePersistentState("lastCompletedTestId", null);
   const [expressionAiResult, setExpressionAiResult] = usePersistentState("expressionAiResult", null);
   const [expressionAiLoading, setExpressionAiLoading] = React.useState(false);
+  /** Monotonic cap so summary progress never drops when finalize_merge recounts rows_out. */
+  const expressionAiMaxProcessedRef = React.useRef(0);
   /** Which PLS frame is selected in the narrative report wheel (integrative | semantics | structure | phonology). */
   const [plsReportCategory, setPlsReportCategory] = React.useState("semantics");
 
@@ -96,6 +181,21 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   /** questionResults snapshot when Finish was blocked — auto-complete when verify succeeds (overlay or re-read path). */
   const pendingCompleteAfterVerifyRef = React.useRef(null);
   const completeSessionRef = React.useRef(null);
+  /** Server test row for incremental expression clips + finalize (null = legacy monolithic upload). */
+  const [draftTestId, setDraftTestId] = React.useState(null);
+  const draftTestIdRef = React.useRef(null);
+  React.useEffect(
+    function () {
+      draftTestIdRef.current = draftTestId;
+    },
+    [draftTestId]
+  );
+  /**
+   * Fullscreen go-home overlay: draft could not be created at start, or expression clip could not be saved mid-test.
+   * null | 'draftStart' | 'clipSave'
+   */
+  const [sessionGoHomeBlock, setSessionGoHomeBlock] = React.useState(null);
+  const clipUploadPromisesRef = React.useRef([]);
 
   // Session-only states
   const [images, setImages] = React.useState([]);
@@ -723,9 +823,10 @@ function blobToBase64(blob) {
     setExpressionEvalArmed(true);
   }
 
-  // Expression evaluation timer - opens traffic evaluation after 30 seconds.
+  // Expression evaluation timer - opens traffic evaluation after 30 seconds (pause-aware).
   React.useEffect(function () {
   if (sessionCompleted || questionType !== "E" || !expressionEvalArmed) {
+    clearExpressionEvalEnableTimer();
     setEvaluationEnabled(false);
     setExpressionTrafficSubmitted(false);
     setExpressionAdvanceLock(false);
@@ -740,47 +841,54 @@ function blobToBase64(blob) {
   setExpressionAdvanceLock(false);
   setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
   expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
-  expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
-
-  const timer = setTimeout(function () {
-    setEvaluationEnabled(true);
-    setExpressionEvalMsLeft(0);
+  if (!isPausedRef.current) {
+    expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
+    scheduleExpressionEvalEnable(EXPRESSION_EVAL_DELAY_MS);
+  } else {
     expressionEvalDeadlineRef.current = null;
-  }, EXPRESSION_EVAL_DELAY_MS);
+    clearExpressionEvalEnableTimer();
+  }
 
   return function () {
-    clearTimeout(timer);
+    clearExpressionEvalEnableTimer();
   };
 }, [currentIndex, questionType, sessionCompleted, expressionEvalArmed]);
 
   React.useEffect(function pauseAwareExpressionTimer() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
     if (isPaused) {
-      if (expressionEvalDeadlineRef.current) {
-        var remainingMs = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
-        expressionEvalPausedRemainingRef.current = remainingMs;
-        setExpressionEvalMsLeft(remainingMs);
-        expressionEvalDeadlineRef.current = null;
-      }
+      freezeExpressionEvalCountdown();
       return;
     }
     if (!expressionEvalDeadlineRef.current) {
-      var resumeMs = Math.max(0, expressionEvalPausedRemainingRef.current || 0);
-      if (resumeMs > 0) {
-        expressionEvalDeadlineRef.current = Date.now() + resumeMs;
-        setExpressionEvalMsLeft(resumeMs);
-      } else {
-        setEvaluationEnabled(true);
-        setExpressionEvalMsLeft(0);
-      }
+      resumeExpressionEvalCountdown();
     }
   }, [isPaused, sessionCompleted, questionType, evaluationEnabled]);
 
+  /** Freeze expression traffic countdown while streak clapping overlay is up (same refs as pause). */
+  React.useEffect(function pauseExpressionEvalDuringClappingAvatar() {
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (showClappingAvatar) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
+    if (isPaused) return;
+    if (!expressionEvalDeadlineRef.current) {
+      resumeExpressionEvalCountdown();
+    }
+  }, [
+    showClappingAvatar,
+    isPaused,
+    sessionCompleted,
+    questionType,
+    evaluationEnabled,
+    expressionEvalArmed,
+  ]);
+
   React.useEffect(function tickExpressionEvalCountdown() {
-    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalDeadlineRef.current) return;
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled || isPaused || !expressionEvalDeadlineRef.current) return;
     const intervalId = setInterval(function () {
       if (!expressionEvalDeadlineRef.current) {
-        setExpressionEvalMsLeft(0);
         return;
       }
       const next = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
@@ -790,7 +898,7 @@ function blobToBase64(blob) {
     return function () {
       clearInterval(intervalId);
     };
-  }, [currentIndex, questionType, sessionCompleted, evaluationEnabled]);
+  }, [currentIndex, questionType, sessionCompleted, evaluationEnabled, showClappingAvatar, isPaused]);
 
   React.useEffect(function armExpressionTimerWhenQuestionAudioUnavailable() {
     if (sessionCompleted || questionType !== "E" || expressionEvalArmed) return;
@@ -1137,23 +1245,57 @@ function blobToBase64(blob) {
               SessionRecorder.resetTimestamps();
             }
 
-            const started = await SessionRecorder.startContinuousRecording({
-              preserveQuestionTimestamps: preserveQuestionTimestamps
-            });
-            if (started) {
+            var timelineOk = false;
+            if (SessionRecorder.initSessionTimelineClock) {
+              timelineOk = SessionRecorder.initSessionTimelineClock({
+                preserveQuestionTimestamps: preserveQuestionTimestamps,
+              });
+            } else {
+              timelineOk = await SessionRecorder.startContinuousRecording({
+                preserveQuestionTimestamps: preserveQuestionTimestamps,
+              });
+            }
+            var markQ1TimeoutId = null;
+            if (timelineOk) {
               setSessionRecordingStarted(true);
-              console.log("✅ Started test recording after voice step");
+              console.log("✅ Session question timeline ready (expression-only audio capture)");
 
               if (!preserveQuestionTimestamps) {
-                setTimeout(function () {
+                markQ1TimeoutId = setTimeout(function () {
                   if (questions.length > 0) {
                     const firstQuestion = questions[0];
-                    if (firstQuestion) {
+                    if (firstQuestion && SessionRecorder.markQuestionStart) {
                       SessionRecorder.markQuestionStart(firstQuestion.query_number);
                       console.log("📝 Marked question 1 start at test start");
                     }
                   }
                 }, 100);
+              }
+            }
+            var exprCount = questions.filter(function (q) {
+              return q && q.query_type === "הבעה";
+            }).length;
+            try {
+              var draftRes = await createTestDraft(Math.max(1, exprCount || 1));
+              if (draftRes && draftRes.test_id) {
+                setDraftTestId(draftRes.test_id);
+              } else {
+                setDraftTestId(null);
+                if (timelineOk && !microphoneSkipped) {
+                  setSessionGoHomeBlock("draftStart");
+                  if (markQ1TimeoutId != null) {
+                    clearTimeout(markQ1TimeoutId);
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn("createTestDraft failed:", e);
+              setDraftTestId(null);
+              if (timelineOk && !microphoneSkipped) {
+                setSessionGoHomeBlock("draftStart");
+                if (markQ1TimeoutId != null) {
+                  clearTimeout(markQ1TimeoutId);
+                }
               }
             }
           }
@@ -1292,7 +1434,9 @@ const handleReadingValidationRetry = function () {
     if (questions.length === 0) return;
 
     var SR = window.SessionRecorder;
-    if (!SR || typeof SR.startContinuousRecording !== "function") return;
+    if (!SR) return;
+    var canTimeline = typeof SR.initSessionTimelineClock === "function";
+    if (!canTimeline && typeof SR.startContinuousRecording !== "function") return;
 
     var engineLive = typeof SR.isMediaRecorderLive === "function" && SR.isMediaRecorderLive();
     if (!sessionRecordingStarted && engineLive) {
@@ -1304,6 +1448,9 @@ const handleReadingValidationRetry = function () {
     var cancelled = false;
     (async function () {
       try {
+        if (sessionRecordingStarted) {
+          return;
+        }
         var preserveTs = false;
         try {
           preserveTs =
@@ -1312,20 +1459,47 @@ const handleReadingValidationRetry = function () {
         } catch (e) {
           preserveTs = false;
         }
-        var started = await SR.startContinuousRecording({
-          preserveQuestionTimestamps: preserveTs,
-        });
+        var started = false;
+        if (canTimeline) {
+          started = SR.initSessionTimelineClock({ preserveQuestionTimestamps: preserveTs });
+        } else {
+          started = await SR.startContinuousRecording({
+            preserveQuestionTimestamps: preserveTs,
+          });
+        }
         if (cancelled) return;
         if (started) {
           setSessionRecordingStarted(true);
-          console.log("✅ Session recording started (direct flow after age)");
-          setTimeout(function () {
-            if (cancelled) return;
-            var first = questions[0];
-            if (first && SR.markQuestionStart) {
-              SR.markQuestionStart(first.query_number);
+          console.log("✅ Session timeline started (direct flow after age)");
+          var draftCreateFailed = false;
+          if (canTimeline) {
+            try {
+              var ecx = questions.filter(function (q) {
+                return q && q.query_type === "הבעה";
+              }).length;
+              var draftRes = await createTestDraft(Math.max(1, ecx || 1));
+              if (draftRes && draftRes.test_id) {
+                setDraftTestId(draftRes.test_id);
+              } else {
+                setDraftTestId(null);
+                setSessionGoHomeBlock("draftStart");
+                draftCreateFailed = true;
+              }
+            } catch (e) {
+              setDraftTestId(null);
+              setSessionGoHomeBlock("draftStart");
+              draftCreateFailed = true;
             }
-          }, 100);
+          }
+          if (!draftCreateFailed) {
+            setTimeout(function () {
+              if (cancelled) return;
+              var first = questions[0];
+              if (first && SR.markQuestionStart) {
+                SR.markQuestionStart(first.query_number);
+              }
+            }, 100);
+          }
         } else {
           alert(tr("test.rec.startFailed", { msg: "Could not start recording" }));
         }
@@ -1340,6 +1514,27 @@ const handleReadingValidationRetry = function () {
       cancelled = true;
     };
   }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
+
+  React.useEffect(function startExpressionClipWhenArmed() {
+    if (sessionCompleted || isPaused) return;
+    if (questionType !== "E" || !expressionEvalArmed) return;
+    if (!permission || microphoneSkipped) return;
+    if (!draftTestId) return;
+    var SR = window.SessionRecorder;
+    if (!SR || typeof SR.startExpressionClipRecording !== "function") return;
+    (async function () {
+      await SR.startExpressionClipRecording();
+    })();
+  }, [
+    expressionEvalArmed,
+    questionType,
+    permission,
+    microphoneSkipped,
+    sessionCompleted,
+    isPaused,
+    draftTestId,
+    currentIndex,
+  ]);
 
   // Expression only: open traffic popup after 30s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
@@ -1496,16 +1691,82 @@ const handleReadingValidationRetry = function () {
     if (trafficChoiceInProgressRef.current) return;
     trafficChoiceInProgressRef.current = true;
 
-    setExpressionTrafficSubmitted(true);
-    setExpressionAdvanceLock(true);
     playTrafficFeedback(result);
     setShowContinue(false);
     setTrafficPopupOpen(false);
     setTrafficPopupChoice(null);
 
-    // All traffic options advance to next question; midFailure is display-only and still counts as failure in flow.
-    handleContinue(result);
-    trafficChoiceInProgressRef.current = false;
+    var finishTraffic = function () {
+      setExpressionTrafficSubmitted(true);
+      setExpressionAdvanceLock(true);
+      handleContinue(result);
+      trafficChoiceInProgressRef.current = false;
+    };
+
+    var needClip =
+      permission &&
+      !microphoneSkipped &&
+      draftTestId &&
+      SessionRecorder &&
+      SessionRecorder.stopExpressionClipRecording;
+
+    if (needClip) {
+      var idx = getSafeCurrentQuestionIndex();
+      var currentQ = questions[idx];
+      var tidForUpload = draftTestIdRef.current;
+      // Non-blocking: do not await encode + upload before advancing (that caused multi-second UI stalls).
+      var uploadP = SessionRecorder.stopExpressionClipRecording()
+        .then(function (blob) {
+          if (!blob || !currentQ) {
+            if (currentQ) {
+              console.warn(
+                "[See&Say] No expression clip blob for question",
+                currentQ.query_number,
+                "— clip may not have started, or stop ran twice without cache. Check recording / 30s cap."
+              );
+            }
+            return null;
+          }
+          return readBlobAsDataURL(blob).then(function (dataUrl) {
+            if (!dataUrl) return null;
+            var tid = draftTestIdRef.current || tidForUpload;
+            if (!tid) return null;
+            return postExpressionClipWithRetry(
+              tid,
+              idDigits,
+              currentQ.query_number,
+              trafficResultToHeadlight(result),
+              dataUrl,
+              childGender,
+              parseInt(ageYears, 10) || 0,
+              parseInt(ageMonths, 10) || 0,
+              null
+            ).then(function (clipRes) {
+              if (clipRes && clipRes.ok) {
+                return clipRes;
+              }
+              if (permission && !microphoneSkipped) {
+                setDraftTestId(null);
+                setSessionGoHomeBlock("clipSave");
+              }
+              return null;
+            });
+          });
+        })
+        .catch(function (e) {
+          console.warn("Expression clip upload:", e);
+          if (permission && !microphoneSkipped) {
+            setDraftTestId(null);
+            setSessionGoHomeBlock("clipSave");
+          }
+          return null;
+        });
+      clipUploadPromisesRef.current.push(uploadP);
+      finishTraffic();
+      return;
+    }
+
+    finishTraffic();
   }
 
   // Start AFK timer when test begins
@@ -1574,18 +1835,13 @@ const handleReadingValidationRetry = function () {
   const playTryAgainAudio = function () {
     if (questionAudioMuted) return;
     try {
-      var tryAgainSources = [
-        "resources/questions_audio/try_again.mp3",
-        "resources/questions_audio/try_again2.mp3",
-      ];
-      var selectedTryAgainSrc =
-        tryAgainSources[Math.floor(Math.random() * tryAgainSources.length)];
+      var tryAgainSrc = "resources/questions_audio/try_again.mp3";
       if (!tryAgainAudioRef.current) {
-        tryAgainAudioRef.current = new Audio(selectedTryAgainSrc);
+        tryAgainAudioRef.current = new Audio(tryAgainSrc);
       }
       const a = tryAgainAudioRef.current;
-      if (a.src !== selectedTryAgainSrc) {
-        a.src = selectedTryAgainSrc;
+      if (a.src.indexOf("try_again.mp3") === -1) {
+        a.src = tryAgainSrc;
       }
       var replayQuestionIdx = getCurrentQuestionIndex();
       a.onended = function () {
@@ -1700,8 +1956,8 @@ const handleReadingValidationRetry = function () {
 
     setIsPaused(true);
 
-    // Pause recording if active
-    if (permission && sessionRecordingStarted) {
+    // Pause expression clip and/or session recorder (draft flow uses clip-only).
+    if (permission && !microphoneSkipped && SessionRecorder.pauseRecording) {
       SessionRecorder.pauseRecording();
     }
 
@@ -1715,8 +1971,8 @@ const handleReadingValidationRetry = function () {
   const resumeTest = async function () {
     if (!isPaused) return;
 
-    // Resume recording if active (do this BEFORE setting isPaused to false)
-    if (permission && sessionRecordingStarted) {
+    // Resume expression clip and/or session recorder before clearing test pause.
+    if (permission && !microphoneSkipped && SessionRecorder.resumeRecording) {
       await SessionRecorder.resumeRecording();
     }
 
@@ -2843,8 +3099,14 @@ const handleReadingValidationRetry = function () {
     stopQuestionAudioForSessionComplete();
 
     setImages([]);
-    setLastCompletedTestId(null);
-    setExpressionAiResult(null);
+    var willFinalizeDraft = !!(draftTestId && permission && !microphoneSkipped);
+    if (!willFinalizeDraft) {
+      setLastCompletedTestId(null);
+      setExpressionAiResult(null);
+    } else {
+      setLastCompletedTestId(draftTestId);
+      setExpressionAiResult(null);
+    }
     setExpressionAiLoading(false);
     consecutiveCompFailRef.current = 0;
     consecutiveExprFailRef.current = 0;
@@ -2861,8 +3123,65 @@ const handleReadingValidationRetry = function () {
       }
     };
 
-    // Stop continuous session recording and send data to backend
-    if (sessionRecordingStarted && permission) {
+    var hadContinuousSessionRecorder =
+      SessionRecorder &&
+      typeof SessionRecorder.isMediaRecorderLive === "function" &&
+      SessionRecorder.isMediaRecorderLive();
+
+    if (permission && !microphoneSkipped && !draftTestId) {
+      console.warn(
+        "[See&Say] No test draft id — per-question expression clips were not sent (createTestDraft failed or API unreachable). " +
+          "Finish will use results-only upload if no session MediaRecorder exists. Start uvicorn (e.g. port 8001) before the test."
+      );
+    }
+
+    // Draft test: per-question expression clips + finalize (no monolithic session audio).
+    if (draftTestId && permission && !microphoneSkipped) {
+      (async function () {
+        if (SessionRecorder.stopExpressionClipRecording) {
+          try {
+            var stray = await SessionRecorder.stopExpressionClipRecording();
+            if (stray && stray.size > 0) {
+              console.warn("Session end: discarded unsent expression clip blob");
+            }
+          } catch (e) {}
+        }
+        setSessionCompleted(true);
+        var pending = clipUploadPromisesRef.current || [];
+        clipUploadPromisesRef.current = [];
+        try {
+          await Promise.allSettled(pending);
+        } catch (e) {}
+        var stampText =
+          SessionRecorder && SessionRecorder.getTimestampText
+            ? SessionRecorder.getTimestampText()
+            : null;
+        const fullArray = formatQuestionResultsArray(updatedQuestionResults);
+        try {
+          const result = await finalizeUserTestsWithRetry(
+            draftTestId,
+            idDigits,
+            parseInt(ageYears, 10) || 0,
+            parseInt(ageMonths, 10) || 0,
+            fullArray,
+            correctAnswers,
+            partialAnswers,
+            wrongAnswers,
+            stampText,
+            childGender,
+            null
+          );
+          if (!result) {
+            console.error(
+              "[See&Say] finalizeUserTestsWithRetry returned null — expression AI will not poll (check Network finalizeTest and backend logs)."
+            );
+          }
+          handleUploadResult(result);
+        } catch (e) {
+          console.error("finalizeUserTestsWithRetry:", e);
+        }
+      })();
+    } else if (sessionRecordingStarted && permission && hadContinuousSessionRecorder) {
       SessionRecorder.stopContinuousRecording();
       console.log("🛑 Stopped session recording, waiting for MP3 conversion...");
 
@@ -2915,8 +3234,12 @@ const handleReadingValidationRetry = function () {
             console.warn("⚠️ Recording conversion timeout after " + maxAttempts + " attempts= " + (maxAttempts * 100) + "ms");
             setSessionCompleted(true);
             const fullArray = formatQuestionResultsArray(updatedQuestionResults);
+            var tsFallback =
+              SessionRecorder && SessionRecorder.getTimestampText
+                ? SessionRecorder.getTimestampText()
+                : "{}";
             updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-              null, null, childGender).then(function(result) {
+              "", tsFallback, childGender).then(function(result) {
                 handleUploadResult(result);
               }).catch(function(err) {
                 console.error("updateUserTests (no recording blob):", err);
@@ -2926,8 +3249,12 @@ const handleReadingValidationRetry = function () {
           console.error("❌ Error checking recording:", err);
           setSessionCompleted(true);
           const fullArray = formatQuestionResultsArray(updatedQuestionResults);
+          var tsCatch =
+            SessionRecorder && SessionRecorder.getTimestampText
+              ? SessionRecorder.getTimestampText()
+              : "{}";
           updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-            null, null, childGender).then(function(result) {
+            "", tsCatch, childGender).then(function(result) {
               handleUploadResult(result);
             }).catch(function(err) {
               console.error("updateUserTests after recording error:", err);
@@ -2938,11 +3265,15 @@ const handleReadingValidationRetry = function () {
       // Start polling after a small initial delay
       setTimeout(checkRecordingReady, 200);
     } else {
-      // No recording, show completion and send immediately
+      // No monolithic session recorder (e.g. timeline + expression clips only), or mic skipped: send scores + timestamps only.
       setSessionCompleted(true);
       const fullArray = formatQuestionResultsArray(updatedQuestionResults);
+      var tsOnly =
+        SessionRecorder && SessionRecorder.getTimestampText
+          ? SessionRecorder.getTimestampText()
+          : "{}";
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-        null, null, childGender).then(function(result) {
+        "", tsOnly, childGender).then(function(result) {
           handleUploadResult(result);
         }).catch(function(err) {
           console.error("updateUserTests (no recording):", err);
@@ -2952,11 +3283,15 @@ const handleReadingValidationRetry = function () {
 
   completeSessionRef.current = completeSession;
 
-  const refreshExpressionAiStatus = React.useCallback(async function () {
-    if (!lastCompletedTestId) return;
+  const refreshExpressionAiStatus = React.useCallback(async function (overrideTestId) {
+    var tid =
+      typeof overrideTestId === "string" && overrideTestId !== ""
+        ? overrideTestId
+        : lastCompletedTestId;
+    if (!tid) return;
     setExpressionAiLoading(true);
     try {
-      const resp = await getExpressionAiStatus(idDigits, lastCompletedTestId);
+      const resp = await getExpressionAiStatus(idDigits, tid);
       if (resp && resp.expression_ai) {
         setExpressionAiResult(resp.expression_ai);
       }
@@ -2965,13 +3300,20 @@ const handleReadingValidationRetry = function () {
     }
   }, [idDigits, lastCompletedTestId]);
 
+  React.useEffect(function fetchExpressionAiOnceWhenSummaryHasTestIdButNoPayload() {
+    if (!sessionCompleted || !lastCompletedTestId) return;
+    if (expressionAiResult != null) return;
+    void refreshExpressionAiStatus();
+  }, [sessionCompleted, lastCompletedTestId, expressionAiResult, refreshExpressionAiStatus]);
+
   React.useEffect(function pollExpressionAiWhilePending() {
     if (!sessionCompleted) return;
     if (!lastCompletedTestId) return;
-    if (!expressionAiResult || expressionAiResult.status !== "pending") return;
-    const timer = setInterval(function () {
+    if (expressionAiResult && expressionAiResult.status !== "pending") return;
+    var tick = function () {
       refreshExpressionAiStatus();
-    }, 5000);
+    };
+    const timer = setInterval(tick, 2000);
     return function () {
       clearInterval(timer);
     };
@@ -2979,6 +3321,10 @@ const handleReadingValidationRetry = function () {
 
   React.useEffect(function resetPlsReportCategoryOnNewTest() {
     setPlsReportCategory("semantics");
+  }, [lastCompletedTestId]);
+
+  React.useEffect(function resetExpressionAiProgressMonotonicCap() {
+    expressionAiMaxProcessedRef.current = 0;
   }, [lastCompletedTestId]);
 
   // After Finish was blocked because reading verify was still processing, resume completion automatically.
@@ -3749,7 +4095,6 @@ function renderExpectedAnswerNote() {
 
   if (sessionCompleted) {
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
-    const hasSessionRecording = !!(permission && sessionRecordingStarted);
     const expectedAgeGroup = (function () {
       const months = totalMonths();
       // Age input is validated to [24,72) months in confirmAge()
@@ -3870,9 +4215,23 @@ function renderExpectedAnswerNote() {
     const expressionAiProcessed = expressionAiProgress && typeof expressionAiProgress.processed_questions === "number"
       ? expressionAiProgress.processed_questions
       : 0;
-    const expressionAiTotal = expressionAiProgress && typeof expressionAiProgress.total_questions === "number"
-      ? expressionAiProgress.total_questions
-      : exprStats.total;
+    var expressionAiTotalRaw =
+      expressionAiProgress && typeof expressionAiProgress.total_questions === "number"
+        ? expressionAiProgress.total_questions
+        : exprStats.total;
+    var exprAnsweredThisSession = countAnsweredByType(questionResults, "expression");
+    var expressionAiTotalForProgress =
+      expressionAiStatus === "pending" &&
+      exprAnsweredThisSession > 0 &&
+      expressionAiTotalRaw > exprAnsweredThisSession
+        ? exprAnsweredThisSession
+        : expressionAiTotalRaw;
+    var expressionAiProcessedRaw = Math.min(expressionAiProcessed, expressionAiTotalForProgress);
+    var expressionAiProcessedForProgress = Math.min(
+      expressionAiTotalForProgress,
+      Math.max(expressionAiMaxProcessedRef.current, expressionAiProcessedRaw)
+    );
+    expressionAiMaxProcessedRef.current = expressionAiProcessedForProgress;
     const expressionAiPhase = expressionAiProgress && expressionAiProgress.phase
       ? String(expressionAiProgress.phase)
       : "pending";
@@ -3882,6 +4241,9 @@ function renderExpectedAnswerNote() {
         if (phaseKey === "processing_started") return "Started";
         if (phaseKey === "preparing_audio") return "Processing audio";
         if (phaseKey === "scoring_questions") return "Scoring questions";
+        if (phaseKey === "scoring_clips") return "Scoring expression clips";
+        if (phaseKey === "finalize_merge") return "Merging results";
+        if (phaseKey === "draft") return "Queued";
         if (phaseKey === "building_impression") return "Building summary";
         if (phaseKey === "done") return "Done";
         if (phaseKey === "failed") return "Failed";
@@ -3891,6 +4253,9 @@ function renderExpectedAnswerNote() {
       if (phaseKey === "processing_started") return "התחיל עיבוד";
       if (phaseKey === "preparing_audio") return "מעבד שמע";
       if (phaseKey === "scoring_questions") return "מחשב ציונים";
+      if (phaseKey === "scoring_clips") return "מחשב ציוני קטעי הבעה";
+      if (phaseKey === "finalize_merge") return "מאחד תוצאות";
+      if (phaseKey === "draft") return "בתור";
       if (phaseKey === "building_impression") return "מכין סיכום";
       if (phaseKey === "done") return "הושלם";
       if (phaseKey === "failed") return "נכשל";
@@ -4018,25 +4383,6 @@ function renderExpectedAnswerNote() {
       if (result === "wrong") return lang === "en" ? "Wrong" : "שגוי";
       return "—";
     }
-
-    // Download recording function
-    const downloadRecording = function () {
-      // Use synchronous version since we're in a synchronous context
-      const recordingUrl = SessionRecorder.getFinalRecordingUrlSync();
-      if (recordingUrl) {
-        const a = document.createElement("a");
-        a.href = recordingUrl;
-        // Get the file extension (.mp3)
-        const fileExt = SessionRecorder.getCurrentFileExtension();
-        a.download = "session_recording_" + idDigits + "_" + Date.now() + fileExt;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        console.log("📥 Downloaded session recording as MP3");
-      } else {
-        alert("No recording available to download");
-      }
-    };
 
     // Download timestamp file function (enhanced with question results and transcription)
     const downloadTimestamps = function () {
@@ -4634,8 +4980,8 @@ function renderExpectedAnswerNote() {
                 "div",
                 null,
                 lang === "en"
-                  ? ("Progress: " + expressionAiProcessed + "/" + expressionAiTotal + " questions")
-                  : ("התקדמות: " + expressionAiProcessed + "/" + expressionAiTotal + " שאלות")
+                  ? ("Progress: " + expressionAiProcessedForProgress + "/" + expressionAiTotalForProgress + " questions")
+                  : ("התקדמות: " + expressionAiProcessedForProgress + "/" + expressionAiTotalForProgress + " שאלות")
               )
             ),
             React.createElement(
@@ -4643,7 +4989,9 @@ function renderExpectedAnswerNote() {
               {
                 type: "button",
                 disabled: expressionAiLoading,
-                onClick: refreshExpressionAiStatus,
+                onClick: function () {
+                  void refreshExpressionAiStatus();
+                },
                 style: {
                   padding: "10px 18px",
                   fontSize: "15px",
@@ -4718,28 +5066,10 @@ function renderExpectedAnswerNote() {
             )
           )
         : null,
-      // Download buttons container (moved below AI area to keep immediate summary visual-first)
+      // Download buttons: timestamps export only (session audio is stored per expression clip server-side).
       React.createElement(
         "div",
         { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
-        hasSessionRecording
-          ? React.createElement(
-              "button",
-              {
-                style: {
-                  padding: "10px 20px",
-                  fontSize: "16px",
-                  backgroundColor: "#42ABC7",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer"
-                },
-                onClick: downloadRecording
-              },
-              tr("test.done.downloadRecording")
-            )
-          : null,
         React.createElement(
           "button",
           {
@@ -4977,8 +5307,96 @@ function renderExpectedAnswerNote() {
         )
       )
       : null,
-    // AFK Warning popup
-    showAfkWarning && !isPaused
+    // Session could not be saved to server — parent returns home only (draft at start, or clip mid-test).
+    sessionGoHomeBlock
+      ? React.createElement(
+          "div",
+          {
+            className: "session-start-blocked-overlay",
+            style: {
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: "rgba(0, 0, 0, 0.82)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 10000,
+              padding: "16px",
+              boxSizing: "border-box"
+            },
+            role: "alertdialog",
+            "aria-modal": "true",
+            "aria-labelledby": "session-go-home-blocked-title"
+          },
+          React.createElement(
+            "div",
+            {
+              style: {
+                backgroundColor: "white",
+                padding: "32px 28px",
+                borderRadius: "14px",
+                textAlign: "center",
+                maxWidth: "440px",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.25)"
+              },
+              dir: lang === "he" ? "rtl" : "ltr"
+            },
+            React.createElement(
+              "h2",
+              {
+                id: "session-go-home-blocked-title",
+                style: { margin: "0 0 14px", fontSize: "22px", color: "#1a2b3c", lineHeight: 1.3 }
+              },
+              tr(
+                sessionGoHomeBlock === "clipSave"
+                  ? "test.sessionClipSaveFailed.title"
+                  : "test.sessionStartFailed.title"
+              )
+            ),
+            React.createElement(
+              "p",
+              { style: { margin: "0 0 26px", fontSize: "17px", color: "#4a5568", lineHeight: 1.45 } },
+              tr(
+                sessionGoHomeBlock === "clipSave"
+                  ? "test.sessionClipSaveFailed.body"
+                  : "test.sessionStartFailed.body"
+              )
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                onClick: function () {
+                  setSessionGoHomeBlock(null);
+                  onHome();
+                },
+                style: {
+                  padding: "14px 28px",
+                  fontSize: "17px",
+                  backgroundColor: "#2E5D73",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "10px",
+                  cursor: "pointer",
+                  fontWeight: "700",
+                  minWidth: "200px"
+                }
+              },
+              tr(
+                sessionGoHomeBlock === "clipSave"
+                  ? "test.sessionClipSaveFailed.ctaHome"
+                  : "test.sessionStartFailed.ctaHome"
+              )
+            )
+          )
+        )
+      : null,
+    // AFK Warning popup (hidden while go-home failure overlay is shown)
+    showAfkWarning && !isPaused && !sessionGoHomeBlock
       ? React.createElement(
         "div",
         {

@@ -237,6 +237,119 @@ class SeeSayMongoStorage:
             logger.error(f"❌ Error getting expressionAI for user {user_id}, testId {test_id}: {e}")
             return None
 
+    def get_user_test_by_id(self, user_id, test_id):
+        """Return the tests[] element for this testId, or None."""
+        try:
+            user = self.users_collection.find_one(
+                {"userId": user_id},
+                {"_id": 0, "tests": 1}
+            )
+            if not user:
+                return None
+            for t in user.get("tests", []) or []:
+                if str(t.get("testId") or "") == str(test_id):
+                    return t
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error loading test {test_id} for user {user_id}: {e}")
+            return None
+
+    def add_draft_test_to_user(
+        self,
+        user_id,
+        test_id,
+        expression_ai_pending,
+        age_years=None,
+        age_months=None,
+    ):
+        """
+        Push an in-progress test row used for incremental expression clips + finalize.
+        """
+        try:
+            new_test = {
+                "testId": test_id,
+                "status": "in_progress",
+                "dateStarted": datetime.now(),
+                "dateFinished": None,
+                "ageYears": age_years,
+                "ageMonths": age_months,
+                "fullArray": "[]",
+                "correct": None,
+                "partly": None,
+                "wrong": None,
+                "audioFile64": "",
+                "transcription": "None",
+                "timestamps": "{}",
+                "expressionAudioClips": [],
+                "expressionAI": expression_ai_pending or {},
+            }
+            result = self.users_collection.update_one(
+                {"userId": user_id},
+                {"$push": {"tests": new_test}}
+            )
+            if result.matched_count == 0:
+                logger.warning(f"⚠️ User ID {user_id} not found. Cannot add draft test.")
+                return False
+            return result.modified_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error adding draft test for user {user_id}: {e}")
+            return False
+
+    def append_expression_audio_clip(self, user_id, test_id, clip_doc):
+        """Append one clip document to tests.$.expressionAudioClips."""
+        try:
+            result = self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": test_id},
+                {"$push": {"tests.$.expressionAudioClips": clip_doc}}
+            )
+            if result.matched_count == 0:
+                logger.warning(f"⚠️ No test {test_id} for user {user_id} (append clip)")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"❌ append_expression_audio_clip: {e}")
+            return False
+
+    def finalize_draft_test(
+        self,
+        user_id,
+        test_id,
+        age_years,
+        age_months,
+        full_array,
+        correct,
+        partly,
+        wrong,
+        timestamps,
+        updated_transcription,
+    ):
+        """Merge session results into the draft test row and mark completed."""
+        try:
+            result = self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": test_id},
+                {
+                    "$set": {
+                        "tests.$.status": "completed",
+                        "tests.$.dateFinished": datetime.now(),
+                        "tests.$.ageYears": age_years,
+                        "tests.$.ageMonths": age_months,
+                        "tests.$.fullArray": full_array,
+                        "tests.$.correct": correct,
+                        "tests.$.partly": partly,
+                        "tests.$.wrong": wrong,
+                        "tests.$.timestamps": timestamps,
+                        "tests.$.transcription": updated_transcription,
+                    }
+                },
+            )
+            if result.matched_count == 0:
+                logger.warning(f"⚠️ finalize_draft_test: no match user={user_id} test={test_id}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"❌ finalize_draft_test: {e}")
+            return False
+
     # get one user info using user_id.
     def get_user_config(self, user_id):
         """Get user configuration"""

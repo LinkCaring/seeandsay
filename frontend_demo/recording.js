@@ -9,6 +9,24 @@ const SessionRecorder = (function() {
   let stream = null;
   let isRecording = false;
   let isPaused = false;
+
+  /** Per-expression-question clip (separate from full-session MediaRecorder). */
+  let expressionMediaRecorder = null;
+  let expressionAudioChunks = [];
+  let expressionStream = null;
+  let expressionStopResolve = null;
+  /** Active recording time cap (pause does not extend the window); see PLAN / server trim. */
+  let expressionClipAutoStopTimerId = null;
+  let expressionClipSegmentStartedAt = null;
+  let expressionClipAutoStopRemainingMs = null;
+  /** In-flight stop promise so timer + UI cannot double-stop or orphan waiters. */
+  let expressionClipStopPromise = null;
+  /**
+   * Last encoded clip for the current expression question (set on recorder onstop).
+   * When the 30s cap auto-stops before traffic submit, a second stop() would return null
+   * without this cache — causing missing_clip_at_finalize on the server.
+   */
+  let cachedExpressionClipBlob = null;
   
   // Question timestamps tracking
   let recordingStartTime = null;
@@ -47,69 +65,269 @@ const SessionRecorder = (function() {
   }
 
   // Convert audio blob to MP3
-  async function convertToMP3(blob) {
-    return new Promise(function(resolve, reject) {
-      try {
-        // Create audio context to decode the audio
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const fileReader = new FileReader();
-        
-        fileReader.onload = function() {
-          audioContext.decodeAudioData(fileReader.result)
-            .then(function(audioBuffer) {
-              // Convert AudioBuffer to PCM data
-              const samples = audioBuffer.getChannelData(0); // Mono
-              const sampleRate = audioBuffer.sampleRate;
-              
-              // Convert Float32 samples to Int16 for lamejs
-              const int16Samples = new Int16Array(samples.length);
-              for (let i = 0; i < samples.length; i++) {
-                // Convert from -1.0 to 1.0 range to -32768 to 32767 range
-                const s = Math.max(-1, Math.min(1, samples[i]));
-                int16Samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-              }
-              
-              // Use lamejs to encode to MP3
-              const mp3encoder = new lamejs.Mp3Encoder(1, sampleRate, 128); // Mono, sampleRate, bitrate
-              const sampleBlockSize = 1152;
-              const mp3Data = [];
-              
-              for (let i = 0; i < int16Samples.length; i += sampleBlockSize) {
-                const sampleChunk = int16Samples.subarray(i, i + sampleBlockSize);
-                const mp3buf = mp3encoder.encodeBuffer(sampleChunk);
-                if (mp3buf.length > 0) {
-                  mp3Data.push(mp3buf);
-                }
-              }
-              
-              // Finalize
-              const mp3buf = mp3encoder.flush();
-              if (mp3buf.length > 0) {
-                mp3Data.push(mp3buf);
-              }
-              
-              // Create MP3 blob
-              const mp3Blob = new Blob(mp3Data, { type: "audio/mpeg" });
-              console.log("✅ MP3 conversion complete, size:", mp3Blob.size);
-              resolve(mp3Blob);
-            })
-            .catch(function(err) {
-              console.error("Failed to decode audio:", err);
-              resolve(blob); // Fallback to original blob
-            });
-        };
-        
-        fileReader.onerror = function() {
-          console.error("Failed to read audio file");
-          resolve(blob); // Fallback to original blob
-        };
-        
-        fileReader.readAsArrayBuffer(blob);
-      } catch (err) {
-        console.error("Error converting to MP3:", err);
-        resolve(blob); // Fallback to original blob
+  /** Yield so the browser can paint / start <audio> before heavy MP3 work (reduces stutter between questions). */
+  function yieldBeforeMp3Encode() {
+    return new Promise(function (resolve) {
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(
+          function () {
+            resolve();
+          },
+          { timeout: 400 }
+        );
+      } else {
+        setTimeout(resolve, 0);
       }
     });
+  }
+
+  /** After traffic advances the UI, let the next question <audio> start before blocking on encode (same thread). */
+  function yieldForQuestionAudioHandoff() {
+    return new Promise(function (resolve) {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(resolve);
+        });
+      } else {
+        setTimeout(resolve, 0);
+      }
+    }).then(function () {
+      return new Promise(function (resolve) {
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(resolve, { timeout: 120 });
+        } else {
+          setTimeout(resolve, 16);
+        }
+      });
+    });
+  }
+
+  /** Lazy singleton; null = not created yet, false = unavailable or hard-failed. */
+  let mp3Worker = null;
+  let mp3WorkerJobId = 0;
+  const mp3WorkerPending = new Map();
+
+  function getMp3WorkerScriptUrl() {
+    var v = typeof window !== "undefined" && window._v ? window._v : Date.now();
+    return "./mp3-encode-worker.js?v=" + v;
+  }
+
+  function terminateMp3WorkerHard(reason) {
+    if (mp3Worker && typeof mp3Worker.terminate === "function") {
+      try {
+        mp3Worker.terminate();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    mp3Worker = false;
+    if (reason) {
+      console.warn("MP3 worker disabled:", reason);
+    }
+  }
+
+  function initMp3WorkerOnce() {
+    if (mp3Worker === false) {
+      return null;
+    }
+    if (mp3Worker != null) {
+      return mp3Worker;
+    }
+    if (typeof Worker === "undefined") {
+      mp3Worker = false;
+      return null;
+    }
+    if (typeof window !== "undefined" && window.SEEANDSAY_MP3_WORKER === false) {
+      mp3Worker = false;
+      return null;
+    }
+    try {
+      var w = new Worker(getMp3WorkerScriptUrl());
+      w.onmessage = function (ev) {
+        var d = ev.data || {};
+        var pending = mp3WorkerPending.get(d.id);
+        if (!pending) {
+          return;
+        }
+        mp3WorkerPending.delete(d.id);
+        if (d.ok && d.arrayBuffer) {
+          var len =
+            typeof d.byteLength === "number" ? d.byteLength : d.arrayBuffer.byteLength;
+          var b = new Blob([new Uint8Array(d.arrayBuffer, 0, len)], { type: "audio/mpeg" });
+          pending.resolve(b);
+        } else {
+          pending.reject(new Error(d.message || "worker encode failed"));
+        }
+      };
+      w.onerror = function (err) {
+        console.warn("mp3-encode-worker:", err);
+        mp3WorkerPending.forEach(function (p) {
+          p.reject(new Error("mp3 worker load/runtime error"));
+        });
+        mp3WorkerPending.clear();
+        terminateMp3WorkerHard("onerror");
+      };
+      mp3Worker = w;
+      return w;
+    } catch (e) {
+      console.warn("MP3 worker could not start:", e);
+      mp3Worker = false;
+      return null;
+    }
+  }
+
+  function readBlobAsArrayBuffer(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () {
+        resolve(fr.result);
+      };
+      fr.onerror = function () {
+        reject(new Error("FileReader failed"));
+      };
+      fr.readAsArrayBuffer(blob);
+    });
+  }
+
+  /** Average all channels to mono (matches worker-era behavior for stereo mics). */
+  function mixAudioBufferToMono(audioBuffer) {
+    var n = audioBuffer.numberOfChannels;
+    var len = audioBuffer.length;
+    if (n === 1) {
+      return audioBuffer.getChannelData(0);
+    }
+    var out = new Float32Array(len);
+    for (var i = 0; i < len; i++) {
+      var sum = 0;
+      for (var c = 0; c < n; c++) {
+        sum += audioBuffer.getChannelData(c)[i];
+      }
+      out[i] = sum / n;
+    }
+    return out;
+  }
+
+  /** Decode blob on the main thread (decodeAudioData is not available in many workers). */
+  function decodeBlobToMonoFloat32(blob) {
+    return readBlobAsArrayBuffer(blob).then(function (ab) {
+      var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      var copy = ab.slice(0);
+      return audioContext.decodeAudioData(copy).then(function (buf) {
+        try {
+          if (audioContext.close) {
+            audioContext.close();
+          }
+        } catch (eClose) {
+          /* ignore */
+        }
+        var mono = mixAudioBufferToMono(buf);
+        return { sampleRate: buf.sampleRate, mono: mono };
+      });
+    });
+  }
+
+  function encodeMonoFloat32ToMp3OnMain(mono, sampleRate) {
+    var int16Samples = new Int16Array(mono.length);
+    for (var i = 0; i < mono.length; i++) {
+      var s = Math.max(-1, Math.min(1, mono[i]));
+      int16Samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    var mp3encoder = new lamejs.Mp3Encoder(1, sampleRate, 128);
+    var sampleBlockSize = 1152;
+    var mp3Data = [];
+    for (var j = 0; j < int16Samples.length; j += sampleBlockSize) {
+      var sampleChunk = int16Samples.subarray(j, j + sampleBlockSize);
+      var mp3buf = mp3encoder.encodeBuffer(sampleChunk);
+      if (mp3buf.length > 0) {
+        mp3Data.push(mp3buf);
+      }
+    }
+    var flushOut = mp3encoder.flush();
+    if (flushOut.length > 0) {
+      mp3Data.push(flushOut);
+    }
+    return new Blob(mp3Data, { type: "audio/mpeg" });
+  }
+
+  function convertToMP3WithWorker(blob) {
+    return decodeBlobToMonoFloat32(blob).then(function (decoded) {
+      var w = initMp3WorkerOnce();
+      if (!w) {
+        return Promise.reject(new Error("no worker"));
+      }
+      var monoCopy = new Float32Array(decoded.mono.length);
+      monoCopy.set(decoded.mono);
+      return new Promise(function (resolve, reject) {
+        var id = ++mp3WorkerJobId;
+        var timeoutMs = 180000;
+        var timer = setTimeout(function () {
+          if (!mp3WorkerPending.has(id)) {
+            return;
+          }
+          mp3WorkerPending.delete(id);
+          reject(new Error("mp3 worker timeout"));
+          try {
+            w.terminate();
+          } catch (e2) {
+            /* ignore */
+          }
+          mp3Worker = null;
+        }, timeoutMs);
+        mp3WorkerPending.set(id, {
+          resolve: function (b) {
+            clearTimeout(timer);
+            resolve(b);
+          },
+          reject: function (e) {
+            clearTimeout(timer);
+            reject(e);
+          },
+        });
+        try {
+          w.postMessage(
+            {
+              type: "encodePcm",
+              id: id,
+              sampleRate: decoded.sampleRate,
+              pcm: monoCopy.buffer,
+              sampleCount: monoCopy.length,
+            },
+            [monoCopy.buffer]
+          );
+        } catch (postErr) {
+          clearTimeout(timer);
+          mp3WorkerPending.delete(id);
+          reject(postErr);
+        }
+      });
+    });
+  }
+
+  async function convertToMP3(blob) {
+    var allowWorker =
+      typeof window === "undefined" || window.SEEANDSAY_MP3_WORKER !== false;
+    if (allowWorker && initMp3WorkerOnce()) {
+      try {
+        var outW = await convertToMP3WithWorker(blob);
+        console.log("✅ MP3 conversion complete (worker), size:", outW.size);
+        return outW;
+      } catch (e) {
+        console.warn("Worker MP3 encode failed, using main thread:", e);
+      }
+    }
+    return convertToMP3OnMainThread(blob);
+  }
+
+  async function convertToMP3OnMainThread(blob) {
+    try {
+      var decoded = await decodeBlobToMonoFloat32(blob);
+      var mp3Blob = encodeMonoFloat32ToMp3OnMain(decoded.mono, decoded.sampleRate);
+      console.log("✅ MP3 conversion complete (main thread), size:", mp3Blob.size);
+      return mp3Blob;
+    } catch (err) {
+      console.error("Error converting to MP3:", err);
+      return blob;
+    }
   }
 
   // Store the mime type globally
@@ -150,6 +368,43 @@ const SessionRecorder = (function() {
     return Math.max(0, currentTime - recordingStartTime - totalPausedTime);
   }
 
+  /**
+   * Session wall clock for question marks without starting full-session MediaRecorder
+   * (comprehension timing only; expression uses startExpressionClipRecording).
+   */
+  function initSessionTimelineClock(options) {
+    var preserveTs = options && options.preserveQuestionTimestamps;
+    if (!preserveTs) {
+      recordingStartTime = Date.now();
+      questionTimestamps = [];
+      totalPausedTime = 0;
+      pauseStartTime = null;
+      isPaused = false;
+    } else {
+      try {
+        var qts = localStorage.getItem("questionTimestamps");
+        questionTimestamps = qts ? JSON.parse(qts) : [];
+      } catch (e) {
+        questionTimestamps = [];
+      }
+      var rst = localStorage.getItem("recordingStartTime");
+      recordingStartTime = rst ? parseInt(rst, 10) : Date.now();
+      var tpt = localStorage.getItem("totalPausedTime");
+      totalPausedTime = tpt ? parseInt(tpt, 10) : 0;
+      pauseStartTime = null;
+      isPaused = false;
+    }
+    try {
+      localStorage.setItem("recordingStartTime", String(recordingStartTime));
+      localStorage.setItem("totalPausedTime", String(totalPausedTime));
+      localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
+    } catch (e) {
+      console.warn("initSessionTimelineClock localStorage:", e);
+    }
+    console.log("🕒 Session question timeline clock started (no session MediaRecorder)");
+    return true;
+  }
+
   // Start continuous session recording
   // options.preserveQuestionTimestamps — keep questionTimestamps / session clock (voice re-verify mid-test)
   async function startContinuousRecording(options) {
@@ -186,6 +441,7 @@ const SessionRecorder = (function() {
         
         // Convert to MP3
         console.log("🎵 Converting recording to MP3...");
+        await yieldBeforeMp3Encode();
         const mp3Blob = await convertToMP3(originalBlob);
         const url = URL.createObjectURL(mp3Blob);
         
@@ -262,8 +518,307 @@ const SessionRecorder = (function() {
     return false;
   }
 
+  /** Matches expression UI timer + server GEMINI_MAX_SEGMENT_SECONDS trim (stored cap). */
+  function getExpressionClipPolicyMaxSec() {
+    var capSec = 30;
+    try {
+      if (typeof window !== "undefined" && window.SEEANDSAY_EXPRESSION_CLIP_MAX_SECONDS != null) {
+        var n = Number(window.SEEANDSAY_EXPRESSION_CLIP_MAX_SECONDS);
+        if (!isNaN(n) && isFinite(n)) {
+          capSec = n;
+        }
+      }
+    } catch (e) {}
+    return Math.min(120, Math.max(5, capSec));
+  }
+
+  /**
+   * Active recording auto-stop budget (policy seconds + grace).
+   * Grace compensates MediaRecorder chunking / MP3 encode so DB trim (~30s) still holds ~30s of speech.
+   */
+  function getExpressionClipRecordingGraceMs() {
+    var graceMs = 800;
+    try {
+      if (
+        typeof window !== "undefined" &&
+        window.SEEANDSAY_EXPRESSION_CLIP_RECORDING_GRACE_MS != null
+      ) {
+        var g = Number(window.SEEANDSAY_EXPRESSION_CLIP_RECORDING_GRACE_MS);
+        if (!isNaN(g) && isFinite(g)) {
+          graceMs = g;
+        }
+      }
+    } catch (e) {}
+    return Math.min(3000, Math.max(0, Math.round(graceMs)));
+  }
+
+  function getExpressionClipMaxMs() {
+    return Math.round(getExpressionClipPolicyMaxSec() * 1000) + getExpressionClipRecordingGraceMs();
+  }
+
+  function clearExpressionClipAutoStopTimer() {
+    if (expressionClipAutoStopTimerId != null) {
+      clearTimeout(expressionClipAutoStopTimerId);
+      expressionClipAutoStopTimerId = null;
+    }
+  }
+
+  function resetExpressionClipAutoStopScheduling() {
+    clearExpressionClipAutoStopTimer();
+    expressionClipSegmentStartedAt = null;
+    expressionClipAutoStopRemainingMs = null;
+  }
+
+  function scheduleExpressionClipAutoStopIfRecording() {
+    clearExpressionClipAutoStopTimer();
+    if (!expressionMediaRecorder || expressionMediaRecorder.state !== "recording") {
+      return;
+    }
+    if (expressionClipAutoStopRemainingMs == null) {
+      return;
+    }
+    if (expressionClipAutoStopRemainingMs <= 0) {
+      console.log("⏱️ Expression clip auto-stop (active recording cap reached)");
+      stopExpressionClipRecording().catch(function () {});
+      return;
+    }
+    expressionClipSegmentStartedAt = Date.now();
+    expressionClipAutoStopTimerId = setTimeout(function () {
+      expressionClipAutoStopTimerId = null;
+      expressionClipSegmentStartedAt = null;
+      if (
+        expressionMediaRecorder &&
+        expressionMediaRecorder.state === "recording"
+      ) {
+        var policySec = getExpressionClipPolicyMaxSec();
+        var graceSec = (getExpressionClipRecordingGraceMs() / 1000).toFixed(1);
+        console.log(
+          "⏱️ Expression clip auto-stop at recording cap (" +
+            policySec +
+            "s policy +" +
+            graceSec +
+            "s grace for encode/chunk alignment)"
+        );
+        stopExpressionClipRecording().catch(function () {});
+      }
+    }, expressionClipAutoStopRemainingMs);
+  }
+
+  function onExpressionClipPausedForAutoStop() {
+    if (expressionClipSegmentStartedAt == null) {
+      return;
+    }
+    clearExpressionClipAutoStopTimer();
+    var elapsed = Date.now() - expressionClipSegmentStartedAt;
+    expressionClipSegmentStartedAt = null;
+    expressionClipAutoStopRemainingMs = Math.max(
+      0,
+      (expressionClipAutoStopRemainingMs || 0) - elapsed
+    );
+  }
+
+  function onExpressionClipResumedForAutoStop() {
+    if (expressionClipAutoStopRemainingMs == null) {
+      return;
+    }
+    scheduleExpressionClipAutoStopIfRecording();
+  }
+
+  /** Freeze active-time cap (test pause / clapping) — same idea as popup countdown freeze. */
+  function freezeExpressionClipActiveCap() {
+    clearExpressionClipAutoStopTimer();
+    if (expressionMediaRecorder && expressionMediaRecorder.state === "recording") {
+      onExpressionClipPausedForAutoStop();
+    }
+  }
+
+  /**
+   * After UI resume, ensure clip cap is not shorter than popup time left (+ encode grace).
+   * Prevents "long pause then resume → recorder already dead" when timers diverged.
+   */
+  function alignExpressionClipActiveCapToUiMs(uiRemainingMs) {
+    if (!expressionMediaRecorder) {
+      return;
+    }
+    var state = expressionMediaRecorder.state;
+    if (state !== "recording" && state !== "paused") {
+      return;
+    }
+    var uiMs = Math.max(0, Number(uiRemainingMs) || 0);
+    var target = uiMs + getExpressionClipRecordingGraceMs();
+    if (expressionClipAutoStopRemainingMs == null) {
+      expressionClipAutoStopRemainingMs = target;
+    } else {
+      expressionClipAutoStopRemainingMs = Math.max(expressionClipAutoStopRemainingMs, target);
+    }
+    if (state === "recording") {
+      scheduleExpressionClipAutoStopIfRecording();
+    }
+  }
+
+  function isExpressionClipActive() {
+    return !!(
+      expressionMediaRecorder &&
+      (expressionMediaRecorder.state === "recording" ||
+        expressionMediaRecorder.state === "paused")
+    );
+  }
+
+  async function startExpressionClipRecording() {
+    if (expressionMediaRecorder && expressionMediaRecorder.state === "recording") {
+      return true;
+    }
+    // After 30s cap: recorder is idle but blob may still be encoding or cached for traffic submit.
+    if (expressionClipStopPromise) {
+      try {
+        await expressionClipStopPromise;
+      } catch (e) {}
+    }
+    if (cachedExpressionClipBlob && cachedExpressionClipBlob.size > 0) {
+      console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
+      return true;
+    }
+    cachedExpressionClipBlob = null;
+    resetExpressionClipAutoStopScheduling();
+    try {
+      const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      expressionStream = userStream;
+      const preferredMime = getSupportedMimeType();
+      currentMimeType = preferredMime;
+      const recorderOptions = preferredMime ? { mimeType: preferredMime } : undefined;
+      const recorder = new MediaRecorder(userStream, recorderOptions);
+      expressionMediaRecorder = recorder;
+      expressionAudioChunks = [];
+      recorder.ondataavailable = function (event) {
+        if (event.data.size > 0) {
+          expressionAudioChunks.push(event.data);
+        }
+      };
+      recorder.onstop = async function () {
+        const blobType =
+          preferredMime ||
+          currentMimeType ||
+          (expressionAudioChunks[0] && expressionAudioChunks[0].type) ||
+          "audio/webm";
+        const originalBlob = new Blob(expressionAudioChunks, { type: blobType });
+        var mp3Blob = null;
+        try {
+          await yieldForQuestionAudioHandoff();
+          await yieldBeforeMp3Encode();
+          mp3Blob = await convertToMP3(originalBlob);
+        } catch (e) {
+          console.error("Expression clip MP3 convert failed:", e);
+          mp3Blob = originalBlob;
+        }
+        cachedExpressionClipBlob = mp3Blob && mp3Blob.size > 0 ? mp3Blob : null;
+        if (expressionStopResolve) {
+          expressionStopResolve(mp3Blob);
+          expressionStopResolve = null;
+        }
+        expressionMediaRecorder = null;
+        expressionAudioChunks = [];
+        if (expressionStream) {
+          expressionStream.getTracks().forEach(function (track) {
+            track.stop();
+          });
+          expressionStream = null;
+        }
+      };
+      recorder.start(4000);
+      expressionClipAutoStopRemainingMs = getExpressionClipMaxMs();
+      scheduleExpressionClipAutoStopIfRecording();
+      console.log("🎙️ Expression clip recording started");
+      return true;
+    } catch (error) {
+      console.error("❌ Failed to start expression clip recording:", error);
+      return false;
+    }
+  }
+
+  function takeCachedExpressionClipBlob() {
+    if (!cachedExpressionClipBlob || cachedExpressionClipBlob.size <= 0) {
+      return null;
+    }
+    var blob = cachedExpressionClipBlob;
+    cachedExpressionClipBlob = null;
+    return blob;
+  }
+
+  function stopExpressionClipRecording() {
+    clearExpressionClipAutoStopTimer();
+    expressionClipSegmentStartedAt = null;
+    if (!expressionMediaRecorder || expressionMediaRecorder.state === "inactive") {
+      resetExpressionClipAutoStopScheduling();
+      // Auto-stop may still be encoding MP3; traffic submit must await that, not return null.
+      if (expressionClipStopPromise) {
+        return expressionClipStopPromise;
+      }
+      var cached = takeCachedExpressionClipBlob();
+      if (cached) {
+        console.log("🎙️ Expression clip: reusing blob from prior stop (e.g. 30s cap before traffic)");
+      }
+      return Promise.resolve(cached);
+    }
+    if (expressionClipStopPromise) {
+      return expressionClipStopPromise;
+    }
+    expressionClipStopPromise = new Promise(function (resolve) {
+      var settled = false;
+      function finish(blob) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        expressionClipStopPromise = null;
+        resetExpressionClipAutoStopScheduling();
+        resolve(blob);
+      }
+      if (!expressionMediaRecorder || expressionMediaRecorder.state === "inactive") {
+        finish(takeCachedExpressionClipBlob());
+        return;
+      }
+      expressionStopResolve = function (blob) {
+        expressionStopResolve = null;
+        finish(blob);
+      };
+      try {
+        if (expressionMediaRecorder.state === "paused") {
+          expressionMediaRecorder.resume();
+        }
+        expressionMediaRecorder.stop();
+      } catch (e) {
+        console.warn("stopExpressionClipRecording:", e);
+        expressionStopResolve = null;
+        finish(null);
+      }
+    });
+    return expressionClipStopPromise;
+  }
+
+  function isExpressionClipRecording() {
+    return !!(expressionMediaRecorder && expressionMediaRecorder.state === "recording");
+  }
+
   // Pause recording
   function pauseRecording() {
+    if (expressionMediaRecorder && expressionMediaRecorder.state === "recording") {
+      expressionMediaRecorder.pause();
+      isPaused = true;
+      pauseStartTime = Date.now();
+      localStorage.setItem("recordingPaused", "true");
+      localStorage.setItem("pauseStartTime", pauseStartTime.toString());
+      localStorage.setItem("totalPausedTime", totalPausedTime.toString());
+      const currentTime = Date.now();
+      const elapsedMs = currentTime - recordingStartTime - totalPausedTime;
+      questionTimestamps.push({
+        questionNumber: "PAUSED",
+        timestamp: elapsedMs
+      });
+      localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
+      onExpressionClipPausedForAutoStop();
+      console.log("⏸️ Paused expression clip at", formatTimestamp(elapsedMs));
+      return true;
+    }
     if (mediaRecorder && mediaRecorder.state === "recording") {
       mediaRecorder.pause();
       isPaused = true;
@@ -291,6 +846,33 @@ const SessionRecorder = (function() {
 
   // Resume recording
   async function resumeRecording() {
+    if (isPaused && expressionMediaRecorder && expressionMediaRecorder.state === "paused") {
+      if (pauseStartTime) {
+        const pauseDuration = Date.now() - pauseStartTime;
+        totalPausedTime += pauseDuration;
+        localStorage.setItem("totalPausedTime", totalPausedTime.toString());
+      }
+      isPaused = false;
+      pauseStartTime = null;
+      localStorage.removeItem("recordingPaused");
+      localStorage.removeItem("pauseStartTime");
+      const currentTime = Date.now();
+      const elapsedMs = currentTime - recordingStartTime - totalPausedTime;
+      questionTimestamps.push({
+        questionNumber: "RESUMED",
+        timestamp: elapsedMs
+      });
+      localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
+      try {
+        expressionMediaRecorder.resume();
+        onExpressionClipResumedForAutoStop();
+        console.log("▶️ Resumed expression clip at", formatTimestamp(elapsedMs));
+        return true;
+      } catch (error) {
+        console.error("❌ Failed to resume expression clip:", error);
+        return false;
+      }
+    }
     if (isPaused && mediaRecorder && mediaRecorder.state === "paused") {
       // Calculate paused duration
       if (pauseStartTime) {
@@ -385,7 +967,11 @@ const SessionRecorder = (function() {
 
   // Check if recording is active
   function isRecordingActive() {
-    return isRecording || localStorage.getItem("sessionRecordingActive") === "true";
+    return (
+      isRecording ||
+      localStorage.getItem("sessionRecordingActive") === "true" ||
+      !!(expressionMediaRecorder && expressionMediaRecorder.state === "recording")
+    );
   }
 
   /** True only when a MediaRecorder instance exists and is not stopped (survives only for same page load). */
@@ -557,6 +1143,32 @@ const SessionRecorder = (function() {
   // options.preserveQuestionTimestamps — keep timeline data when re-starting recording after mid-test voice re-verify
   function cleanup(options) {
     var preserveTs = options && options.preserveQuestionTimestamps;
+    clearExpressionClipAutoStopTimer();
+    expressionClipSegmentStartedAt = null;
+    expressionClipAutoStopRemainingMs = null;
+    expressionClipStopPromise = null;
+    cachedExpressionClipBlob = null;
+    if (expressionMediaRecorder && expressionMediaRecorder.state !== "inactive") {
+      var pendingResolve = expressionStopResolve;
+      expressionStopResolve = null;
+      try {
+        if (expressionMediaRecorder.state === "paused") {
+          expressionMediaRecorder.resume();
+        }
+        expressionMediaRecorder.stop();
+      } catch (e) {}
+      expressionMediaRecorder = null;
+      expressionAudioChunks = [];
+      if (typeof pendingResolve === "function") {
+        pendingResolve(null);
+      }
+    }
+    if (expressionStream) {
+      expressionStream.getTracks().forEach(function (track) {
+        track.stop();
+      });
+      expressionStream = null;
+    }
     stopContinuousRecording();
     localStorage.removeItem("sessionRecordingActive");
     localStorage.removeItem("sessionRecordingUrl");
@@ -607,6 +1219,13 @@ const SessionRecorder = (function() {
 
   // Public API
   return {
+    initSessionTimelineClock: initSessionTimelineClock,
+    startExpressionClipRecording: startExpressionClipRecording,
+    stopExpressionClipRecording: stopExpressionClipRecording,
+    isExpressionClipRecording: isExpressionClipRecording,
+    isExpressionClipActive: isExpressionClipActive,
+    freezeExpressionClipActiveCap: freezeExpressionClipActiveCap,
+    alignExpressionClipActiveCapToUiMs: alignExpressionClipActiveCapToUiMs,
     startContinuousRecording: startContinuousRecording,
     stopContinuousRecording: stopContinuousRecording,
     pauseRecording: pauseRecording,

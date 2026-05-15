@@ -20,6 +20,7 @@ from prompts import (
     build_expression_scoring_prompt,
     EXPRESSIVE_LANGUAGE_IMPRESSION_INSTRUCTIONS_HE,
     build_expressive_language_impression_header,
+    build_comprehension_impression_block,
 )
 
 #from server import *
@@ -901,18 +902,22 @@ def summarize_expressive_language_impression_gemini(
     sample_entries,
     child_age_label_he: str,
     max_output_tokens: int = 500,
+    comprehension_entries=None,
 ):
     """
-    One multimodal Gemini call: Hebrew instructions + up to 10 labeled audio clips.
-    sample_entries: list of dicts with:
-      question_number, headlight_result, question_text, context_hint, linguistic_goal_line,
-      audio_bytes (mp3)
+    One multimodal Gemini call: Hebrew instructions + optional comprehension text block
+    + up to 10 labeled expression audio clips.
+    sample_entries: expression dicts with audio_bytes (mp3).
+    comprehension_entries: optional list with question_number, headlight_result,
+      pls_category, pls_sub_category (no audio).
     Returns validated dict matching the impression schema, or None on hard failure.
     """
     if not GEMINI_API_KEY:
         logging.warning("GEMINI_API_KEY is missing; skipping expressive-language impression.")
         return None
-    if not sample_entries:
+
+    comprehension_entries = comprehension_entries or []
+    if not sample_entries and not comprehension_entries:
         return None
 
     try:
@@ -926,6 +931,9 @@ def summarize_expressive_language_impression_gemini(
     intro = EXPRESSIVE_LANGUAGE_IMPRESSION_INSTRUCTIONS_HE.strip() + "\n\n" + header.strip()
 
     parts = [types.Part.from_text(text=intro)]
+    comprehension_block = build_comprehension_impression_block(comprehension_entries)
+    if comprehension_block:
+        parts.append(types.Part.from_text(text=comprehension_block))
     for i, ent in enumerate(sample_entries, start=1):
         qn = ent.get("question_number")
         hl = ent.get("headlight_result") or ""
@@ -941,9 +949,9 @@ def summarize_expressive_language_impression_gemini(
             f"נוסח השאלה:\n{qt}\n"
         )
         if pls_area:
-            meta += f"מסגרת רחבה לפי עמודת semantics בקובץ המבחן: {pls_area}\n"
+            meta += f"מסגרת רחבה לפי עמודת category_PLS בקובץ המבחן: {pls_area}\n"
         if pls_cat:
-            meta += f"פירוט משני (עמודת category PLS בקובץ — לא מחליף את semantics): {pls_cat}\n"
+            meta += f"פירוט משני (עמודת sub_category_PLS בקובץ — לא מחליף את category_PLS): {pls_cat}\n"
         if goal:
             meta += f"מטרה לשונית צפויה (מתוך חומרי המבחן):\n{goal}\n"
         if ctx:
