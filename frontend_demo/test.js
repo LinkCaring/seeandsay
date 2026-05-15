@@ -32,13 +32,19 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   }
 
   /**
-   * Wait for enough buffer before question MP3 play (all questions: autoplay + replay).
-   * Prefer canplaythrough; fallback after timeout if loadeddata is available.
+   * Wait for enough buffer before question MP3 play (autoplay + replay).
+   * Expression: canplaythrough. Comprehension: loadeddata (faster start).
    */
   function playAudioWhenReady(audioEl, options) {
     options = options || {};
-    var timeoutMs = options.timeoutMs != null ? options.timeoutMs : 10000;
+    var bufferMode = options.bufferMode || "canplaythrough";
     var isStale = options.isStale;
+    var timeoutMs =
+      options.timeoutMs != null
+        ? options.timeoutMs
+        : bufferMode === "loadeddata"
+          ? 2500
+          : 10000;
 
     if (!audioEl) {
       return Promise.resolve(null);
@@ -52,12 +58,18 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       return audioEl.readyState >= 2;
     }
 
+    function isReadyForMode() {
+      return bufferMode === "loadeddata"
+        ? hasLoadedData()
+        : canPlayThroughReady();
+    }
+
     return new Promise(function (resolve) {
       if (typeof isStale === "function" && isStale()) {
         resolve(null);
         return;
       }
-      if (canPlayThroughReady()) {
+      if (isReadyForMode()) {
         resolve(audioEl.play());
         return;
       }
@@ -86,10 +98,16 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         }
       }
       function onCanPlayThrough() {
-        tryPlay();
+        if (bufferMode === "canplaythrough" || canPlayThroughReady()) {
+          tryPlay();
+        }
       }
       function onLoadedData() {
-        if (canPlayThroughReady()) {
+        if (bufferMode === "loadeddata" && hasLoadedData()) {
+          tryPlay();
+          return;
+        }
+        if (bufferMode === "canplaythrough" && canPlayThroughReady()) {
           tryPlay();
         }
       }
@@ -103,7 +121,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       } catch (eLoad) {}
 
       var timerId = setTimeout(function () {
-        if (hasLoadedData()) {
+        if (bufferMode === "loadeddata" && hasLoadedData()) {
+          console.warn(
+            "[See&Say] Question audio loadeddata timeout; playing with partial buffer"
+          );
+        } else if (hasLoadedData()) {
           console.warn(
             "[See&Say] Question audio canplaythrough timeout; playing after loadeddata"
           );
@@ -135,33 +157,15 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     }
   }
 
-  function getExpressionQuestionAudioDelayMs() {
-    if (
-      typeof window !== "undefined" &&
-      window.SEEANDSAY_EXPRESSION_QUESTION_AUDIO_DELAY_MS != null
-    ) {
-      var n = parseInt(window.SEEANDSAY_EXPRESSION_QUESTION_AUDIO_DELAY_MS, 10);
-      if (!Number.isNaN(n) && n >= 0) {
-        return n;
-      }
-    }
-    return 1000;
-  }
-
-  function delayMs(ms) {
-    return new Promise(function (resolve) {
-      setTimeout(resolve, Math.max(0, ms));
-    });
-  }
-
   function isExpressionQuestionRow(q) {
     return !!(q && q.query_type === "הבעה");
   }
 
-  /**
-   * Expression (הבעה): wait so prior clip encode/upload can finish off the reading hot path,
-   * then play. Worker only encodes MP3; decodeAudioData + base64 upload still use main thread.
-   */
+  function questionAudioBufferMode(q) {
+    return isExpressionQuestionRow(q) ? "canplaythrough" : "loadeddata";
+  }
+
+  /** Expression waits for canplaythrough; comprehension uses loadeddata (no fixed pre-read delay). */
   function prepareThenPlayQuestionAudio(audioEl, options) {
     options = options || {};
     var isFirstQuestionAutoplay = !!options.isFirstQuestionAutoplay;
@@ -175,56 +179,33 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (questionAudioRef.current !== audioEl) {
       return;
     }
-
-    function doPlay() {
-      if (questionAudioMuted || questionAudioRef.current !== audioEl) {
-        return;
-      }
-      if (
-        SessionRecorder &&
-        SessionRecorder.setQuestionReadingActive
-      ) {
-        SessionRecorder.setQuestionReadingActive(true);
-      }
-      audioEl.currentTime = 0;
-      playAudioWhenReady(audioEl, {
-        isStale: function () {
-          return questionAudioRef.current !== audioEl;
-        },
-      })
-        .then(function (playP) {
-          if (!playP) return;
-          if (playP && typeof playP.then === "function") {
-            return playP.then(function () {
-              applyQuestionAudioPlaySuccess(audioEl);
-            });
-          }
-          applyQuestionAudioPlaySuccess(audioEl);
-        })
-        .catch(function (err) {
-          handleQuestionAudioPlayFailure(
-            err,
-            audioEl,
-            isFirstQuestionAutoplay,
-            questionNumber
-          );
-        });
+    if (SessionRecorder && SessionRecorder.setQuestionReadingActive) {
+      SessionRecorder.setQuestionReadingActive(true);
     }
-
-    var gapMs = isExpressionQuestionRow(q) ? getExpressionQuestionAudioDelayMs() : 0;
-    var chain = Promise.resolve();
-    if (
-      gapMs > 0 &&
-      SessionRecorder &&
-      SessionRecorder.drainExpressionClipEncodeBeforeRead
-    ) {
-      chain = SessionRecorder.drainExpressionClipEncodeBeforeRead();
-    }
-    chain
-      .then(function () {
-        return delayMs(gapMs);
+    audioEl.currentTime = 0;
+    playAudioWhenReady(audioEl, {
+      bufferMode: questionAudioBufferMode(q),
+      isStale: function () {
+        return questionAudioRef.current !== audioEl;
+      },
+    })
+      .then(function (playP) {
+        if (!playP) return;
+        if (playP && typeof playP.then === "function") {
+          return playP.then(function () {
+            applyQuestionAudioPlaySuccess(audioEl);
+          });
+        }
+        applyQuestionAudioPlaySuccess(audioEl);
       })
-      .then(doPlay);
+      .catch(function (err) {
+        handleQuestionAudioPlayFailure(
+          err,
+          audioEl,
+          isFirstQuestionAutoplay,
+          questionNumber
+        );
+      });
   }
 
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
@@ -392,6 +373,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
    */
   const [sessionGoHomeBlock, setSessionGoHomeBlock] = React.useState(null);
   const clipUploadPromisesRef = React.useRef([]);
+  /** Previous index for loadQuestion — discard expression clip cache when leaving a question. */
+  const loadQuestionPrevIndexRef = React.useRef(0);
 
   // Session-only states
   const [images, setImages] = React.useState([]);
@@ -605,6 +588,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     setMaskCanvas(null);
     consecutiveCompFailRef.current = 0;
     consecutiveExprFailRef.current = 0;
+    setConsecutiveSuccessStreak(0);
+    loadQuestionPrevIndexRef.current = 0;
     setForceFreshStartAfterMicCheck(false);
   }
 
@@ -920,7 +905,10 @@ function blobToBase64(blob) {
       if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
       if (!audioEl || questionAudioRef.current !== audioEl) return;
       audioEl.currentTime = 0;
+      var retryQ =
+        questions && questions[0] ? questions[0] : null;
       playAudioWhenReady(audioEl, {
+        bufferMode: questionAudioBufferMode(retryQ),
         isStale: function () {
           return questionAudioRef.current !== audioEl;
         },
@@ -1840,7 +1828,6 @@ const handleReadingValidationRetry = function () {
   const streakConfettiDoneRef = React.useRef(false);
   const streakVideoDoneRef = React.useRef(false);
   const streakVideoSafetyTimerRef = React.useRef(null);
-
   function clearStreakCelebrationTimers() {
     if (fireworksTimerRef.current) {
       clearTimeout(fireworksTimerRef.current);
@@ -1916,7 +1903,14 @@ const handleReadingValidationRetry = function () {
       var currentQ = questions[idx];
       var tidForUpload = draftTestIdRef.current;
       // Non-blocking: do not await encode + upload before advancing (that caused multi-second UI stalls).
-      var uploadP = SessionRecorder.stopExpressionClipRecording()
+      var clipQuestionNumber =
+        currentQ && currentQ.query_number != null
+          ? String(currentQ.query_number)
+          : "";
+      var uploadQuestionNumber = clipQuestionNumber;
+      var uploadP = SessionRecorder.stopExpressionClipRecording({
+        questionNumber: clipQuestionNumber,
+      })
         .then(function (blob) {
           if (!blob || !currentQ) {
             if (currentQ) {
@@ -1928,34 +1922,50 @@ const handleReadingValidationRetry = function () {
             }
             return null;
           }
-          return delayMs(getExpressionQuestionAudioDelayMs()).then(function () {
-            return blob;
-          }).then(function (blobAfterGap) {
-            return readBlobAsDataURL(blobAfterGap);
-          }).then(function (dataUrl) {
-            if (!dataUrl) return null;
-            var tid = draftTestIdRef.current || tidForUpload;
-            if (!tid) return null;
-            return postExpressionClipWithRetry(
-              tid,
-              idDigits,
-              currentQ.query_number,
-              trafficResultToHeadlight(result),
-              dataUrl,
-              childGender,
-              parseInt(ageYears, 10) || 0,
-              parseInt(ageMonths, 10) || 0,
-              null
-            ).then(function (clipRes) {
-              if (clipRes && clipRes.ok) {
-                return clipRes;
-              }
-              if (permission && !microphoneSkipped) {
-                setDraftTestId(null);
-                setSessionGoHomeBlock("clipSave");
-              }
-              return null;
-            });
+          var workerDataUrl =
+            SessionRecorder.getExpressionClipDataUrlForQuestion &&
+            SessionRecorder.getExpressionClipDataUrlForQuestion(uploadQuestionNumber);
+          if (workerDataUrl) {
+            return { dataUrl: workerDataUrl, questionNumber: uploadQuestionNumber };
+          }
+          return readBlobAsDataURL(blob).then(function (dataUrl) {
+            return { dataUrl: dataUrl, questionNumber: uploadQuestionNumber };
+          });
+        })
+        .then(function (payload) {
+          if (!payload || !payload.dataUrl || !currentQ) return null;
+          if (String(currentQ.query_number) !== String(payload.questionNumber)) {
+            console.error(
+              "[See&Say] Expression clip upload blocked: payload question",
+              payload.questionNumber,
+              "does not match traffic question",
+              currentQ.query_number
+            );
+            return null;
+          }
+          var dataUrl = payload.dataUrl;
+          if (!dataUrl) return null;
+          var tid = draftTestIdRef.current || tidForUpload;
+          if (!tid) return null;
+          return postExpressionClipWithRetry(
+            tid,
+            idDigits,
+            currentQ.query_number,
+            trafficResultToHeadlight(result),
+            dataUrl,
+            childGender,
+            parseInt(ageYears, 10) || 0,
+            parseInt(ageMonths, 10) || 0,
+            null
+          ).then(function (clipRes) {
+            if (clipRes && clipRes.ok) {
+              return clipRes;
+            }
+            if (permission && !microphoneSkipped) {
+              setDraftTestId(null);
+              setSessionGoHomeBlock("clipSave");
+            }
+            return null;
           });
         })
         .catch(function (e) {
@@ -1969,9 +1979,10 @@ const handleReadingValidationRetry = function () {
         .finally(function () {
           if (
             SessionRecorder &&
-            SessionRecorder.discardCachedExpressionClipBlob
+            SessionRecorder.discardCachedExpressionClipBlob &&
+            clipQuestionNumber
           ) {
-            SessionRecorder.discardCachedExpressionClipBlob();
+            SessionRecorder.discardCachedExpressionClipBlob(clipQuestionNumber);
           }
         });
       clipUploadPromisesRef.current.push(uploadP);
@@ -2726,6 +2737,7 @@ const handleReadingValidationRetry = function () {
     const currentQuestion = questions[currentIdx];
 
     let updatedQuestionResults = questionResults;
+    var recordedAnswerThisContinue = false;
 
     if (currentQuestion) {
       let resultString = "";
@@ -2746,6 +2758,7 @@ const handleReadingValidationRetry = function () {
       }
 
       if (resultString) {
+        recordedAnswerThisContinue = true;
         const questionNumber = currentQuestion.query_number;
         const questionTypeLabel = getQuestionTypeLabel(currentQuestion);
         const qKey = String(questionNumber);
@@ -2786,9 +2799,14 @@ const handleReadingValidationRetry = function () {
       }
     }
 
-    var nextStreak = result === "success" ? (consecutiveSuccessStreak + 1) : 0;
-    setConsecutiveSuccessStreak(nextStreak);
-    var shouldRunThreeInRowCelebration = result === "success" && nextStreak > 0 && (nextStreak % 3 === 0);
+    var shouldRunCelebration = false;
+    if (recordedAnswerThisContinue) {
+      var countsForStreak = result === "success" || result === "partial";
+      var nextStreak = countsForStreak ? consecutiveSuccessStreak + 1 : 0;
+      setConsecutiveSuccessStreak(nextStreak);
+      shouldRunCelebration =
+        countsForStreak && nextStreak > 0 && nextStreak % 3 === 0;
+    }
 
     function advanceAfterResult() {
       if (consecutiveExprFailRef.current >= 2) {
@@ -2831,7 +2849,7 @@ const handleReadingValidationRetry = function () {
       }
     }
 
-    if (shouldRunThreeInRowCelebration) {
+    if (shouldRunCelebration) {
       startThreeInRowCelebration(advanceAfterResult);
       return;
     }
@@ -3040,10 +3058,17 @@ const handleReadingValidationRetry = function () {
 
     if (
       SessionRecorder &&
-      SessionRecorder.discardCachedExpressionClipBlob
+      SessionRecorder.discardExpressionClipCacheExcept &&
+      loadQuestionPrevIndexRef.current !== index
     ) {
-      SessionRecorder.discardCachedExpressionClipBlob();
+      if (q.query_type === "הבעה") {
+        SessionRecorder.discardExpressionClipCacheExcept(String(q.query_number));
+      } else {
+        SessionRecorder.discardExpressionClipCacheExcept(null);
+      }
     }
+    loadQuestionPrevIndexRef.current = index;
+
     if (
       SessionRecorder &&
       SessionRecorder.setQuestionReadingActive
