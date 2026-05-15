@@ -1,4 +1,4 @@
-query_number,query_type,query_boy,query_girl,age_group,,comments,image_count,answer,hint,query_nikud,semantics,category PLS,test goal,הוספת תמונות,שינוי כללי,רמזים,expected_full_ai,expected_full_parents,expected_partial,expected_wrong
+query_number,query_type,query_boy,query_girl,age_group,,comments,image_count,answer,hint,query_nikud,category_PLS,sub_category_PLS,test goal,הוספת תמונות,שינוי כללי,רמזים,expected_full_ai,expected_full_parents,expected_partial,expected_wrong
 1,הבנה,איפה האף של הילד?,איפה האף של הילד?,2:00-2:06,,הצבעה נכונה,1,A,"איפה האף שלי? הנה האף שלי , תצביע עכשיו על האף של הילד.",אֵיפֹה הָאַף שֶׁל הַיֶּלֶד?,סמנטיקה,אוצר מילים,זיהוי אברי גוף,,,,הצבעה דוייקת,,הצבעה על האף של הילד עצמו ,כל הצבעה במקום אחר
 2,הבנה,איפה הכדור,איפה הכדור,2:00-2:06,,הצבעה נכונה,4,1,עם מה ניתן לשחק מסירות או לבעוט לשער,אֵיפֹה הַכַּדּוּר,סמנטיקה,אוצר מילים,זיהוי שמות עצם פשוטים,"כדור, להחליף ילד, מכונית, בובה",,,הצבעה דוייקת,,הצבעה שניה,
 3,הבנה,איפה יש ילד שישן?,איפה יש ילד שישן?,2:00-2:06,",",הצבעה נכונה,4,2,"מחווה של ""לישון"" \עצימת עיניים",תַּרְאֶה לִי יֶלֶד שֶׁיָּשֵׁן,סמנטיקה,אוצר מילים,זיהוי פועל נפוץ,"ישן, אוכל, קופץ, יושב",,,הצבעה דוייקת,,,

@@ -901,6 +901,7 @@ def summarize_expressive_language_impression_gemini(
     sample_entries,
     child_age_label_he: str,
     max_output_tokens: int = 500,
+    comprehension_context_he: str = None,
 ):
     """
     One multimodal Gemini call: Hebrew instructions + up to 10 labeled audio clips.
@@ -926,6 +927,9 @@ def summarize_expressive_language_impression_gemini(
     intro = EXPRESSIVE_LANGUAGE_IMPRESSION_INSTRUCTIONS_HE.strip() + "\n\n" + header.strip()
 
     parts = [types.Part.from_text(text=intro)]
+    comp_ctx = (comprehension_context_he or "").strip()
+    if comp_ctx:
+        parts.append(types.Part.from_text(text=comp_ctx))
     for i, ent in enumerate(sample_entries, start=1):
         qn = ent.get("question_number")
         hl = ent.get("headlight_result") or ""
@@ -941,9 +945,9 @@ def summarize_expressive_language_impression_gemini(
             f"נוסח השאלה:\n{qt}\n"
         )
         if pls_area:
-            meta += f"מסגרת רחבה לפי עמודת semantics בקובץ המבחן: {pls_area}\n"
+            meta += f"מסגרת רחבה לפי עמודת category_PLS בקובץ המבחן: {pls_area}\n"
         if pls_cat:
-            meta += f"פירוט משני (עמודת category PLS בקובץ — לא מחליף את semantics): {pls_cat}\n"
+            meta += f"פירוט משני (עמודת sub_category_PLS בקובץ — לא מחליף את category_PLS): {pls_cat}\n"
         if goal:
             meta += f"מטרה לשונית צפויה (מתוך חומרי המבחן):\n{goal}\n"
         if ctx:

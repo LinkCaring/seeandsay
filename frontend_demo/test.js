@@ -12,7 +12,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
-  var EXPRESSION_EVAL_DELAY_MS = 30000;
+  var EXPRESSION_EVAL_DELAY_MS = 20000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
   const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "midFailure" | "failure" | null
@@ -47,7 +47,83 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [expressionEvalArmed, setExpressionEvalArmed] = React.useState(false);
   const expressionEvalDeadlineRef = React.useRef(null);
   const expressionEvalPausedRemainingRef = React.useRef(EXPRESSION_EVAL_DELAY_MS);
+  const expressionEvalEnableTimerRef = React.useRef(null);
   const expressionEvalArmedQuestionRef = React.useRef(null);
+  const expressionAnswerEndTimerRef = React.useRef(null);
+
+  function clearExpressionEvalEnableTimer() {
+    if (expressionEvalEnableTimerRef.current != null) {
+      clearTimeout(expressionEvalEnableTimerRef.current);
+      expressionEvalEnableTimerRef.current = null;
+    }
+  }
+
+  function scheduleExpressionEvalEnable(ms) {
+    clearExpressionEvalEnableTimer();
+    var delay = Math.max(0, ms);
+    if (delay <= 0) {
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+      expressionEvalDeadlineRef.current = null;
+      return;
+    }
+    expressionEvalEnableTimerRef.current = setTimeout(function () {
+      expressionEvalEnableTimerRef.current = null;
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+      expressionEvalDeadlineRef.current = null;
+    }, delay);
+  }
+
+  function scheduleExpressionAnswerEndMark(q, delayMs) {
+    clearExpressionAnswerEndTimer();
+    if (!q || !permission || !voiceIdentifierConfirmed || !SessionRecorder || !SessionRecorder.markQuestionEnd) {
+      return;
+    }
+    var delay = Math.max(0, delayMs);
+    if (delay <= 0) {
+      SessionRecorder.markQuestionEnd(q.query_number);
+      return;
+    }
+    var qNum = String(q.query_number || "");
+    expressionAnswerEndTimerRef.current = setTimeout(function () {
+      expressionAnswerEndTimerRef.current = null;
+      if (expressionEvalArmedQuestionRef.current !== qNum) return;
+      SessionRecorder.markQuestionEnd(q.query_number);
+      console.log("🏁 Auto end mark at 20s answer window for question", q.query_number);
+    }, delay);
+  }
+
+  function freezeExpressionEvalCountdown() {
+    clearExpressionEvalEnableTimer();
+    clearExpressionAnswerEndTimer();
+    if (expressionEvalDeadlineRef.current) {
+      var remainingMs = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
+      expressionEvalPausedRemainingRef.current = remainingMs;
+      setExpressionEvalMsLeft(remainingMs);
+      expressionEvalDeadlineRef.current = null;
+    }
+  }
+
+  function resumeExpressionEvalCountdown() {
+    if (expressionEvalDeadlineRef.current) {
+      return;
+    }
+    var resumeMs = Math.max(0, expressionEvalPausedRemainingRef.current || 0);
+    if (resumeMs > 0) {
+      expressionEvalDeadlineRef.current = Date.now() + resumeMs;
+      setExpressionEvalMsLeft(resumeMs);
+      scheduleExpressionEvalEnable(resumeMs);
+      var armedIdx = getSafeCurrentQuestionIndex();
+      var armedQ = questions[armedIdx];
+      if (armedQ && armedQ.query_type === "הבעה") {
+        scheduleExpressionAnswerEndMark(armedQ, resumeMs);
+      }
+    } else {
+      setEvaluationEnabled(true);
+      setExpressionEvalMsLeft(0);
+    }
+  }
   // Track full array of question results: [{questionNumber, result}, ...]
   const [questionResults, setQuestionResults] = usePersistentState("questionResults", []);
 
@@ -249,6 +325,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
+  const expressionPhaseRecordingStartedRef = React.useRef(false);
   const [forceFreshStartAfterMicCheck, setForceFreshStartAfterMicCheck] = usePersistentState("forceFreshStartAfterMicCheck", false);
 
   // Pause state (persistent)
@@ -287,6 +364,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (SessionRecorder && SessionRecorder.cleanup) {
       SessionRecorder.cleanup({ preserveQuestionTimestamps: false });
     }
+    expressionPhaseRecordingStartedRef.current = false;
+    clearExpressionAnswerEndTimer();
     setCurrentIndex(0);
     setQuestionResults([]);
     setCorrectAnswers(0);
@@ -710,74 +789,152 @@ function blobToBase64(blob) {
   }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
 
 
+  /** Start session MP3 when expression prompt audio begins (not on navigation). */
+  function prepareExpressionRecordingBeforeQuestionAudio() {
+    var idx = getSafeCurrentQuestionIndex();
+    var q = questions[idx];
+    if (!q || q.query_type !== "הבעה") return Promise.resolve(false);
+    if (!permission || !voiceIdentifierConfirmed) return Promise.resolve(false);
+    return ensureExpressionPhaseRecording();
+  }
+
+  function clearExpressionAnswerEndTimer() {
+    if (expressionAnswerEndTimerRef.current != null) {
+      clearTimeout(expressionAnswerEndTimerRef.current);
+      expressionAnswerEndTimerRef.current = null;
+    }
+  }
+
+  /** Mark answer window start after prompt audio ends; recording must already be running. */
   function markExpressionTimestampAndArm(q) {
     if (!q || q.query_type !== "הבעה") return;
     var qNum = String(q.query_number || "");
     if (!qNum) return;
     if (expressionEvalArmedQuestionRef.current === qNum) return;
 
-    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && SessionRecorder && SessionRecorder.markQuestionStart) {
+    clearExpressionAnswerEndTimer();
+
+    if (permission && voiceIdentifierConfirmed && SessionRecorder && SessionRecorder.markQuestionStart) {
       SessionRecorder.markQuestionStart(q.query_number);
     }
     expressionEvalArmedQuestionRef.current = qNum;
     setExpressionEvalArmed(true);
   }
 
-  // Expression evaluation timer - opens traffic evaluation after 30 seconds.
+  // Expression evaluation timer - opens traffic evaluation after 20 seconds.
   React.useEffect(function () {
-  if (sessionCompleted || questionType !== "E" || !expressionEvalArmed) {
+    if (sessionCompleted || questionType !== "E" || !expressionEvalArmed) {
+      clearExpressionEvalEnableTimer();
+      clearExpressionAnswerEndTimer();
+      setEvaluationEnabled(false);
+      setExpressionTrafficSubmitted(false);
+      setExpressionAdvanceLock(false);
+      setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+      expressionEvalDeadlineRef.current = null;
+      expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
+      return;
+    }
+
     setEvaluationEnabled(false);
     setExpressionTrafficSubmitted(false);
     setExpressionAdvanceLock(false);
     setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
-    expressionEvalDeadlineRef.current = null;
     expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
-    return;
-  }
+    var armedIdx = getSafeCurrentQuestionIndex();
+    var armedQ = questions[armedIdx];
+    if (!isPaused && !showClappingAvatar && !incompleteSummaryConfirmOpen && !blockFinishUntilVerifyOverlay && !mustFinishVerification) {
+      expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
+      scheduleExpressionEvalEnable(EXPRESSION_EVAL_DELAY_MS);
+      if (armedQ && armedQ.query_type === "הבעה") {
+        scheduleExpressionAnswerEndMark(armedQ, EXPRESSION_EVAL_DELAY_MS);
+      }
+    } else {
+      expressionEvalDeadlineRef.current = null;
+      clearExpressionEvalEnableTimer();
+      clearExpressionAnswerEndTimer();
+    }
 
-  setEvaluationEnabled(false);
-  setExpressionTrafficSubmitted(false);
-  setExpressionAdvanceLock(false);
-  setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
-  expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
-  expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
-
-  const timer = setTimeout(function () {
-    setEvaluationEnabled(true);
-    setExpressionEvalMsLeft(0);
-    expressionEvalDeadlineRef.current = null;
-  }, EXPRESSION_EVAL_DELAY_MS);
-
-  return function () {
-    clearTimeout(timer);
-  };
-}, [currentIndex, questionType, sessionCompleted, expressionEvalArmed]);
+    return function () {
+      clearExpressionEvalEnableTimer();
+      clearExpressionAnswerEndTimer();
+    };
+  }, [currentIndex, questionType, sessionCompleted, expressionEvalArmed, questions]);
 
   React.useEffect(function pauseAwareExpressionTimer() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
     if (isPaused) {
-      if (expressionEvalDeadlineRef.current) {
-        var remainingMs = Math.max(0, expressionEvalDeadlineRef.current - Date.now());
-        expressionEvalPausedRemainingRef.current = remainingMs;
-        setExpressionEvalMsLeft(remainingMs);
-        expressionEvalDeadlineRef.current = null;
-      }
+      freezeExpressionEvalCountdown();
       return;
     }
     if (!expressionEvalDeadlineRef.current) {
-      var resumeMs = Math.max(0, expressionEvalPausedRemainingRef.current || 0);
-      if (resumeMs > 0) {
-        expressionEvalDeadlineRef.current = Date.now() + resumeMs;
-        setExpressionEvalMsLeft(resumeMs);
-      } else {
-        setEvaluationEnabled(true);
-        setExpressionEvalMsLeft(0);
-      }
+      resumeExpressionEvalCountdown();
     }
   }, [isPaused, sessionCompleted, questionType, evaluationEnabled]);
 
+  /** Freeze expression traffic countdown while streak clapping overlay is up. */
+  React.useEffect(function pauseExpressionEvalDuringClappingAvatar() {
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (showClappingAvatar) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
+    if (isPaused || incompleteSummaryConfirmOpen || blockFinishUntilVerifyOverlay || mustFinishVerification) {
+      return;
+    }
+    if (!expressionEvalDeadlineRef.current) {
+      resumeExpressionEvalCountdown();
+    }
+  }, [
+    showClappingAvatar,
+    isPaused,
+    sessionCompleted,
+    questionType,
+    evaluationEnabled,
+    expressionEvalArmed,
+    incompleteSummaryConfirmOpen,
+    blockFinishUntilVerifyOverlay,
+    mustFinishVerification,
+  ]);
+
+  /** Freeze countdown while Finish / incomplete-summary / reading-verify gate is open. */
+  React.useEffect(function pauseExpressionEvalDuringFinishFlow() {
+    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (incompleteSummaryConfirmOpen || blockFinishUntilVerifyOverlay || mustFinishVerification) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
+    if (isPaused || showClappingAvatar) {
+      return;
+    }
+    if (!expressionEvalDeadlineRef.current) {
+      resumeExpressionEvalCountdown();
+    }
+  }, [
+    incompleteSummaryConfirmOpen,
+    blockFinishUntilVerifyOverlay,
+    mustFinishVerification,
+    isPaused,
+    showClappingAvatar,
+    sessionCompleted,
+    questionType,
+    evaluationEnabled,
+    expressionEvalArmed,
+  ]);
+
   React.useEffect(function tickExpressionEvalCountdown() {
-    if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalDeadlineRef.current) return;
+    if (
+      sessionCompleted ||
+      questionType !== "E" ||
+      evaluationEnabled ||
+      isPaused ||
+      showClappingAvatar ||
+      incompleteSummaryConfirmOpen ||
+      blockFinishUntilVerifyOverlay ||
+      mustFinishVerification ||
+      !expressionEvalDeadlineRef.current
+    ) {
+      return;
+    }
     const intervalId = setInterval(function () {
       if (!expressionEvalDeadlineRef.current) {
         setExpressionEvalMsLeft(0);
@@ -790,7 +947,17 @@ function blobToBase64(blob) {
     return function () {
       clearInterval(intervalId);
     };
-  }, [currentIndex, questionType, sessionCompleted, evaluationEnabled]);
+  }, [
+    currentIndex,
+    questionType,
+    sessionCompleted,
+    evaluationEnabled,
+    isPaused,
+    showClappingAvatar,
+    incompleteSummaryConfirmOpen,
+    blockFinishUntilVerifyOverlay,
+    mustFinishVerification,
+  ]);
 
   React.useEffect(function armExpressionTimerWhenQuestionAudioUnavailable() {
     if (sessionCompleted || questionType !== "E" || expressionEvalArmed) return;
@@ -798,7 +965,13 @@ function blobToBase64(blob) {
     var idx = getSafeCurrentQuestionIndex();
     var q = questions[idx];
     if (!q || q.query_type !== "הבעה") return;
-    markExpressionTimestampAndArm(q);
+    prepareExpressionRecordingBeforeQuestionAudio()
+      .then(function () {
+        markExpressionTimestampAndArm(q);
+      })
+      .catch(function () {
+        markExpressionTimestampAndArm(q);
+      });
   }, [sessionCompleted, questionType, expressionEvalArmed, questionAudioMuted, currentIndex, questions]);
 
   React.useEffect(function () {
@@ -923,6 +1096,38 @@ function blobToBase64(blob) {
       if (questions[i].query_type === "הבעה") return i;
     }
     return -1;
+  }
+
+  /** Start continuous MP3 capture at first expression question (not during comprehension). */
+  async function ensureExpressionPhaseRecording() {
+    if (!permission || !voiceIdentifierConfirmed) return false;
+    if (expressionPhaseRecordingStartedRef.current) {
+      return !!(
+        typeof SessionRecorder !== "undefined" &&
+        SessionRecorder.isRecordingActive &&
+        SessionRecorder.isRecordingActive()
+      );
+    }
+    if (typeof SessionRecorder === "undefined" || !SessionRecorder.startContinuousRecording) {
+      return false;
+    }
+    try {
+      if (typeof SessionRecorder.stopContinuousRecording === "function") {
+        SessionRecorder.stopContinuousRecording();
+      }
+      SessionRecorder.cleanup();
+      SessionRecorder.resetTimestamps();
+      const started = await SessionRecorder.startContinuousRecording();
+      if (started) {
+        expressionPhaseRecordingStartedRef.current = true;
+        setSessionRecordingStarted(true);
+        console.log("🎙️ Expression-phase recording started (timestamps from first הבעה)");
+        return true;
+      }
+    } catch (e) {
+      console.error("ensureExpressionPhaseRecording:", e);
+    }
+    return false;
   }
 
   function ageValueFromPart(part) {
@@ -1142,19 +1347,8 @@ function blobToBase64(blob) {
             });
             if (started) {
               setSessionRecordingStarted(true);
-              console.log("✅ Started test recording after voice step");
-
-              if (!preserveQuestionTimestamps) {
-                setTimeout(function () {
-                  if (questions.length > 0) {
-                    const firstQuestion = questions[0];
-                    if (firstQuestion) {
-                      SessionRecorder.markQuestionStart(firstQuestion.query_number);
-                      console.log("📝 Marked question 1 start at test start");
-                    }
-                  }
-                }, 100);
-              }
+              expressionPhaseRecordingStartedRef.current = true;
+              console.log("✅ Resumed expression-phase recording after in-test verification");
             }
           }
 
@@ -1185,15 +1379,14 @@ function blobToBase64(blob) {
             setReadingValidationInProgress(false);
 
             if (permission) {
-              await resumeTestSessionRecordingAfterReading();
-            } else if (microphoneSkipped) {
-              if (questions.length > 0) {
-                const firstQuestion = questions[0];
-                if (firstQuestion) {
-                  SessionRecorder.markQuestionStart(firstQuestion.query_number);
-                  console.log("📝 Marked question 1 start at test start (no recording)");
-                }
-              }
+              try {
+                SessionRecorder.stopContinuousRecording();
+                SessionRecorder.cleanup();
+                SessionRecorder.resetTimestamps();
+              } catch (e) {}
+              setSessionRecordingStarted(false);
+              expressionPhaseRecordingStartedRef.current = false;
+              console.log("📖 Reading clip saved; expression recording will start at first הבעה question");
             }
 
             readingVerificationGenRef.current += 1;
@@ -1282,66 +1475,7 @@ const handleReadingValidationRetry = function () {
     }
   }, [permission, microphoneSkipped, voiceIdentifierConfirmed, sessionRecordingStarted, readingValidated]);
 
-  // After age + consent, start one continuous session recording when questions are ready
-  // (no separate mic screen or parent "reading" clip — upload uses test audio only unless a verify clip exists).
-  React.useEffect(function startSessionRecordingDirectFlow() {
-    if (!ageConfirmed || sessionCompleted) return;
-    if (!permission || microphoneSkipped) return;
-    if (!micCheckPassed) return;
-    if (!voiceIdentifierConfirmed) return;
-    if (questions.length === 0) return;
-
-    var SR = window.SessionRecorder;
-    if (!SR || typeof SR.startContinuousRecording !== "function") return;
-
-    var engineLive = typeof SR.isMediaRecorderLive === "function" && SR.isMediaRecorderLive();
-    if (!sessionRecordingStarted && engineLive) {
-      setSessionRecordingStarted(true);
-      return;
-    }
-    if (sessionRecordingStarted && engineLive) return;
-
-    var cancelled = false;
-    (async function () {
-      try {
-        var preserveTs = false;
-        try {
-          preserveTs =
-            localStorage.getItem("sessionRecordingActive") === "true" ||
-            !!localStorage.getItem("recordingStartTime");
-        } catch (e) {
-          preserveTs = false;
-        }
-        var started = await SR.startContinuousRecording({
-          preserveQuestionTimestamps: preserveTs,
-        });
-        if (cancelled) return;
-        if (started) {
-          setSessionRecordingStarted(true);
-          console.log("✅ Session recording started (direct flow after age)");
-          setTimeout(function () {
-            if (cancelled) return;
-            var first = questions[0];
-            if (first && SR.markQuestionStart) {
-              SR.markQuestionStart(first.query_number);
-            }
-          }, 100);
-        } else {
-          alert(tr("test.rec.startFailed", { msg: "Could not start recording" }));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.error("startSessionRecordingDirectFlow:", err);
-          alert(tr("test.rec.startFailed", { msg: err && err.message ? err.message : String(err) }));
-        }
-      }
-    })();
-    return function () {
-      cancelled = true;
-    };
-  }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, micCheckPassed, voiceIdentifierConfirmed, sessionRecordingStarted, questions]);
-
-  // Expression only: open traffic popup after 30s (evaluationEnabled) or when showContinue triggers it
+  // Expression only: open traffic popup after 20s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
     if (sessionCompleted || isPaused) {
       setTrafficPopupOpen(false);
@@ -1560,32 +1694,40 @@ const handleReadingValidationRetry = function () {
   };
 
   const playQuestionAudio = function () {
-    if (questionAudio && !questionAudioMuted) {
-      questionAudio.currentTime = 0;
-      questionAudio.play();
-      setIsAudioPlaying(true);
-    }
+    if (!questionAudio || questionAudioMuted) return;
+    var audioEl = questionAudio;
+    prepareExpressionRecordingBeforeQuestionAudio()
+      .then(function () {
+        if (!audioEl) return;
+        audioEl.currentTime = 0;
+        audioEl.play().catch(function (err) {
+          console.warn("Question audio play failed:", err);
+        });
+        setIsAudioPlaying(true);
+      })
+      .catch(function (e) {
+        console.error("playQuestionAudio:", e);
+        audioEl.currentTime = 0;
+        audioEl.play().catch(function () {});
+        setIsAudioPlaying(true);
+      });
   };
 
   const replayQuestionAudio = function () {
     playQuestionAudio();
   };
 
+  const TRY_AGAIN_AUDIO_SRC = "resources/questions_audio/try_again.mp3";
+
   const playTryAgainAudio = function () {
     if (questionAudioMuted) return;
     try {
-      var tryAgainSources = [
-        "resources/questions_audio/try_again.mp3",
-        "resources/questions_audio/try_again2.mp3",
-      ];
-      var selectedTryAgainSrc =
-        tryAgainSources[Math.floor(Math.random() * tryAgainSources.length)];
       if (!tryAgainAudioRef.current) {
-        tryAgainAudioRef.current = new Audio(selectedTryAgainSrc);
+        tryAgainAudioRef.current = new Audio(TRY_AGAIN_AUDIO_SRC);
       }
       const a = tryAgainAudioRef.current;
-      if (a.src !== selectedTryAgainSrc) {
-        a.src = selectedTryAgainSrc;
+      if (!a.src || a.src.indexOf("try_again.mp3") === -1) {
+        a.src = TRY_AGAIN_AUDIO_SRC;
       }
       var replayQuestionIdx = getCurrentQuestionIndex();
       a.onended = function () {
@@ -1622,21 +1764,29 @@ const handleReadingValidationRetry = function () {
     var currentQuestionNumber = currentQuestion ? String(currentQuestion.query_number || "") : "";
     function runPlay() {
       if (questionAudioMuted) return;
-      try {
-        audioEl.currentTime = 0;
-        audioEl.play().catch(function (err) {
-          console.warn("Audio autoplay failed:", err);
+      function startPlayback() {
+        try {
+          audioEl.currentTime = 0;
+          audioEl.play().catch(function (err) {
+            console.warn("Audio autoplay failed:", err);
+            if (isFirstQuestionAutoplay) {
+              scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
+            }
+          });
+          setIsAudioPlaying(true);
+        } catch (e) {
+          console.warn("Audio play error:", e);
           if (isFirstQuestionAutoplay) {
             scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
           }
-        });
-        setIsAudioPlaying(true);
-      } catch (e) {
-        console.warn("Audio play error:", e);
-        if (isFirstQuestionAutoplay) {
-          scheduleFirstQuestionAutoRetry(audioEl, currentQuestionNumber);
         }
       }
+      prepareExpressionRecordingBeforeQuestionAudio()
+        .then(startPlayback)
+        .catch(function (e) {
+          console.error("autoplay prepareExpressionRecording:", e);
+          startPlayback();
+        });
     }
 
     if (isFirstQuestionAutoplay && firstQuestionMicGateArmedRef.current) {
@@ -2543,6 +2693,8 @@ const handleReadingValidationRetry = function () {
     if (currentIdx < 0 || currentIdx >= questions.length) return;
     var currentQ = questions[currentIdx];
     if (!currentQ || currentQ.query_number == null) return;
+    if (currentQ.query_type !== "הבעה") return;
+    clearExpressionAnswerEndTimer();
     SessionRecorder.markQuestionEnd(currentQ.query_number);
   }
 
@@ -2556,15 +2708,6 @@ const handleReadingValidationRetry = function () {
     if (!Number.isFinite(parsedResolved)) return;
     if (parsedResolved === currentIdx) return;
 
-    // If leaving an expression question before its initial reading ends, mark its start now so
-    // downstream timestamp-based clipping never misses the question boundary.
-    try {
-      var currentQ = questions[currentIdx];
-      if (currentQ && currentQ.query_type === "הבעה" && !expressionEvalArmed) {
-        markExpressionTimestampAndArm(currentQ);
-      }
-    } catch (e) {}
-
     markCurrentQuestionEndTimestamp();
     if (parsedResolved !== 0) {
       resetFirstQuestionRetryState();
@@ -2577,6 +2720,7 @@ const handleReadingValidationRetry = function () {
     const q = questions[index];
     if (!q) return;
 
+    clearExpressionAnswerEndTimer();
     questionAudioAutoplayPendingRef.current = false;
     if (questionAudioRef.current) {
       try {
@@ -2602,12 +2746,6 @@ const handleReadingValidationRetry = function () {
     // Clear previous question visuals immediately to avoid stale-image flash while switching.
     setCurrentQuestionImagesLoaded(false);
     setImages([]);
-
-    // Mark question start timestamp for recording
-    // Skip question 1 here as it will be marked when test starts
-    if ((permission || microphoneSkipped) && voiceIdentifierConfirmed && index > 0 && q.query_type === "הבנה") {
-      SessionRecorder.markQuestionStart(q.query_number);
-    }
 
     if (fireworksTimerRef.current) { clearTimeout(fireworksTimerRef.current); fireworksTimerRef.current = null; }
     setFireworksVisible(false);
@@ -2861,6 +2999,8 @@ const handleReadingValidationRetry = function () {
       }
     };
 
+    expressionPhaseRecordingStartedRef.current = false;
+
     // Stop continuous session recording and send data to backend
     if (sessionRecordingStarted && permission) {
       SessionRecorder.stopContinuousRecording();
@@ -3017,6 +3157,7 @@ const handleReadingValidationRetry = function () {
       }
     }
     setSessionRecordingStarted(false);
+    expressionPhaseRecordingStartedRef.current = false;
   }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, permission, sessionRecordingStarted]);
 
   function checkCurrentQuestionImages() {
@@ -4717,47 +4858,7 @@ function renderExpectedAnswerNote() {
               )
             )
           )
-        : null,
-      // Download buttons container (moved below AI area to keep immediate summary visual-first)
-      React.createElement(
-        "div",
-        { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
-        hasSessionRecording
-          ? React.createElement(
-              "button",
-              {
-                style: {
-                  padding: "10px 20px",
-                  fontSize: "16px",
-                  backgroundColor: "#42ABC7",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer"
-                },
-                onClick: downloadRecording
-              },
-              tr("test.done.downloadRecording")
-            )
-          : null,
-        React.createElement(
-          "button",
-          {
-            style: {
-              padding: "10px 20px",
-              fontSize: "16px",
-              backgroundColor: "#4CAF50",
-              color: "white",
-              border: "none",
-              borderRadius: "8px",
-              cursor: "pointer",
-              opacity: 1
-            },
-            onClick: downloadTimestamps
-          },
-          tr("test.done.downloadTimestamps")
-        )
-      )
+        : null
       )
     );
   }

@@ -20,6 +20,9 @@ const SessionRecorder = (function() {
   let finalRecordingBlob = null;
   let finalRecordingMeta = null;
 
+  // Max answer window after question start mark (matches expression UI timer).
+  const EXPRESSION_ANSWER_MAX_MS = 20000;
+
   // Get browser-supported audio mime type (prioritize MP4/AAC for MP3-compatible output)
   function getSupportedMimeType() {
     // Prioritize MP4/AAC format for better compatibility (closer to MP3)
@@ -141,13 +144,26 @@ const SessionRecorder = (function() {
         totalPausedTime = parseInt(storedPausedTime, 10);
       }
     }
+    if (!isPaused && localStorage.getItem("recordingPaused") === "true") {
+      isPaused = true;
+    }
+    if (!pauseStartTime) {
+      const storedPauseStart = localStorage.getItem("pauseStartTime");
+      if (storedPauseStart) {
+        pauseStartTime = parseInt(storedPauseStart, 10);
+      }
+    }
     return true;
   }
 
   function getElapsedMs() {
     if (!ensureTimingState()) return null;
     const currentTime = Date.now();
-    return Math.max(0, currentTime - recordingStartTime - totalPausedTime);
+    let elapsed = currentTime - recordingStartTime - totalPausedTime;
+    if (isPaused && pauseStartTime) {
+      elapsed -= currentTime - pauseStartTime;
+    }
+    return Math.max(0, elapsed);
   }
 
   // Start continuous session recording
@@ -397,21 +413,7 @@ const SessionRecorder = (function() {
   function markQuestionStart(questionNumber) {
     let elapsedMs = getElapsedMs();
     if (elapsedMs == null) return;
-    
-    // Check if this is the first question 1 marking - ensure it's always at 0 seconds
-    // Check if there are any existing question 1 timestamps (handle both string and number)
-    const hasQuestion1 = questionTimestamps.some(function(item) {
-      const itemNum = String(item.questionNumber);
-      const currentNum = String(questionNumber);
-      return itemNum === "1" || itemNum === currentNum;
-    });
-    
-    // If this is question 1 and it's the first time marking it, set to 0
-    const questionNumStr = String(questionNumber);
-    if (questionNumStr === "1" && !hasQuestion1) {
-      elapsedMs = 0;
-    }
-    
+
     questionTimestamps.push({
       questionNumber: questionNumber,
       timestamp: elapsedMs,
@@ -424,11 +426,43 @@ const SessionRecorder = (function() {
     console.log("📝 Marked question", questionNumber, "at", formatTimestamp(elapsedMs));
   }
 
+  function getQuestionStartMs(questionNumber) {
+    const qKey = String(questionNumber || "");
+    if (!qKey) return null;
+    for (let i = questionTimestamps.length - 1; i >= 0; i--) {
+      const item = questionTimestamps[i];
+      if (String(item.questionNumber) === qKey && item.eventType === "start") {
+        return item.timestamp;
+      }
+    }
+    return null;
+  }
+
+  function hasQuestionEnd(questionNumber) {
+    const qKey = String(questionNumber || "");
+    return questionTimestamps.some(function (item) {
+      return String(item.questionNumber) === qKey && item.eventType === "end";
+    });
+  }
+
   function markQuestionEnd(questionNumber) {
-    const elapsedMs = getElapsedMs();
+    if (hasQuestionEnd(questionNumber)) return;
+
+    let elapsedMs = getElapsedMs();
     if (elapsedMs == null) return;
     const questionNumStr = String(questionNumber || "");
     if (!questionNumStr) return;
+
+    const startMs = getQuestionStartMs(questionNumStr);
+    if (startMs != null) {
+      const maxEndMs = startMs + EXPRESSION_ANSWER_MAX_MS;
+      if (elapsedMs > maxEndMs) {
+        elapsedMs = maxEndMs;
+      }
+      if (elapsedMs <= startMs) {
+        return;
+      }
+    }
 
     const last = questionTimestamps.length > 0 ? questionTimestamps[questionTimestamps.length - 1] : null;
     if (

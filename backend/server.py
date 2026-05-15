@@ -40,21 +40,49 @@ database_name = os.environ.get("DATABASE_NAME")
 
 # Initialize MongoDB storage manager
 storage = SeeSayMongoStorage(mongodb_url, database_name)
-GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "200"))
-GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "30"))
-GEMINI_IMPRESSION_DAILY_LIMIT = int(os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", "200"))
+GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "350"))
+GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "20"))
+GEMINI_IMPRESSION_DAILY_LIMIT = int(
+    os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", os.environ.get("GEMINI_DAILY_LIMIT", "350"))
+)
 GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS", "2800"))
 EXPRESSION_IMPRESSION_SAMPLE_CAP = int(os.environ.get("EXPRESSION_IMPRESSION_SAMPLE_CAP", "10"))
 
 
-def _load_expression_rubrics():
+def _csv_row_to_rubric(row):
+    qn = str((row.get("query_number") or "").strip())
+    if not qn:
+        return None, None
+    return qn, {
+        "query_type": (row.get("query_type") or "").strip(),
+        "question_text_boy": (row.get("query_boy") or "").strip(),
+        "question_text_girl": (row.get("query_girl") or "").strip(),
+        "question_text_fallback": (row.get("query") or "").strip(),
+        "expected_full": (row.get("expected_full_ai") or row.get("expected_full") or "").strip(),
+        "expected_partial": (row.get("expected_partial") or "").strip(),
+        "expected_wrong": (row.get("expected_wrong") or "").strip(),
+        "comments": (row.get("comments") or "").strip(),
+        "facilitator_hint": (row.get("hint") or "").strip(),
+        "category_pls": (
+            (row.get("category_PLS") or row.get("category_pls") or row.get("semantics") or "")
+            .strip()
+        ),
+        "sub_category_pls": (
+            (
+                row.get("sub_category_PLS")
+                or row.get("sub_category_pls")
+                or row.get("category PLS")
+                or row.get("category_pls")
+                or ""
+            ).strip()
+        ),
+        "test_goal": (row.get("test goal") or row.get("test_goal") or "").strip(),
+    }
+
+
+def _load_question_rubrics():
     """
-    Loads expression-question rubric fields from the shared CSV.
-    Expected columns (order does not matter):
-      - query_boy / query_girl (preferred) or query (fallback)
-      - expected_full_ai (preferred) or expected_full (fallback)
-      - expected_partial
-      - expected_wrong
+    Loads all question rubric fields from the shared CSV (comprehension + expression).
     """
     csv_candidates = [
         os.path.join(os.path.dirname(__file__), "..", "frontend_demo", "resources", "query_database.csv"),
@@ -66,7 +94,7 @@ def _load_expression_rubrics():
             csv_path = c
             break
     if not csv_path:
-        logger.warning("Expression rubric CSV not found; Gemini expression scoring will be skipped.")
+        logger.warning("Question rubric CSV not found; Gemini expression scoring will be skipped.")
         return {}
 
     rubrics = {}
@@ -74,34 +102,23 @@ def _load_expression_rubrics():
         with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                qn = str((row.get("query_number") or "").strip())
-                qtype = (row.get("query_type") or "").strip()
-                if not qn or qtype != "הבעה":
-                    continue
-                rubrics[qn] = {
-                    "question_text_boy": (row.get("query_boy") or "").strip(),
-                    "question_text_girl": (row.get("query_girl") or "").strip(),
-                    "question_text_fallback": (row.get("query") or "").strip(),
-                    "expected_full": (row.get("expected_full_ai") or row.get("expected_full") or "").strip(),
-                    "expected_partial": (row.get("expected_partial") or "").strip(),
-                    "expected_wrong": (row.get("expected_wrong") or "").strip(),
-                    "comments": (row.get("comments") or "").strip(),
-                    "facilitator_hint": (row.get("hint") or "").strip(),
-                    "semantics": (row.get("semantics") or "").strip(),
-                    "category_pls": (row.get("category PLS") or row.get("category_pls") or "").strip(),
-                    "test_goal": (row.get("test goal") or row.get("test_goal") or "").strip(),
-                }
+                qn, rubric = _csv_row_to_rubric(row)
+                if qn:
+                    rubrics[qn] = rubric
     except Exception as e:
-        logger.warning(f"Failed to load expression rubrics from CSV: {e}")
+        logger.warning(f"Failed to load question rubrics from CSV: {e}")
         return {}
 
     return rubrics
 
 
-EXPRESSION_RUBRICS = _load_expression_rubrics()
+QUESTION_RUBRICS = _load_question_rubrics()
+EXPRESSION_RUBRICS = {
+    qn: r for qn, r in QUESTION_RUBRICS.items() if r.get("query_type") == "הבעה"
+}
 
 
-def _parse_expression_results_from_full_array(full_array_str):
+def _parse_section_results_from_full_array(full_array_str, section_key):
     """
     full_array is JSON-stringified object from frontend:
       {"comprehension":"[(1,\"correct\")]", "expression":"[(7,\"partly\"),(8,\"wrong\")]"}
@@ -112,12 +129,64 @@ def _parse_expression_results_from_full_array(full_array_str):
     except Exception:
         return []
 
-    expr = parsed.get("expression") if isinstance(parsed, dict) else None
-    if not isinstance(expr, str):
+    section = parsed.get(section_key) if isinstance(parsed, dict) else None
+    if not isinstance(section, str):
         return []
 
-    matches = re.findall(r'\((\d+),"([^"]+)"\)', expr)
+    matches = re.findall(r'\((\d+),"([^"]+)"\)', section)
     return [(m[0], m[1]) for m in matches]
+
+
+def _parse_expression_results_from_full_array(full_array_str):
+    return _parse_section_results_from_full_array(full_array_str, "expression")
+
+
+def _parse_comprehension_results_from_full_array(full_array_str):
+    return _parse_section_results_from_full_array(full_array_str, "comprehension")
+
+
+def _question_text_for_gender(rubric, child_gender):
+    normalized_gender = str(child_gender or "").strip().lower()
+    is_female = normalized_gender in ["female", "girl"]
+    return (
+        (rubric.get("question_text_girl") if is_female else rubric.get("question_text_boy"))
+        or rubric.get("question_text_fallback")
+        or ""
+    )
+
+
+_HEADLIGHT_LABEL_HE = {
+    "correct": "נכון",
+    "partly": "חלקי",
+    "wrong": "לא נכון",
+}
+
+
+def _build_comprehension_impression_context_he(full_array_str, child_gender):
+    # full_array comprehension entries come only from answered questions (frontend questionResults).
+    items = _parse_comprehension_results_from_full_array(full_array_str)
+    if not items:
+        return ""
+
+    lines = [
+        "--- תוצאות הבנה (שאלות שנענו בפועל במבחן; ללא קטעי שמע) ---",
+        "לכל שורה: מספר שאלה, סטטוס תשובה (נכון/חלקי/לא נכון), category_PLS, sub_category_PLS, ונוסח השאלה.",
+    ]
+    for question_number, headlight_result in items:
+        rubric = QUESTION_RUBRICS.get(str(question_number), {})
+        question_text = _question_text_for_gender(rubric, child_gender)
+        category_pls = (rubric.get("category_pls") or "").strip()
+        sub_category_pls = (rubric.get("sub_category_pls") or "").strip()
+        status_he = _HEADLIGHT_LABEL_HE.get(headlight_result, headlight_result)
+        line = (
+            f"שאלה {question_number}: תשובה={status_he} ({headlight_result})"
+            f" | category_PLS={category_pls or '—'}"
+            f" | sub_category_PLS={sub_category_pls or '—'}"
+        )
+        if question_text:
+            line += f"\n  נוסח: {question_text}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _parse_question_timestamps(timestamps_text):
@@ -214,9 +283,11 @@ def _timestamp_window_for_question(qn, marks_data):
     if start is None:
         return None, None
 
+    max_end_sec = start + GEMINI_MAX_SEGMENT_SECONDS
+
     explicit_end = ends_by_q.get(key)
     if explicit_end is not None and explicit_end > start:
-        return start, explicit_end
+        return start, min(explicit_end, max_end_sec)
 
     end = None
     for idx, (question_num, sec) in enumerate(ordered_starts):
@@ -226,6 +297,8 @@ def _timestamp_window_for_question(qn, marks_data):
             break
     if end is not None and end <= start:
         end = None
+    if end is not None:
+        end = min(end, max_end_sec)
     return start, end
 
 
@@ -567,8 +640,8 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             continue
 
         goal_bits = [
-            (rubric.get("semantics") or "").strip(),
             (rubric.get("category_pls") or "").strip(),
+            (rubric.get("sub_category_pls") or "").strip(),
             (rubric.get("test_goal") or "").strip(),
         ]
         linguistic_goal_line = " · ".join(g for g in goal_bits if g)
@@ -586,10 +659,10 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             "question_text": question_text,
             "context_hint": context_hint,
             "linguistic_goal_line": linguistic_goal_line,
-            # Broad PLS frame for narrative bucketing: CSV column "semantics" (not category PLS).
-            "pls_semantics_area": (rubric.get("semantics") or "").strip(),
-            # Optional finer tag from CSV "category PLS"; supplementary only for the model prompt.
-            "pls_category": (rubric.get("category_pls") or "").strip(),
+            # Broad PLS frame: CSV column category_PLS (formerly semantics).
+            "pls_semantics_area": (rubric.get("category_pls") or "").strip(),
+            # Finer tag: CSV column sub_category_PLS (formerly category PLS).
+            "pls_category": (rubric.get("sub_category_pls") or "").strip(),
         })
 
         allowed = storage.check_and_increment_daily_quota(
@@ -689,10 +762,14 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                     "pls_category": c.get("pls_category") or "",
                     "audio_bytes": c["audio_bytes"],
                 })
+            comprehension_context_he = _build_comprehension_impression_context_he(
+                full_array, child_gender
+            )
             imp = summarize_expressive_language_impression_gemini(
                 entries,
                 child_age_label_he,
                 max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
+                comprehension_context_he=comprehension_context_he or None,
             )
             if imp:
                 expressive_language_impression = {
