@@ -21,14 +21,15 @@ const SessionRecorder = (function() {
   let expressionClipAutoStopRemainingMs = null;
   /** In-flight stop promise so timer + UI cannot double-stop or orphan waiters. */
   let expressionClipStopPromise = null;
+  /** question_number the in-flight expressionClipStopPromise belongs to. */
+  let expressionClipStopPromiseQuestion = null;
   /**
-   * Last encoded clip for the current expression question (set on recorder onstop).
-   * When the 30s cap auto-stops before traffic submit, a second stop() would return null
-   * without this cache — causing missing_clip_at_finalize on the server.
+   * Encoded MP3 per expression question (question_number string → Blob).
+   * A single global cache caused Q2/Q3 uploads to reuse Q1 audio when batching encodes.
    */
-  let cachedExpressionClipBlob = null;
-  /** Question id the cached blob belongs to (same-question reuse after 30s cap only). */
-  let cachedExpressionClipQuestion = null;
+  var expressionClipMp3ByQuestion = Object.create(null);
+  /** Pre-built data URLs from clip worker (avoids main-thread readBlobAsDataURL). */
+  var expressionClipDataUrlByQuestion = Object.create(null);
   let expressionClipActiveQuestion = null;
   
   // Question timestamps tracking
@@ -129,13 +130,41 @@ const SessionRecorder = (function() {
     return tryProcessExpressionClipEncodeQueue();
   }
 
+  function normalizeExpressionClipQuestionKey(questionNumber) {
+    if (questionNumber == null || questionNumber === "") {
+      return expressionClipActiveQuestion != null && expressionClipActiveQuestion !== ""
+        ? String(expressionClipActiveQuestion)
+        : null;
+    }
+    return String(questionNumber);
+  }
+
+  function getExpressionClipMp3ForQuestion(questionNumber) {
+    var qKey = normalizeExpressionClipQuestionKey(questionNumber);
+    if (!qKey) {
+      return null;
+    }
+    var blob = expressionClipMp3ByQuestion[qKey];
+    return blob && blob.size > 0 ? blob : null;
+  }
+
   function completeExpressionClipEncodeJob(job, mp3Blob) {
     var out = mp3Blob && mp3Blob.size > 0 ? mp3Blob : null;
-    cachedExpressionClipBlob = out;
-    cachedExpressionClipQuestion =
-      job.questionNumber != null && job.questionNumber !== ""
-        ? String(job.questionNumber)
-        : expressionClipActiveQuestion;
+    var qKey = normalizeExpressionClipQuestionKey(job.questionNumber);
+    if (qKey && out) {
+      expressionClipMp3ByQuestion[qKey] = out;
+    }
+    if (qKey && job.dataUrl) {
+      expressionClipDataUrlByQuestion[qKey] = job.dataUrl;
+    }
+    if (qKey) {
+      console.log(
+        "[See&Say] Expression clip MP3 ready for question",
+        qKey,
+        "size:",
+        out ? out.size : 0
+      );
+    }
     if (typeof job.stopResolve === "function") {
       try {
         job.stopResolve(out);
@@ -169,7 +198,12 @@ const SessionRecorder = (function() {
       .then(function () {
         return convertToMP3(job.webmBlob);
       })
-      .then(function (mp3Blob) {
+      .then(function (encodeResult) {
+        var mp3Blob =
+          encodeResult && encodeResult.blob ? encodeResult.blob : encodeResult;
+        if (encodeResult && encodeResult.dataUrl) {
+          job.dataUrl = encodeResult.dataUrl;
+        }
         completeExpressionClipEncodeJob(job, mp3Blob);
       })
       .catch(function (e) {
@@ -211,13 +245,15 @@ const SessionRecorder = (function() {
     });
   }
 
-  function waitForCachedExpressionClipMp3(maxMs) {
+  function waitForExpressionClipMp3ForQuestion(questionNumber, maxMs) {
+    var qKey = normalizeExpressionClipQuestionKey(questionNumber);
     var limit = maxMs == null ? 120000 : maxMs;
     var started = Date.now();
     return new Promise(function (resolve) {
       function tick() {
-        if (cachedExpressionClipBlob && cachedExpressionClipBlob.size > 0) {
-          resolve(cachedExpressionClipBlob);
+        var ready = qKey ? getExpressionClipMp3ForQuestion(qKey) : null;
+        if (ready) {
+          resolve(ready);
           return;
         }
         if (!expressionClipEncodeInProgress && expressionClipEncodeQueue.length === 0) {
@@ -225,17 +261,12 @@ const SessionRecorder = (function() {
           return;
         }
         if (Date.now() - started > limit) {
-          console.warn("[See&Say] Timed out waiting for expression clip MP3 encode");
+          console.warn(
+            "[See&Say] Timed out waiting for expression clip MP3 encode",
+            qKey ? "question " + qKey : ""
+          );
           resolve(null);
           return;
-        }
-        if (!expressionClipEncodeInProgress && !questionReadingActive) {
-          tryProcessExpressionClipEncodeQueue();
-        } else if (
-          !expressionClipEncodeInProgress &&
-          expressionClipEncodeQueue.length > 0
-        ) {
-          processOneExpressionClipEncodeJob({ bypassReadingGate: true });
         }
         setTimeout(tick, 50);
       }
@@ -257,26 +288,10 @@ const SessionRecorder = (function() {
           promiseReject: reject,
         };
         expressionClipEncodeQueue.push(job);
-        if (!questionReadingActive) {
-          tryProcessExpressionClipEncodeQueue();
-        }
+        tryProcessExpressionClipEncodeQueue({ bypassReadingGate: true });
       }
 
-      function drainQueueSlotForIncomingJob() {
-        if (expressionClipEncodeQueue.length < EXPRESSION_CLIP_ENCODE_QUEUE_MAX) {
-          return Promise.resolve();
-        }
-        console.warn(
-          "[See&Say] Expression clip encode queue full (" +
-            EXPRESSION_CLIP_ENCODE_QUEUE_MAX +
-            "); encoding one clip during reading to make room"
-        );
-        return processOneExpressionClipEncodeJob({ bypassReadingGate: true }).then(
-          drainQueueSlotForIncomingJob
-        );
-      }
-
-      drainQueueSlotForIncomingJob().then(pushJob).catch(reject);
+      pushJob();
     });
   }
 
@@ -286,77 +301,133 @@ const SessionRecorder = (function() {
   }
 
   /** Lazy singleton; null = not created yet, false = unavailable or hard-failed. */
-  let mp3Worker = null;
-  let mp3WorkerJobId = 0;
-  const mp3WorkerPending = new Map();
+  let clipWorker = null;
+  let clipWorkerJobId = 0;
+  const clipWorkerPending = new Map();
+  var clipWorkerFullPipelineWarned = false;
 
-  function getMp3WorkerScriptUrl() {
+  function getClipWorkerScriptUrl() {
     var v = typeof window !== "undefined" && window._v ? window._v : Date.now();
-    return "./mp3-encode-worker.js?v=" + v;
+    return "./expression-clip-worker.js?v=" + v;
   }
 
-  function terminateMp3WorkerHard(reason) {
-    if (mp3Worker && typeof mp3Worker.terminate === "function") {
+  function terminateClipWorkerHard(reason) {
+    if (clipWorker && typeof clipWorker.terminate === "function") {
       try {
-        mp3Worker.terminate();
+        clipWorker.terminate();
       } catch (e) {
         /* ignore */
       }
     }
-    mp3Worker = false;
+    clipWorker = false;
     if (reason) {
-      console.warn("MP3 worker disabled:", reason);
+      console.warn("Expression clip worker disabled:", reason);
     }
   }
 
-  function initMp3WorkerOnce() {
-    if (mp3Worker === false) {
-      return null;
-    }
-    if (mp3Worker != null) {
-      return mp3Worker;
-    }
-    if (typeof Worker === "undefined") {
-      mp3Worker = false;
-      return null;
+  function isClipWorkerAllowed() {
+    if (typeof window !== "undefined" && window.SEEANDSAY_CLIP_WORKER === false) {
+      return false;
     }
     if (typeof window !== "undefined" && window.SEEANDSAY_MP3_WORKER === false) {
-      mp3Worker = false;
+      return false;
+    }
+    return true;
+  }
+
+  function initClipWorkerOnce() {
+    if (clipWorker === false) {
+      return null;
+    }
+    if (clipWorker != null) {
+      return clipWorker;
+    }
+    if (typeof Worker === "undefined") {
+      clipWorker = false;
+      return null;
+    }
+    if (!isClipWorkerAllowed()) {
+      clipWorker = false;
       return null;
     }
     try {
-      var w = new Worker(getMp3WorkerScriptUrl());
+      var w = new Worker(getClipWorkerScriptUrl());
       w.onmessage = function (ev) {
         var d = ev.data || {};
-        var pending = mp3WorkerPending.get(d.id);
+        var pending = clipWorkerPending.get(d.id);
         if (!pending) {
           return;
         }
-        mp3WorkerPending.delete(d.id);
+        clipWorkerPending.delete(d.id);
         if (d.ok && d.arrayBuffer) {
           var len =
             typeof d.byteLength === "number" ? d.byteLength : d.arrayBuffer.byteLength;
           var b = new Blob([new Uint8Array(d.arrayBuffer, 0, len)], { type: "audio/mpeg" });
-          pending.resolve(b);
+          pending.resolve({
+            blob: b,
+            dataUrl: d.dataUrl || null,
+          });
         } else {
-          pending.reject(new Error(d.message || "worker encode failed"));
+          pending.reject(new Error(d.message || "clip worker encode failed"));
         }
       };
       w.onerror = function (err) {
-        console.warn("mp3-encode-worker:", err);
-        mp3WorkerPending.forEach(function (p) {
-          p.reject(new Error("mp3 worker load/runtime error"));
+        console.warn("expression-clip-worker:", err);
+        clipWorkerPending.forEach(function (p) {
+          p.reject(new Error("clip worker load/runtime error"));
         });
-        mp3WorkerPending.clear();
-        terminateMp3WorkerHard("onerror");
+        clipWorkerPending.clear();
+        terminateClipWorkerHard("onerror");
       };
-      mp3Worker = w;
+      clipWorker = w;
       return w;
     } catch (e) {
-      console.warn("MP3 worker could not start:", e);
-      mp3Worker = false;
+      console.warn("Expression clip worker could not start:", e);
+      clipWorker = false;
       return null;
     }
+  }
+
+  function postClipWorkerJob(payload, transferList) {
+    var w = initClipWorkerOnce();
+    if (!w) {
+      return Promise.reject(new Error("no clip worker"));
+    }
+    return new Promise(function (resolve, reject) {
+      var id = ++clipWorkerJobId;
+      var timeoutMs = 180000;
+      var timer = setTimeout(function () {
+        if (!clipWorkerPending.has(id)) {
+          return;
+        }
+        clipWorkerPending.delete(id);
+        reject(new Error("clip worker timeout"));
+        try {
+          w.terminate();
+        } catch (e2) {
+          /* ignore */
+        }
+        clipWorker = null;
+      }, timeoutMs);
+      clipWorkerPending.set(id, {
+        resolve: function (result) {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: function (e) {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      try {
+        payload.id = id;
+        w.postMessage(payload, transferList || []);
+      } catch (postErr) {
+        clearTimeout(timer);
+        clipWorkerPending.delete(id);
+        reject(postErr);
+      }
+    });
   }
 
   function readBlobAsArrayBuffer(blob) {
@@ -432,73 +503,69 @@ const SessionRecorder = (function() {
     return new Blob(mp3Data, { type: "audio/mpeg" });
   }
 
-  function convertToMP3WithWorker(blob) {
+  function convertToMP3ViaClipWorker(blob) {
+    return readBlobAsArrayBuffer(blob).then(function (ab) {
+      var copy = ab.slice(0);
+      return postClipWorkerJob(
+        {
+          type: "encodeWebm",
+          webm: copy,
+          byteLength: copy.byteLength,
+        },
+        [copy]
+      );
+    });
+  }
+
+  function convertToMP3WithPcmWorker(blob) {
     return decodeBlobToMonoFloat32(blob).then(function (decoded) {
-      var w = initMp3WorkerOnce();
-      if (!w) {
-        return Promise.reject(new Error("no worker"));
-      }
       var monoCopy = new Float32Array(decoded.mono.length);
       monoCopy.set(decoded.mono);
-      return new Promise(function (resolve, reject) {
-        var id = ++mp3WorkerJobId;
-        var timeoutMs = 180000;
-        var timer = setTimeout(function () {
-          if (!mp3WorkerPending.has(id)) {
-            return;
-          }
-          mp3WorkerPending.delete(id);
-          reject(new Error("mp3 worker timeout"));
-          try {
-            w.terminate();
-          } catch (e2) {
-            /* ignore */
-          }
-          mp3Worker = null;
-        }, timeoutMs);
-        mp3WorkerPending.set(id, {
-          resolve: function (b) {
-            clearTimeout(timer);
-            resolve(b);
-          },
-          reject: function (e) {
-            clearTimeout(timer);
-            reject(e);
-          },
-        });
-        try {
-          w.postMessage(
-            {
-              type: "encodePcm",
-              id: id,
-              sampleRate: decoded.sampleRate,
-              pcm: monoCopy.buffer,
-              sampleCount: monoCopy.length,
-            },
-            [monoCopy.buffer]
-          );
-        } catch (postErr) {
-          clearTimeout(timer);
-          mp3WorkerPending.delete(id);
-          reject(postErr);
-        }
+      return postClipWorkerJob(
+        {
+          type: "encodePcm",
+          sampleRate: decoded.sampleRate,
+          pcm: monoCopy.buffer,
+          sampleCount: monoCopy.length,
+        },
+        [monoCopy.buffer]
+      ).then(function (result) {
+        return { blob: result.blob, dataUrl: result.dataUrl || null };
       });
     });
   }
 
   async function convertToMP3(blob) {
-    var allowWorker =
-      typeof window === "undefined" || window.SEEANDSAY_MP3_WORKER !== false;
-    if (allowWorker && initMp3WorkerOnce()) {
+    if (isClipWorkerAllowed() && initClipWorkerOnce()) {
       try {
-        var outW = await convertToMP3WithWorker(blob);
-        console.log("✅ MP3 conversion complete (worker), size:", outW.size);
-        return outW;
+        var full = await convertToMP3ViaClipWorker(blob);
+        console.log(
+          "✅ MP3 conversion complete (clip worker), size:",
+          full.blob.size
+        );
+        return full;
       } catch (e) {
-        console.warn("Worker MP3 encode failed, using main thread:", e);
+        if (!clipWorkerFullPipelineWarned) {
+          clipWorkerFullPipelineWarned = true;
+          console.warn(
+            "Clip worker full pipeline failed, trying PCM worker + main decode:",
+            e
+          );
+        }
+        try {
+          var pcmOnly = await convertToMP3WithPcmWorker(blob);
+          console.log(
+            "✅ MP3 conversion complete (PCM worker + main decode), size:",
+            pcmOnly.blob.size
+          );
+          return pcmOnly;
+        } catch (e2) {
+          console.warn("PCM worker encode failed, using main thread:", e2);
+        }
       }
     }
-    return convertToMP3OnMainThread(blob);
+    var legacy = await convertToMP3OnMainThread(blob);
+    return { blob: legacy, dataUrl: null };
   }
 
   async function convertToMP3OnMainThread(blob) {
@@ -511,6 +578,14 @@ const SessionRecorder = (function() {
       console.error("Error converting to MP3:", err);
       return blob;
     }
+  }
+
+  function getExpressionClipDataUrlForQuestion(questionNumber) {
+    var qKey = normalizeExpressionClipQuestionKey(questionNumber);
+    if (!qKey) {
+      return null;
+    }
+    return expressionClipDataUrlByQuestion[qKey] || null;
   }
 
   // Store the mime type globally
@@ -762,7 +837,9 @@ const SessionRecorder = (function() {
     }
     if (expressionClipAutoStopRemainingMs <= 0) {
       console.log("⏱️ Expression clip auto-stop (active recording cap reached)");
-      stopExpressionClipRecording().catch(function () {});
+      stopExpressionClipRecording({
+        questionNumber: expressionClipActiveQuestion,
+      }).catch(function () {});
       return;
     }
     expressionClipSegmentStartedAt = Date.now();
@@ -782,9 +859,26 @@ const SessionRecorder = (function() {
             graceSec +
             "s grace for encode/chunk alignment)"
         );
-        stopExpressionClipRecording().catch(function () {});
+        stopExpressionClipRecording({
+          questionNumber: expressionClipActiveQuestion,
+        }).catch(function () {});
       }
     }, expressionClipAutoStopRemainingMs);
+  }
+
+  function clearExpressionClipStopPromise() {
+    expressionClipStopPromise = null;
+    expressionClipStopPromiseQuestion = null;
+  }
+
+  function expressionClipStopPromiseMatches(qKey) {
+    if (!expressionClipStopPromise) {
+      return false;
+    }
+    if (!qKey || !expressionClipStopPromiseQuestion) {
+      return true;
+    }
+    return expressionClipStopPromiseQuestion === qKey;
   }
 
   function onExpressionClipPausedForAutoStop() {
@@ -847,9 +941,37 @@ const SessionRecorder = (function() {
     );
   }
 
-  function discardCachedExpressionClipBlob() {
-    cachedExpressionClipBlob = null;
-    cachedExpressionClipQuestion = null;
+  function discardCachedExpressionClipBlob(questionNumber) {
+    if (questionNumber == null || questionNumber === "") {
+      expressionClipMp3ByQuestion = Object.create(null);
+      expressionClipDataUrlByQuestion = Object.create(null);
+      return;
+    }
+    var qKey = String(questionNumber);
+    delete expressionClipMp3ByQuestion[qKey];
+    delete expressionClipDataUrlByQuestion[qKey];
+  }
+
+  /**
+   * Drop cached MP3/data URLs for other questions. Keeps keepQuestionNumber so
+   * 30s cap on the same expression question can still reuse via takeCached/stop.
+   */
+  function discardExpressionClipCacheExcept(keepQuestionNumber) {
+    if (keepQuestionNumber == null || keepQuestionNumber === "") {
+      discardCachedExpressionClipBlob();
+      return;
+    }
+    var keep = String(keepQuestionNumber);
+    Object.keys(expressionClipMp3ByQuestion).forEach(function (k) {
+      if (k !== keep) {
+        delete expressionClipMp3ByQuestion[k];
+      }
+    });
+    Object.keys(expressionClipDataUrlByQuestion).forEach(function (k) {
+      if (k !== keep) {
+        delete expressionClipDataUrlByQuestion[k];
+      }
+    });
   }
 
   async function startExpressionClipRecording(questionNumber) {
@@ -858,6 +980,12 @@ const SessionRecorder = (function() {
         ? String(questionNumber)
         : null;
     expressionClipActiveQuestion = qKey;
+
+    if (qKey) {
+      discardExpressionClipCacheExcept(qKey);
+    } else {
+      discardCachedExpressionClipBlob();
+    }
 
     if (expressionMediaRecorder && expressionMediaRecorder.state === "recording") {
       return true;
@@ -868,29 +996,12 @@ const SessionRecorder = (function() {
         await expressionClipStopPromise;
       } catch (e) {}
     }
-    if (cachedExpressionClipBlob && cachedExpressionClipBlob.size > 0) {
-      if (qKey && cachedExpressionClipQuestion === qKey) {
-        console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
-        return true;
-      }
-      if (qKey && cachedExpressionClipQuestion && cachedExpressionClipQuestion !== qKey) {
-        console.warn(
-          "🎙️ Expression clip: discarding cached blob for question",
-          cachedExpressionClipQuestion,
-          "(now on question",
-          qKey + ")"
-        );
-        discardCachedExpressionClipBlob();
-      } else if (!qKey) {
-        console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
-        return true;
-      } else if (qKey && !cachedExpressionClipQuestion) {
-        console.warn("🎙️ Expression clip: discarding untagged cached blob before question", qKey);
-        discardCachedExpressionClipBlob();
-      }
+    if (qKey && getExpressionClipMp3ForQuestion(qKey)) {
+      console.log("🎙️ Expression clip: cached MP3 ready for question", qKey);
+      return true;
     }
-    discardCachedExpressionClipBlob();
     resetExpressionClipAutoStopScheduling();
+    var recordingQuestionKey = qKey;
     try {
       const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       expressionStream = userStream;
@@ -913,6 +1024,7 @@ const SessionRecorder = (function() {
           "audio/webm";
         const originalBlob = new Blob(expressionAudioChunks, { type: blobType });
         var stopResolve = expressionStopResolve;
+        var encodeQuestionKey = recordingQuestionKey;
         expressionStopResolve = null;
         expressionMediaRecorder = null;
         expressionAudioChunks = [];
@@ -925,7 +1037,7 @@ const SessionRecorder = (function() {
         try {
           await enqueueExpressionClipEncode(
             originalBlob,
-            expressionClipActiveQuestion,
+            encodeQuestionKey,
             stopResolve
           );
         } catch (e) {
@@ -946,44 +1058,78 @@ const SessionRecorder = (function() {
     }
   }
 
-  function takeCachedExpressionClipBlob() {
-    if (!cachedExpressionClipBlob || cachedExpressionClipBlob.size <= 0) {
+  function takeCachedExpressionClipBlob(questionNumber) {
+    var qKey = normalizeExpressionClipQuestionKey(questionNumber);
+    if (!qKey) {
       return null;
     }
-    var blob = cachedExpressionClipBlob;
-    discardCachedExpressionClipBlob();
+    var blob = getExpressionClipMp3ForQuestion(qKey);
+    if (!blob) {
+      return null;
+    }
+    delete expressionClipMp3ByQuestion[qKey];
     return blob;
   }
 
-  function stopExpressionClipRecording() {
+  function stopExpressionClipRecording(options) {
+    options = options || {};
+    var qKey = normalizeExpressionClipQuestionKey(options.questionNumber);
     clearExpressionClipAutoStopTimer();
     expressionClipSegmentStartedAt = null;
     if (!expressionMediaRecorder || expressionMediaRecorder.state === "inactive") {
       resetExpressionClipAutoStopScheduling();
       // Await in-flight stop, queued encode, or cached MP3 (30s cap before traffic).
-      if (expressionClipStopPromise) {
+      if (expressionClipStopPromise && !expressionClipStopPromiseMatches(qKey)) {
+        console.warn(
+          "[See&Say] Expression clip stop for question",
+          qKey,
+          "waiting for prior stop on question",
+          expressionClipStopPromiseQuestion
+        );
+        return expressionClipStopPromise.then(function () {
+          return stopExpressionClipRecording(options);
+        });
+      }
+      if (expressionClipStopPromise && expressionClipStopPromiseMatches(qKey)) {
         return expressionClipStopPromise;
+      }
+      var cachedEarly = qKey ? takeCachedExpressionClipBlob(qKey) : null;
+      if (cachedEarly) {
+        console.log(
+          "🎙️ Expression clip: reusing MP3 for question",
+          qKey,
+          "(e.g. 30s cap before traffic)"
+        );
+        return Promise.resolve(cachedEarly);
       }
       if (
         expressionClipEncodeInProgress ||
         expressionClipEncodeQueue.length > 0
       ) {
-        return waitForCachedExpressionClipMp3().then(function (blob) {
+        return waitForExpressionClipMp3ForQuestion(qKey).then(function (blob) {
           if (blob) {
-            return takeCachedExpressionClipBlob() || blob;
+            return blob;
           }
-          return takeCachedExpressionClipBlob();
+          return qKey ? takeCachedExpressionClipBlob(qKey) : null;
         });
       }
-      var cached = takeCachedExpressionClipBlob();
-      if (cached) {
-        console.log("🎙️ Expression clip: reusing blob from prior stop (e.g. 30s cap before traffic)");
-      }
-      return Promise.resolve(cached);
+      return Promise.resolve(null);
     }
-    if (expressionClipStopPromise) {
+    if (expressionClipStopPromise && !expressionClipStopPromiseMatches(qKey)) {
+      console.warn(
+        "[See&Say] Expression clip stop for question",
+        qKey,
+        "waiting for active recorder stop on question",
+        expressionClipStopPromiseQuestion
+      );
+      return expressionClipStopPromise.then(function () {
+        return stopExpressionClipRecording(options);
+      });
+    }
+    if (expressionClipStopPromise && expressionClipStopPromiseMatches(qKey)) {
       return expressionClipStopPromise;
     }
+    expressionClipStopPromiseQuestion = qKey;
     expressionClipStopPromise = new Promise(function (resolve) {
       var settled = false;
       function finish(blob) {
@@ -991,12 +1137,12 @@ const SessionRecorder = (function() {
           return;
         }
         settled = true;
-        expressionClipStopPromise = null;
+        clearExpressionClipStopPromise();
         resetExpressionClipAutoStopScheduling();
         resolve(blob);
       }
       if (!expressionMediaRecorder || expressionMediaRecorder.state === "inactive") {
-        finish(takeCachedExpressionClipBlob());
+        finish(qKey ? takeCachedExpressionClipBlob(qKey) : null);
         return;
       }
       expressionStopResolve = function (blob) {
@@ -1368,8 +1514,10 @@ const SessionRecorder = (function() {
     clearExpressionClipAutoStopTimer();
     expressionClipSegmentStartedAt = null;
     expressionClipAutoStopRemainingMs = null;
-    expressionClipStopPromise = null;
+    clearExpressionClipStopPromise();
     discardCachedExpressionClipBlob();
+    expressionClipMp3ByQuestion = Object.create(null);
+    expressionClipDataUrlByQuestion = Object.create(null);
     expressionClipActiveQuestion = null;
     expressionClipEncodeQueue = [];
     expressionClipEncodeInProgress = false;
@@ -1449,6 +1597,8 @@ const SessionRecorder = (function() {
     startExpressionClipRecording: startExpressionClipRecording,
     stopExpressionClipRecording: stopExpressionClipRecording,
     discardCachedExpressionClipBlob: discardCachedExpressionClipBlob,
+    discardExpressionClipCacheExcept: discardExpressionClipCacheExcept,
+    getExpressionClipDataUrlForQuestion: getExpressionClipDataUrlForQuestion,
     setQuestionReadingActive: setQuestionReadingActive,
     drainExpressionClipEncodeBeforeRead: drainExpressionClipEncodeBeforeRead,
     flushExpressionClipEncodeQueue: flushExpressionClipEncodeQueue,
