@@ -1522,8 +1522,11 @@ const handleReadingValidationRetry = function () {
     if (!draftTestId) return;
     var SR = window.SessionRecorder;
     if (!SR || typeof SR.startExpressionClipRecording !== "function") return;
+    var idx = getSafeCurrentQuestionIndex();
+    var qForClip = questions[idx];
+    var qNum = qForClip && qForClip.query_number != null ? qForClip.query_number : null;
     (async function () {
-      await SR.startExpressionClipRecording();
+      await SR.startExpressionClipRecording(qNum);
     })();
   }, [
     expressionEvalArmed,
@@ -1760,6 +1763,14 @@ const handleReadingValidationRetry = function () {
             setSessionGoHomeBlock("clipSave");
           }
           return null;
+        })
+        .finally(function () {
+          if (
+            SessionRecorder &&
+            SessionRecorder.discardCachedExpressionClipBlob
+          ) {
+            SessionRecorder.discardCachedExpressionClipBlob();
+          }
         });
       clipUploadPromisesRef.current.push(uploadP);
       finishTraffic();
@@ -2832,6 +2843,13 @@ const handleReadingValidationRetry = function () {
   function loadQuestion(index) {
     const q = questions[index];
     if (!q) return;
+
+    if (
+      SessionRecorder &&
+      SessionRecorder.discardCachedExpressionClipBlob
+    ) {
+      SessionRecorder.discardCachedExpressionClipBlob();
+    }
 
     questionAudioAutoplayPendingRef.current = false;
     if (questionAudioRef.current) {
@@ -4384,51 +4402,6 @@ function renderExpectedAnswerNote() {
       return "—";
     }
 
-    // Download timestamp file function (enhanced with question results and transcription)
-    const downloadTimestamps = function () {
-      // Get timestamp text from SessionRecorder
-      const timestampText = SessionRecorder.getTimestampText();
-      
-      // Format question results array
-      const questionResultsText = formatQuestionResultsArray(questionResults);
-      
-      // Build the complete text file content
-      let fileContent = "";
-      
-      // Add timestamps section
-      fileContent += "=== Question Timestamps ===\n";
-      fileContent += timestampText + "\n\n";
-      
-      // Add question results section
-      fileContent += "=== Question Results ===\n";
-      fileContent += "Format: [(questionNumber,\"result\"), ...]\n";
-      fileContent += "Results: correct, partly, wrong\n";
-      fileContent += questionResultsText + "\n\n";
-      
-      // Add transcription section if available
-      if (transcription) {
-        fileContent += "=== Transcription ===\n";
-        fileContent += transcription + "\n";
-      } else {
-        fileContent += "=== Transcription ===\n";
-        fileContent += "Transcription not available yet.\n";
-      }
-      
-      // Create and download the file
-      const blob = new Blob([fileContent], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "session_data_" + idDigits + "_" + Date.now() + ".txt";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      console.log("📥 Downloaded session data file with timestamps, results, and transcription");
-    };
-
     const parentStatusForReport = function (parentResult) {
       if (parentResult === "correct") return lang === "en" ? "Success" : "הצליח";
       if (parentResult === "partly") return lang === "en" ? "Partial" : "חלקי";
@@ -5065,29 +5038,7 @@ function renderExpectedAnswerNote() {
               )
             )
           )
-        : null,
-      // Download buttons: timestamps export only (session audio is stored per expression clip server-side).
-      React.createElement(
-        "div",
-        { style: { marginTop: "20px", display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
-        React.createElement(
-          "button",
-          {
-            style: {
-              padding: "10px 20px",
-              fontSize: "16px",
-              backgroundColor: "#4CAF50",
-              color: "white",
-              border: "none",
-              borderRadius: "8px",
-              cursor: "pointer",
-              opacity: 1
-            },
-            onClick: downloadTimestamps
-          },
-          tr("test.done.downloadTimestamps")
-        )
-      )
+        : null
       )
     );
   }

@@ -27,6 +27,9 @@ const SessionRecorder = (function() {
    * without this cache — causing missing_clip_at_finalize on the server.
    */
   let cachedExpressionClipBlob = null;
+  /** Question id the cached blob belongs to (same-question reuse after 30s cap only). */
+  let cachedExpressionClipQuestion = null;
+  let expressionClipActiveQuestion = null;
   
   // Question timestamps tracking
   let recordingStartTime = null;
@@ -664,7 +667,18 @@ const SessionRecorder = (function() {
     );
   }
 
-  async function startExpressionClipRecording() {
+  function discardCachedExpressionClipBlob() {
+    cachedExpressionClipBlob = null;
+    cachedExpressionClipQuestion = null;
+  }
+
+  async function startExpressionClipRecording(questionNumber) {
+    var qKey =
+      questionNumber != null && questionNumber !== ""
+        ? String(questionNumber)
+        : null;
+    expressionClipActiveQuestion = qKey;
+
     if (expressionMediaRecorder && expressionMediaRecorder.state === "recording") {
       return true;
     }
@@ -675,10 +689,27 @@ const SessionRecorder = (function() {
       } catch (e) {}
     }
     if (cachedExpressionClipBlob && cachedExpressionClipBlob.size > 0) {
-      console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
-      return true;
+      if (qKey && cachedExpressionClipQuestion === qKey) {
+        console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
+        return true;
+      }
+      if (qKey && cachedExpressionClipQuestion && cachedExpressionClipQuestion !== qKey) {
+        console.warn(
+          "🎙️ Expression clip: discarding cached blob for question",
+          cachedExpressionClipQuestion,
+          "(now on question",
+          qKey + ")"
+        );
+        discardCachedExpressionClipBlob();
+      } else if (!qKey) {
+        console.log("🎙️ Expression clip: cached blob ready (waiting for traffic submit)");
+        return true;
+      } else if (qKey && !cachedExpressionClipQuestion) {
+        console.warn("🎙️ Expression clip: discarding untagged cached blob before question", qKey);
+        discardCachedExpressionClipBlob();
+      }
     }
-    cachedExpressionClipBlob = null;
+    discardCachedExpressionClipBlob();
     resetExpressionClipAutoStopScheduling();
     try {
       const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -711,6 +742,7 @@ const SessionRecorder = (function() {
           mp3Blob = originalBlob;
         }
         cachedExpressionClipBlob = mp3Blob && mp3Blob.size > 0 ? mp3Blob : null;
+        cachedExpressionClipQuestion = expressionClipActiveQuestion;
         if (expressionStopResolve) {
           expressionStopResolve(mp3Blob);
           expressionStopResolve = null;
@@ -740,7 +772,7 @@ const SessionRecorder = (function() {
       return null;
     }
     var blob = cachedExpressionClipBlob;
-    cachedExpressionClipBlob = null;
+    discardCachedExpressionClipBlob();
     return blob;
   }
 
@@ -1147,7 +1179,8 @@ const SessionRecorder = (function() {
     expressionClipSegmentStartedAt = null;
     expressionClipAutoStopRemainingMs = null;
     expressionClipStopPromise = null;
-    cachedExpressionClipBlob = null;
+    discardCachedExpressionClipBlob();
+    expressionClipActiveQuestion = null;
     if (expressionMediaRecorder && expressionMediaRecorder.state !== "inactive") {
       var pendingResolve = expressionStopResolve;
       expressionStopResolve = null;
@@ -1222,6 +1255,7 @@ const SessionRecorder = (function() {
     initSessionTimelineClock: initSessionTimelineClock,
     startExpressionClipRecording: startExpressionClipRecording,
     stopExpressionClipRecording: stopExpressionClipRecording,
+    discardCachedExpressionClipBlob: discardCachedExpressionClipBlob,
     isExpressionClipRecording: isExpressionClipRecording,
     isExpressionClipActive: isExpressionClipActive,
     freezeExpressionClipActiveCap: freezeExpressionClipActiveCap,
