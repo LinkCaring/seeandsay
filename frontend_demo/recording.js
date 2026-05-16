@@ -20,8 +20,16 @@ const SessionRecorder = (function() {
   let finalRecordingBlob = null;
   let finalRecordingMeta = null;
 
-  // Max answer window after question start mark (matches expression UI timer).
-  const EXPRESSION_ANSWER_MAX_MS = 20000;
+  /** Matches test UI timer / backend slice — reads window.SEEANDSAY_EXPRESSION_ANSWER_MS from expressionTiming.js */
+  function getExpressionAnswerMaxMs() {
+    try {
+      var w = typeof window !== "undefined" ? window.SEEANDSAY_EXPRESSION_ANSWER_MS : null;
+      var n = Number(w);
+      return Number.isFinite(n) && n > 0 ? n : 20000;
+    } catch (e) {
+      return 20000;
+    }
+  }
 
   // Get browser-supported audio mime type (prioritize MP4/AAC for MP3-compatible output)
   function getSupportedMimeType() {
@@ -343,6 +351,22 @@ const SessionRecorder = (function() {
     return false;
   }
 
+  /** Pause only while actively recording (no-op if already paused). */
+  function pauseRecordingIfActive() {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      return pauseRecording();
+    }
+    return false;
+  }
+
+  /** Resume only while paused by our pause APIs (no-op if already recording). */
+  function resumeRecordingIfPaused() {
+    if (isPaused && mediaRecorder && mediaRecorder.state === "paused") {
+      return resumeRecording();
+    }
+    return Promise.resolve(false);
+  }
+
   // Check if recording is paused
   function isRecordingPaused() {
     return isPaused;
@@ -455,7 +479,7 @@ const SessionRecorder = (function() {
 
     const startMs = getQuestionStartMs(questionNumStr);
     if (startMs != null) {
-      const maxEndMs = startMs + EXPRESSION_ANSWER_MAX_MS;
+      const maxEndMs = startMs + getExpressionAnswerMaxMs();
       if (elapsedMs > maxEndMs) {
         elapsedMs = maxEndMs;
       }
@@ -644,7 +668,9 @@ const SessionRecorder = (function() {
     startContinuousRecording: startContinuousRecording,
     stopContinuousRecording: stopContinuousRecording,
     pauseRecording: pauseRecording,
+    pauseRecordingIfActive: pauseRecordingIfActive,
     resumeRecording: resumeRecording,
+    resumeRecordingIfPaused: resumeRecordingIfPaused,
     isRecordingPaused: isRecordingPaused,
     getFinalRecordingUrl: getFinalRecordingUrl,
     getFinalRecordingUrlSync: getFinalRecordingUrlSync,

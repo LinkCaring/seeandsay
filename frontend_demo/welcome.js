@@ -50,6 +50,7 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
 
   function hasInProgressTestState() {
     try {
+      if (localStorage.getItem("seeandsayBlockResume") === "true") return false;
       if (localStorage.getItem("sessionCompleted") === "true") return false;
       if (localStorage.getItem("ageConfirmed") !== "true") return false;
       if (localStorage.getItem("voiceIdentifierConfirmed") === "true") return true;
@@ -98,6 +99,10 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     });
     try {
       sessionStorage.removeItem("seeandsayTempBackendUserId");
+      sessionStorage.removeItem("seeandsayWasInTest");
+    } catch (e) {}
+    try {
+      localStorage.removeItem("seeandsayBlockResume");
     } catch (e) {}
   }
 
@@ -123,6 +128,9 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     if (stage === "beforeLogin") {
       // User asked for a fresh run before login; clear prior persisted run and show login step.
       clearStoredTestRunKeepChildProfile();
+      try {
+        localStorage.removeItem("seeandsayBlockResume");
+      } catch (e) {}
       setPersistentValue("forceFreshStartAfterMicCheck", true);
       setActiveScreen("screen2_login");
     }

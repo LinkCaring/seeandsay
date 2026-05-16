@@ -64,11 +64,40 @@ function clearStoredTestRunKeepChildProfile() {
   DEMO_TEST_RUN_LS_KEYS.forEach(lsRemove);
   try {
     sessionStorage.removeItem("seeandsayTempBackendUserId");
+    sessionStorage.removeItem("seeandsayWasInTest");
+  } catch (e) {}
+}
+
+window.SeeAndSayTestRun = {
+  isResumeBlockedAfterDataLoss: isResumeBlockedAfterDataLoss,
+  setResumeBlockedAfterDataLoss: setResumeBlockedAfterDataLoss,
+  clearResumeBlock: function () {
+    setResumeBlockedAfterDataLoss(false);
+  },
+  clearStoredTestRunKeepChildProfile: clearStoredTestRunKeepChildProfile,
+};
+
+function isResumeBlockedAfterDataLoss() {
+  try {
+    return localStorage.getItem("seeandsayBlockResume") === "true";
+  } catch (e) {
+    return false;
+  }
+}
+
+function setResumeBlockedAfterDataLoss(blocked) {
+  try {
+    if (blocked) {
+      localStorage.setItem("seeandsayBlockResume", "true");
+    } else {
+      localStorage.removeItem("seeandsayBlockResume");
+    }
   } catch (e) {}
 }
 
 function hasInProgressTestState() {
   try {
+    if (isResumeBlockedAfterDataLoss()) return false;
     if (localStorage.getItem("sessionCompleted") === "true") return false;
     if (localStorage.getItem("ageConfirmed") !== "true") return false;
     if (localStorage.getItem("voiceIdentifierConfirmed") === "true") return true;
@@ -135,6 +164,7 @@ function App() {
 
   // Reset all persistent states (full demo reset; clears age gate and test run)
   function resetAll() {
+    setResumeBlockedAfterDataLoss(false);
     clearStoredTestRunKeepChildProfile();
     lsRemove("ageYears");
     lsRemove("ageMonths");
@@ -407,6 +437,7 @@ function App() {
               {
                 type: "button",
                 onClick: function () {
+                  setResumeBlockedAfterDataLoss(false);
                   clearStoredTestRunKeepChildProfile();
                   setTestSessionKey(function (k) { return k + 1; });
                   setShowStartResumeChoice(false);

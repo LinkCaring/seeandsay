@@ -12,7 +12,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   /** Set true to show the expression (הבעה) hint bulb + hint-driven scoring rules again. */
   var ENABLE_EXPRESSION_HINTS = false;
-  var EXPRESSION_EVAL_DELAY_MS = 20000;
+  /** Expression answer window (ms); mirrors `frontend_demo/expressionTiming.js` → `window.SEEANDSAY_EXPRESSION_ANSWER_MS`. */
+  var EXPRESSION_EVAL_DELAY_MS =
+    typeof window !== "undefined" && Number(window.SEEANDSAY_EXPRESSION_ANSWER_MS) > 0
+      ? Number(window.SEEANDSAY_EXPRESSION_ANSWER_MS)
+      : 20000;
 
   const [trafficPopupOpen, setTrafficPopupOpen] = React.useState(false);
   const [trafficPopupChoice, setTrafficPopupChoice] = React.useState(null); // "success" | "partial" | "midFailure" | "failure" | null
@@ -83,6 +87,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     var delay = Math.max(0, delayMs);
     if (delay <= 0) {
       SessionRecorder.markQuestionEnd(q.query_number);
+      endExpressionAnswerRecordingCapture();
       return;
     }
     var qNum = String(q.query_number || "");
@@ -91,6 +96,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       if (expressionEvalArmedQuestionRef.current !== qNum) return;
       SessionRecorder.markQuestionEnd(q.query_number);
       console.log("🏁 Auto end mark at 20s answer window for question", q.query_number);
+      endExpressionAnswerRecordingCapture();
     }, delay);
   }
 
@@ -326,6 +332,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
   const expressionPhaseRecordingStartedRef = React.useRef(false);
+  /** True only during expression answer capture: after prompt audio ends until end-mark / score / navigation / finish. */
+  const expressionAnswerCaptureActiveRef = React.useRef(false);
   const [forceFreshStartAfterMicCheck, setForceFreshStartAfterMicCheck] = usePersistentState("forceFreshStartAfterMicCheck", false);
 
   // Pause state (persistent)
@@ -365,6 +373,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       SessionRecorder.cleanup({ preserveQuestionTimestamps: false });
     }
     expressionPhaseRecordingStartedRef.current = false;
+    expressionAnswerCaptureActiveRef.current = false;
     clearExpressionAnswerEndTimer();
     setCurrentIndex(0);
     setQuestionResults([]);
@@ -397,6 +406,82 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   sessionCompletedRef.current = sessionCompleted;
   const voiceIdentifierConfirmedRef = React.useRef(voiceIdentifierConfirmed);
   voiceIdentifierConfirmedRef.current = voiceIdentifierConfirmed;
+  const sessionRecordingStartedRef = React.useRef(sessionRecordingStarted);
+  sessionRecordingStartedRef.current = sessionRecordingStarted;
+  const recordingPermissionRef = React.useRef(permission);
+  recordingPermissionRef.current = permission;
+  const showClappingAvatarRef = React.useRef(showClappingAvatar);
+  showClappingAvatarRef.current = showClappingAvatar;
+  const questionTypeRef = React.useRef(questionType);
+  questionTypeRef.current = questionType;
+  const trafficPopupOpenRef = React.useRef(trafficPopupOpen);
+  trafficPopupOpenRef.current = trafficPopupOpen;
+  const evaluationEnabledRef = React.useRef(evaluationEnabled);
+  evaluationEnabledRef.current = evaluationEnabled;
+
+  /** null | "choice" (comp OK, restart expression or home) | "forceHome" (comp data lost). */
+  const [expressionRefreshRecovery, setExpressionRefreshRecovery] = React.useState(null);
+  const expressionRefreshCheckedRef = React.useRef(false);
+
+  function endExpressionAnswerRecordingCapture() {
+    expressionAnswerCaptureActiveRef.current = false;
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.pauseRecordingIfActive) {
+      SessionRecorder.pauseRecordingIfActive();
+    }
+  }
+
+  /** Keeps MediaRecorder paused unless we're inside the bounded expression answer capture window and overlays don't forbid it. */
+  function syncExpressionAnswerRecordingCapture() {
+    if (
+      typeof SessionRecorder === "undefined" ||
+      !SessionRecorder.pauseRecordingIfActive ||
+      !SessionRecorder.resumeRecordingIfPaused
+    ) {
+      return;
+    }
+    if (!sessionRecordingStartedRef.current || !recordingPermissionRef.current) {
+      return;
+    }
+    if (!expressionPhaseRecordingStartedRef.current) {
+      return;
+    }
+
+    var captureActive = expressionAnswerCaptureActiveRef.current;
+    var completed = sessionCompletedRef.current;
+    var userPaused = isPausedRef.current;
+    var clapping = showClappingAvatarRef.current;
+    /** 20s expression timer expired — not early evaluate popup alone. */
+    var timerExpired = evaluationEnabledRef.current;
+
+    if (completed || !captureActive) {
+      SessionRecorder.pauseRecordingIfActive();
+      return;
+    }
+
+    if (userPaused) {
+      return;
+    }
+
+    if (clapping) {
+      SessionRecorder.pauseRecordingIfActive();
+      return;
+    }
+
+    if (timerExpired) {
+      SessionRecorder.pauseRecordingIfActive();
+      return;
+    }
+
+    var pr = SessionRecorder.resumeRecordingIfPaused();
+    if (pr && typeof pr.then === "function") {
+      pr.catch(function () {});
+    }
+  }
+
+  function beginExpressionAnswerRecordingCapture() {
+    expressionAnswerCaptureActiveRef.current = true;
+    syncExpressionAnswerRecordingCapture();
+  }
 
   // AFK timer states
   const [afkTimerActive, setAfkTimerActive] = React.useState(false);
@@ -819,6 +904,7 @@ function blobToBase64(blob) {
     }
     expressionEvalArmedQuestionRef.current = qNum;
     setExpressionEvalArmed(true);
+    beginExpressionAnswerRecordingCapture();
   }
 
   // Expression evaluation timer - opens traffic evaluation after 20 seconds.
@@ -1121,6 +1207,9 @@ function blobToBase64(blob) {
       if (started) {
         expressionPhaseRecordingStartedRef.current = true;
         setSessionRecordingStarted(true);
+        if (SessionRecorder.pauseRecordingIfActive) {
+          SessionRecorder.pauseRecordingIfActive();
+        }
         console.log("🎙️ Expression-phase recording started (timestamps from first הבעה)");
         return true;
       }
@@ -1348,6 +1437,9 @@ function blobToBase64(blob) {
             if (started) {
               setSessionRecordingStarted(true);
               expressionPhaseRecordingStartedRef.current = true;
+              if (SessionRecorder.pauseRecordingIfActive) {
+                SessionRecorder.pauseRecordingIfActive();
+              }
               console.log("✅ Resumed expression-phase recording after in-test verification");
             }
           }
@@ -1496,6 +1588,20 @@ const handleReadingValidationRetry = function () {
     trafficPopupJustOpenedRef.current = false;
   }, [showContinue, evaluationEnabled, questionType, sessionCompleted, isPaused, currentIndex]);
 
+  React.useEffect(function syncExpressionAnswerRecordingCaptureEffect() {
+    syncExpressionAnswerRecordingCapture();
+  }, [
+    questionType,
+    expressionEvalArmed,
+    evaluationEnabled,
+    isPaused,
+    showClappingAvatar,
+    sessionCompleted,
+    sessionRecordingStarted,
+    permission,
+    currentIndex,
+  ]);
+
   function playTrafficFeedback(result) {
     // Cute feedback: short beep pattern (no speech)
     try {
@@ -1630,6 +1736,8 @@ const handleReadingValidationRetry = function () {
     if (trafficChoiceInProgressRef.current) return;
     trafficChoiceInProgressRef.current = true;
 
+    endExpressionAnswerRecordingCapture();
+
     setExpressionTrafficSubmitted(true);
     setExpressionAdvanceLock(true);
     playTrafficFeedback(result);
@@ -1693,12 +1801,29 @@ const handleReadingValidationRetry = function () {
     } catch (e) {}
   };
 
-  const playQuestionAudio = function () {
+  const playQuestionAudio = function (opts) {
+    opts = opts || {};
+    var isReplayPlayback = !!(opts && opts.isReplay);
     if (!questionAudio || questionAudioMuted) return;
     var audioEl = questionAudio;
     prepareExpressionRecordingBeforeQuestionAudio()
       .then(function () {
         if (!audioEl) return;
+        if (!isReplayPlayback) {
+          try {
+            var pIdx = getSafeCurrentQuestionIndex();
+            var pq = questions[pIdx];
+            if (
+              pq &&
+              pq.query_type === "הבעה" &&
+              expressionPhaseRecordingStartedRef.current &&
+              typeof SessionRecorder !== "undefined" &&
+              SessionRecorder.pauseRecordingIfActive
+            ) {
+              SessionRecorder.pauseRecordingIfActive();
+            }
+          } catch (ePQ) {}
+        }
         audioEl.currentTime = 0;
         audioEl.play().catch(function (err) {
           console.warn("Question audio play failed:", err);
@@ -1707,6 +1832,21 @@ const handleReadingValidationRetry = function () {
       })
       .catch(function (e) {
         console.error("playQuestionAudio:", e);
+        if (!isReplayPlayback) {
+          try {
+            var pIdx2 = getSafeCurrentQuestionIndex();
+            var pq2 = questions[pIdx2];
+            if (
+              pq2 &&
+              pq2.query_type === "הבעה" &&
+              expressionPhaseRecordingStartedRef.current &&
+              typeof SessionRecorder !== "undefined" &&
+              SessionRecorder.pauseRecordingIfActive
+            ) {
+              SessionRecorder.pauseRecordingIfActive();
+            }
+          } catch (ePQ2) {}
+        }
         audioEl.currentTime = 0;
         audioEl.play().catch(function () {});
         setIsAudioPlaying(true);
@@ -1714,7 +1854,7 @@ const handleReadingValidationRetry = function () {
   };
 
   const replayQuestionAudio = function () {
-    playQuestionAudio();
+    playQuestionAudio({ isReplay: true });
   };
 
   const TRY_AGAIN_AUDIO_SRC = "resources/questions_audio/try_again.mp3";
@@ -1766,6 +1906,19 @@ const handleReadingValidationRetry = function () {
       if (questionAudioMuted) return;
       function startPlayback() {
         try {
+          try {
+            var apIdx = getSafeCurrentQuestionIndex();
+            var apQ = questions[apIdx];
+            if (
+              apQ &&
+              apQ.query_type === "הבעה" &&
+              expressionPhaseRecordingStartedRef.current &&
+              typeof SessionRecorder !== "undefined" &&
+              SessionRecorder.pauseRecordingIfActive
+            ) {
+              SessionRecorder.pauseRecordingIfActive();
+            }
+          } catch (eAp) {}
           audioEl.currentTime = 0;
           audioEl.play().catch(function (err) {
             console.warn("Audio autoplay failed:", err);
@@ -2019,6 +2172,302 @@ const handleReadingValidationRetry = function () {
     }
     return count;
   }
+
+  function isNavigationReload() {
+    try {
+      var nav = performance.getEntriesByType("navigation")[0];
+      if (nav && (nav.type === "reload" || nav.type === "back_forward")) return true;
+    } catch (e) {}
+    try {
+      if (performance.navigation && performance.navigation.type === 1) return true;
+    } catch (e2) {}
+    return false;
+  }
+
+  function readPersistedJson(key, fallback) {
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === null) return fallback;
+      return JSON.parse(saved);
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  /** Snapshot at page load (localStorage), not live navigation — avoids modal after comp refresh when reaching exp later. */
+  function wasInExpressionPhaseAtPageLoad() {
+    if (!questions.length) return false;
+    if (readPersistedJson("sessionCompleted", false)) return false;
+    if (!readPersistedJson("ageConfirmed", false)) return false;
+    if (readPersistedJson("ageInvalid", false)) return false;
+    var hasMic = readPersistedJson("permission", false) || readPersistedJson("microphoneSkipped", false);
+    if (!hasMic) return false;
+    if (!readPersistedJson("micCheckPassed", false)) return false;
+    if (!readPersistedJson("voiceIdentifierConfirmed", false)) return false;
+    var idx = parseInt(readPersistedJson("currentIndex", 0), 10);
+    if (isNaN(idx)) idx = 0;
+    idx = Math.max(0, Math.min(idx, questions.length - 1));
+    return isOnExpressionPhaseByIndex(idx);
+  }
+
+  function enrichResultRowType(row) {
+    if (!row) return row;
+    if (row.questionType === "comprehension" || row.questionType === "expression") return row;
+    var qn = parseInt(row.questionNumber, 10);
+    var q = null;
+    for (var i = 0; i < questions.length; i++) {
+      if (parseInt(questions[i].query_number, 10) === qn) {
+        q = questions[i];
+        break;
+      }
+    }
+    return Object.assign({}, row, { questionType: getQuestionTypeLabel(q) });
+  }
+
+  function getComprehensionResultsInQuestionOrder(rows) {
+    var deduped = dedupeQuestionResultsKeepLastAttempt(rows || []);
+    var byNum = {};
+    deduped.forEach(function (r) {
+      var enriched = enrichResultRowType(r);
+      if (enriched.questionType === "comprehension") {
+        byNum[String(enriched.questionNumber)] = enriched;
+      }
+    });
+    var ordered = [];
+    for (var i = 0; i < questions.length; i++) {
+      var q = questions[i];
+      if (!q || q.query_type !== "הבנה") continue;
+      var key = String(q.query_number);
+      if (byNum[key]) ordered.push(byNum[key]);
+    }
+    return ordered;
+  }
+
+  function comprehensionProgressIsPreserved(rows) {
+    var compTotal = countQuestionsByType("comprehension");
+    if (compTotal <= 0) return true;
+    var compNums = [];
+    for (var i = 0; i < questions.length; i++) {
+      if (questions[i] && questions[i].query_type === "הבנה") {
+        compNums.push(String(questions[i].query_number));
+      }
+    }
+    var ordered = getComprehensionResultsInQuestionOrder(rows);
+    var answeredNums = {};
+    ordered.forEach(function (r) {
+      answeredNums[String(r.questionNumber)] = true;
+    });
+    var allAnswered = compNums.every(function (n) {
+      return !!answeredNums[n];
+    });
+    if (allAnswered) return true;
+    if (ordered.length >= 2) {
+      var last = ordered[ordered.length - 1];
+      var prev = ordered[ordered.length - 2];
+      if (last.result === "wrong" && prev.result === "wrong") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isOnExpressionPhaseByIndex(idx) {
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0) return false;
+    return idx >= firstExpr;
+  }
+
+  /** Refresh recovery applies only after mic check and on/ past first expression question (not mic/voice gates). */
+  function isPastMicCheckAndInExpressionPhase() {
+    if (sessionCompleted || !ageConfirmed || ageInvalid) return false;
+    if (!(permission || microphoneSkipped)) return false;
+    if (!micCheckPassed) return false;
+    if (!voiceIdentifierConfirmed) return false;
+    if (!questions.length) return false;
+    return isOnExpressionPhaseByIndex(getSafeCurrentQuestionIndex());
+  }
+
+  function clearExpressionRecordingForFreshCapture() {
+    expressionPhaseRecordingStartedRef.current = false;
+    expressionAnswerCaptureActiveRef.current = false;
+    setSessionRecordingStarted(false);
+    try {
+      if (typeof SessionRecorder !== "undefined") {
+        if (SessionRecorder.stopContinuousRecording) {
+          SessionRecorder.stopContinuousRecording();
+        }
+        if (SessionRecorder.cleanup) {
+          SessionRecorder.cleanup({ preserveQuestionTimestamps: false });
+        }
+        if (SessionRecorder.resetTimestamps) {
+          SessionRecorder.resetTimestamps();
+        }
+      }
+    } catch (e) {
+      console.warn("clearExpressionRecordingForFreshCapture:", e);
+    }
+    [
+      "sessionRecordingActive",
+      "sessionRecordingUrl",
+      "sessionRecordingFinal",
+      "sessionRecordingFinalMeta",
+      "sessionRecordingChunks",
+      "recordingStartTime",
+      "questionTimestamps",
+      "recordingPaused",
+      "pauseStartTime",
+      "totalPausedTime",
+    ].forEach(function (key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (e2) {}
+    });
+  }
+
+  function applyComprehensionOnlyQuestionResults() {
+    var kept = dedupeQuestionResultsKeepLastAttempt(questionResults).filter(function (r) {
+      return enrichResultRowType(r).questionType === "comprehension";
+    });
+    setQuestionResults(kept);
+    var buckets = countBucketsFromResults(kept);
+    setCorrectAnswers(buckets.correct);
+    setPartialAnswers(buckets.partly);
+    setWrongAnswers(buckets.wrong);
+  }
+
+  function resetExpressionUiForNewCapture() {
+    clearExpressionEvalEnableTimer();
+    clearExpressionAnswerEndTimer();
+    expressionEvalDeadlineRef.current = null;
+    expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
+    expressionEvalArmedQuestionRef.current = null;
+    setExpressionEvalArmed(false);
+    setEvaluationEnabled(false);
+    setExpressionTrafficSubmitted(false);
+    setExpressionAdvanceLock(false);
+    setExpressionEvalMsLeft(EXPRESSION_EVAL_DELAY_MS);
+    setTrafficPopupOpen(false);
+    setTrafficPopupChoice(null);
+    setShowContinue(false);
+  }
+
+  function restartExpressionAfterRefresh() {
+    var firstIdx = findFirstExpressionQuestionIndex();
+    if (firstIdx < 0) {
+      setExpressionRefreshRecovery(null);
+      return;
+    }
+    applyComprehensionOnlyQuestionResults();
+    clearExpressionRecordingForFreshCapture();
+    resetExpressionUiForNewCapture();
+    setExpressionRefreshRecovery(null);
+    setCurrentIndex(firstIdx);
+  }
+
+  function finishExpressionRefreshForceHome() {
+    if (window.SeeAndSayTestRun && window.SeeAndSayTestRun.setResumeBlockedAfterDataLoss) {
+      window.SeeAndSayTestRun.setResumeBlockedAfterDataLoss(true);
+    }
+    if (window.SeeAndSayTestRun && window.SeeAndSayTestRun.clearStoredTestRunKeepChildProfile) {
+      window.SeeAndSayTestRun.clearStoredTestRunKeepChildProfile();
+    } else {
+      enforceFreshRunStartFromQuestionOne();
+    }
+    try {
+      sessionStorage.removeItem("seeandsayWasInTest");
+    } catch (e) {}
+    setExpressionRefreshRecovery(null);
+    onHome();
+  }
+
+  function finishExpressionRefreshChoiceHome() {
+    clearExpressionRecordingForFreshCapture();
+    try {
+      sessionStorage.removeItem("seeandsayWasInTest");
+    } catch (e) {}
+    setExpressionRefreshRecovery(null);
+    onHome();
+  }
+
+  React.useEffect(function persistExpressionPhaseUnloadFlag() {
+    function onPageHide() {
+      try {
+        if (isPastMicCheckAndInExpressionPhase()) {
+          sessionStorage.setItem("seeandsayWasInTest", "1");
+        } else {
+          sessionStorage.removeItem("seeandsayWasInTest");
+        }
+      } catch (e) {}
+    }
+    window.addEventListener("pagehide", onPageHide);
+    return function () {
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [
+    voiceIdentifierConfirmed,
+    sessionCompleted,
+    questions.length,
+    micCheckPassed,
+    permission,
+    microphoneSkipped,
+    currentIndex,
+    ageConfirmed,
+    ageInvalid,
+  ]);
+
+  React.useEffect(function clearActiveTestTabWhenSessionCompletes() {
+    if (!sessionCompleted) return;
+    try {
+      sessionStorage.removeItem("seeandsayWasInTest");
+    } catch (e) {}
+  }, [sessionCompleted]);
+
+  React.useEffect(function clearExpressionRefreshWhenLeavingExpressionPhase() {
+    if (!expressionRefreshRecovery) return;
+    if (isPastMicCheckAndInExpressionPhase()) return;
+    setExpressionRefreshRecovery(null);
+  }, [
+    expressionRefreshRecovery,
+    voiceIdentifierConfirmed,
+    sessionCompleted,
+    questions.length,
+    micCheckPassed,
+    permission,
+    microphoneSkipped,
+    currentIndex,
+    ageConfirmed,
+    ageInvalid,
+  ]);
+
+  React.useEffect(function detectExpressionRefreshAfterReload() {
+    if (expressionRefreshCheckedRef.current) return;
+    if (!questions.length) return;
+
+    expressionRefreshCheckedRef.current = true;
+
+    if (!isNavigationReload()) return;
+
+    var reloadDuringExpression =
+      wasInExpressionPhaseAtPageLoad() ||
+      (function () {
+        try {
+          return sessionStorage.getItem("seeandsayWasInTest") === "1";
+        } catch (e) {
+          return false;
+        }
+      })();
+    try {
+      sessionStorage.removeItem("seeandsayWasInTest");
+    } catch (e2) {}
+
+    if (!reloadDuringExpression) return;
+
+    if (!comprehensionProgressIsPreserved(questionResults)) {
+      setExpressionRefreshRecovery("forceHome");
+      return;
+    }
+    setExpressionRefreshRecovery("choice");
+  }, [questions.length]);
 
   function finalizeComprehensionResult(result) {
     if (comprehensionAdvanceLockRef.current) return;
@@ -2696,6 +3145,7 @@ const handleReadingValidationRetry = function () {
     if (currentQ.query_type !== "הבעה") return;
     clearExpressionAnswerEndTimer();
     SessionRecorder.markQuestionEnd(currentQ.query_number);
+    endExpressionAnswerRecordingCapture();
   }
 
   function updateCurrentQuestionIndex(newIndex) {
@@ -2975,6 +3425,11 @@ const handleReadingValidationRetry = function () {
       return;
     }
 
+    expressionAnswerCaptureActiveRef.current = false;
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.pauseRecordingIfActive) {
+      SessionRecorder.pauseRecordingIfActive();
+    }
+
     pendingCompleteAfterVerifyRef.current = null;
     setBlockFinishUntilVerifyOverlay(false);
 
@@ -2999,11 +3454,10 @@ const handleReadingValidationRetry = function () {
       }
     };
 
-    expressionPhaseRecordingStartedRef.current = false;
-
     // Stop continuous session recording and send data to backend
     if (sessionRecordingStarted && permission) {
       SessionRecorder.stopContinuousRecording();
+      expressionPhaseRecordingStartedRef.current = false;
       console.log("🛑 Stopped session recording, waiting for MP3 conversion...");
 
       // Poll until recording is ready, then send to backend
@@ -3079,6 +3533,7 @@ const handleReadingValidationRetry = function () {
       setTimeout(checkRecordingReady, 200);
     } else {
       // No recording, show completion and send immediately
+      expressionPhaseRecordingStartedRef.current = false;
       setSessionCompleted(true);
       const fullArray = formatQuestionResultsArray(updatedQuestionResults);
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
@@ -3640,16 +4095,99 @@ function renderExpectedAnswerNote() {
   );
 }
 
+  function renderExpressionRefreshRecoveryModal() {
+    if (!expressionRefreshRecovery) return null;
+    if (!isPastMicCheckAndInExpressionPhase()) return null;
+    var isForce = expressionRefreshRecovery === "forceHome";
+    var title = isForce
+      ? (lang === "en" ? "Session data lost" : "נתוני המשחק אבדו")
+      : (lang === "en" ? "Expression recording lost" : "הקלטת ההבעה אבדה");
+    var body = isForce
+      ? (lang === "en"
+        ? "After refreshing the page, comprehension progress could not be restored. Please start a new game from the home screen. You will not be able to continue from your last saved point."
+        : "לאחר רענון הדף לא ניתן לשחזר את התקדמות הבנה. יש להתחיל משחק חדש ממסך הבית. לא תהיה אפשרות להמשיך מהנקודה האחרונה שנשמרה.")
+      : (lang === "en"
+        ? "The browser refresh stopped the microphone recording. Your comprehension answers are saved. Choose whether to start the expression section again from the first expression question, or return home."
+        : "רענון הדף עצר את הקלטת המיקרופון. תשובות הבנה נשמרו. אפשר להתחיל מחדש את חלק ההבעה מהשאלה הראשונה בהבעה, או לחזור למסך הבית.");
+    return React.createElement(
+      "div",
+      {
+        className: "traffic-popup-overlay",
+        role: "dialog",
+        "aria-modal": "true",
+        style: { zIndex: 10050 },
+      },
+      React.createElement(
+        "div",
+        {
+          className: "traffic-popup",
+          onClick: function (e) {
+            e.stopPropagation();
+          },
+        },
+        React.createElement("h2", { className: "traffic-popup__title" }, title),
+        React.createElement(
+          "p",
+          { style: { margin: "0 0 16px", fontSize: 15, lineHeight: 1.45, color: "#304348", textAlign: "center" } },
+          body
+        ),
+        isForce
+          ? React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "continue-button",
+                onClick: finishExpressionRefreshForceHome,
+                style: { width: "100%", maxWidth: 320 },
+              },
+              lang === "en" ? "Back to home" : "חזרה לדף הבית"
+            )
+          : React.createElement(
+              "div",
+              { style: { display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" } },
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "continue-button",
+                  onClick: restartExpressionAfterRefresh,
+                  style: { minWidth: 140 },
+                },
+                lang === "en" ? "Restart expression" : "התחלת הבעה מחדש"
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: finishExpressionRefreshChoiceHome,
+                  style: {
+                    minWidth: 120,
+                    padding: "10px 16px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(48,67,72,0.2)",
+                    background: "#f4f7f9",
+                    color: "#304348",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  },
+                },
+                lang === "en" ? "Home" : "דף הבית"
+              )
+            )
+      )
+    );
+  }
+
   if (!ageConfirmed || ageInvalid) {
     return React.createElement(
       "div",
       { className: "age-invalid", style: { display: "flex", flexDirection: "column", gap: "14px", alignItems: "center" } },
-      React.createElement("div", null, lang === "en" ? "Please start from the welcome flow." : "נא להתחיל ממסכי הפתיחה."),
-      React.createElement(
-        "button",
-        { className: "continue-button", type: "button", onClick: onHome },
-        lang === "en" ? "Back to welcome" : "חזרה לפתיחה"
-      )
+        React.createElement("div", null, lang === "en" ? "Please start from the welcome flow." : "נא להתחיל ממסכי הפתיחה."),
+        React.createElement(
+          "button",
+          { className: "continue-button", type: "button", onClick: onHome },
+          lang === "en" ? "Back to welcome" : "חזרה לפתיחה"
+        )
     );
   }
 
@@ -4871,6 +5409,10 @@ function renderExpectedAnswerNote() {
   // Show loading screen ONLY if current question images aren't ready
   if (!currentQuestionImagesLoaded) {
     return React.createElement(
+      React.Fragment,
+      null,
+      renderExpressionRefreshRecoveryModal(),
+      React.createElement(
       "div",
       { className: "question-loading-screen" },
       React.createElement("h2", null, tr("test.loadingQuestion.title")),
@@ -4928,6 +5470,7 @@ function renderExpectedAnswerNote() {
             )
           )
         : null
+      )
     );
   }
 
@@ -4974,6 +5517,7 @@ function renderExpectedAnswerNote() {
     },
     renderConfettiOverlay(),
     renderClappingAvatarOverlay(),
+    renderExpressionRefreshRecoveryModal(),
 
     blockFinishUntilVerifyOverlay
       ? React.createElement(
