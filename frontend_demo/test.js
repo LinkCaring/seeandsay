@@ -1,3 +1,85 @@
+var AVATAR_INTRO_WEBM_TRANSPARENCY_SUPPORT = null;
+
+var AVATAR_INTRO_VIDEO = {
+  compr: {
+    webm: "resources/avatar/compr_intro.webm",
+    mp4Fallback: "resources/avatar/compr_intro_fallback.mp4",
+  },
+  exp: {
+    webm: "resources/avatar/exp_intro.webm",
+    mp4Fallback: "resources/avatar/exp_intro_fallback.mp4",
+  },
+};
+
+function isApplePlatformWithoutWebmAlpha() {
+  try {
+    var ua = navigator.userAgent || "";
+    if (/iPad|iPhone|iPod/.test(ua)) return true;
+    if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) return true;
+  } catch (e) {}
+  return false;
+}
+
+/** WebM with usable alpha (Chrome/Android); iOS and no-WebM devices use MP4 fallback assets. */
+function canPlayWebmWithTransparency() {
+  if (AVATAR_INTRO_WEBM_TRANSPARENCY_SUPPORT !== null) {
+    return AVATAR_INTRO_WEBM_TRANSPARENCY_SUPPORT;
+  }
+  var supported = false;
+  try {
+    var probe = document.createElement("video");
+    var vp9 = probe.canPlayType('video/webm; codecs="vp9"');
+    var vp8 = probe.canPlayType('video/webm; codecs="vp8"');
+    var webm = probe.canPlayType("video/webm");
+    var canPlayWebm =
+      vp9 === "probably" ||
+      vp9 === "maybe" ||
+      vp8 === "probably" ||
+      vp8 === "maybe" ||
+      webm === "probably" ||
+      webm === "maybe";
+    supported = canPlayWebm && !isApplePlatformWithoutWebmAlpha();
+  } catch (e) {
+    supported = false;
+  }
+  AVATAR_INTRO_WEBM_TRANSPARENCY_SUPPORT = supported;
+  return supported;
+}
+
+function resolveAvatarIntroVideoSources(webmPath, mp4FallbackPath) {
+  if (canPlayWebmWithTransparency()) {
+    return { src: webmPath, isFallback: false };
+  }
+  return { src: mp4FallbackPath, isFallback: true };
+}
+
+function switchAvatarIntroVideoToMp4Fallback(videoEl, mp4FallbackPath, onGiveUp) {
+  if (!videoEl || typeof onGiveUp !== "function") return;
+  var currentSrc = String(videoEl.currentSrc || videoEl.src || "");
+  if (currentSrc.indexOf(mp4FallbackPath) !== -1) {
+    onGiveUp();
+    return;
+  }
+  if (videoEl.getAttribute("data-avatar-intro-fallback") === "1") {
+    onGiveUp();
+    return;
+  }
+  videoEl.setAttribute("data-avatar-intro-fallback", "1");
+  videoEl.classList.add("test-avatar-intro__video--solid-bg");
+  videoEl.src = mp4FallbackPath;
+  try {
+    videoEl.load();
+    var playPromise = videoEl.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(function () {
+        onGiveUp();
+      });
+    }
+  } catch (e) {
+    onGiveUp();
+  }
+}
+
 function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) {
   const PRIVACY_POLICY_URL = "https://www.heb.linkcaring.com/privacy-policy";
   const TERMS_OF_USE_URL = "https://www.heb.linkcaring.com/terms-of-use";
@@ -145,7 +227,17 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [permission, setPermission] = usePersistentState("permission", false);
   const [microphoneSkipped, setMicrophoneSkipped] = usePersistentState("microphoneSkipped", false);
   const [micCheckPassed, setMicCheckPassed] = usePersistentState("micCheckPassed", false);
+  const [awaitingExpressionMicCheck, setAwaitingExpressionMicCheck] = usePersistentState("awaitingExpressionMicCheck", false);
+  const [comprIntroVideoComplete, setComprIntroVideoComplete] = usePersistentState("comprIntroVideoComplete", false);
+  const [expIntroVideoComplete, setExpIntroVideoComplete] = usePersistentState("expIntroVideoComplete", false);
+  const [pendingExpressionIntroIndex, setPendingExpressionIntroIndex] = usePersistentState("pendingExpressionIntroIndex", -1);
   const [voiceIdentifierConfirmed, setVoiceIdentifierConfirmed] = usePersistentState("voiceIdentifierConfirmed", false);
+  const comprIntroVideoRef = React.useRef(null);
+  const comprIntroAutoplayBlockedRef = React.useRef(false);
+  const expIntroVideoRef = React.useRef(null);
+  const expIntroAutoplayBlockedRef = React.useRef(false);
+  const pendingFirstExpressionIndexRef = React.useRef(null);
+  const expressionIntroActiveRef = React.useRef(false);
   const [micCheckRunning, setMicCheckRunning] = React.useState(false);
   const [micCheckReady, setMicCheckReady] = React.useState(false);
   const [micCheckLevel, setMicCheckLevel] = React.useState(0);
@@ -363,6 +455,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       "totalPausedTime",
       "readingRecordingBlob",
       "forceFreshStartAfterMicCheck",
+      "comprIntroVideoComplete",
+      "awaitingExpressionMicCheck",
+      "expIntroVideoComplete",
+      "pendingExpressionIntroIndex",
     ].forEach(function (key) {
       try { localStorage.removeItem(key); } catch (e) {}
     });
@@ -398,6 +494,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     consecutiveCompFailRef.current = 0;
     consecutiveExprFailRef.current = 0;
     setForceFreshStartAfterMicCheck(false);
+    setComprIntroVideoComplete(false);
+    setAwaitingExpressionMicCheck(false);
+    setExpIntroVideoComplete(false);
+    setPendingExpressionIntroIndex(-1);
+    pendingFirstExpressionIndexRef.current = null;
   }
 
   const isPausedRef = React.useRef(isPaused);
@@ -406,6 +507,13 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   sessionCompletedRef.current = sessionCompleted;
   const voiceIdentifierConfirmedRef = React.useRef(voiceIdentifierConfirmed);
   voiceIdentifierConfirmedRef.current = voiceIdentifierConfirmed;
+  const awaitingExpressionMicCheckRef = React.useRef(awaitingExpressionMicCheck);
+  awaitingExpressionMicCheckRef.current = awaitingExpressionMicCheck;
+  expressionIntroActiveRef.current =
+    !sessionCompleted &&
+    !expIntroVideoComplete &&
+    pendingExpressionIntroIndex >= 0 &&
+    (micCheckPassed || microphoneSkipped);
   const sessionRecordingStartedRef = React.useRef(sessionRecordingStarted);
   sessionRecordingStartedRef.current = sessionRecordingStarted;
   const recordingPermissionRef = React.useRef(permission);
@@ -500,16 +608,21 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   /** Which `gen` last set speaker status to `"processing"` (so stale runs can clear it safely). */
   const readingVerifyProcessingOwnerGenRef = React.useRef(null);
 
-  // Mobile detection - must be before any early returns
+  // Layout tier: match CSS phone band (max-width: 600px); used only for legacy minImgWidth (unused in render).
   const isMobile = React.useMemo(function () {
     if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia("(max-width: 640px)").matches;
+    return window.matchMedia("(max-width: 600px)").matches;
   }, []);
 
-  const isPortraitMobile = React.useMemo(function () {
-  if (typeof window === "undefined" || !window.matchMedia) return false;
-  return window.matchMedia("(max-width: 600px) and (orientation: portrait)").matches;
-}, []);
+  /** Phone-like image grids: golden ≤600px portrait, short-wide (1280×800), or tall desktop (1920×1080). */
+  const usePhoneLikeGrid = React.useMemo(function () {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return (
+      window.matchMedia("(max-width: 600px) and (orientation: portrait)").matches ||
+      window.matchMedia("(min-width: 721px) and (max-height: 860px)").matches ||
+      window.matchMedia("(min-width: 900px) and (min-height: 861px)").matches
+    );
+  }, []);
 
   /**
    * Speaker verification for the reading sample (runs in background after Continue).
@@ -769,7 +882,15 @@ function blobToBase64(blob) {
   function scheduleFirstQuestionAutoRetry(audioEl, questionNumber) {
     if (!audioEl) return;
     if (getSafeCurrentQuestionIndex() !== 0) return;
-    if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+    if (
+      questionAudioMuted ||
+      isPausedRef.current ||
+      sessionCompletedRef.current ||
+      awaitingExpressionMicCheckRef.current ||
+      expressionIntroActiveRef.current
+    ) {
+      return;
+    }
     var qn = String(questionNumber || "");
     if (!qn) return;
     if (firstQuestionRetryQuestionRef.current !== qn) {
@@ -785,7 +906,15 @@ function blobToBase64(blob) {
     }
     firstQuestionRetryTimerRef.current = setTimeout(function () {
       if (getSafeCurrentQuestionIndex() !== 0) return;
-      if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+      if (
+        questionAudioMuted ||
+        isPausedRef.current ||
+        sessionCompletedRef.current ||
+        awaitingExpressionMicCheckRef.current ||
+        expressionIntroActiveRef.current
+      ) {
+        return;
+      }
       if (!audioEl || questionAudioRef.current !== audioEl) return;
       try {
         audioEl.currentTime = 0;
@@ -809,7 +938,7 @@ function blobToBase64(blob) {
     }, retryDelays[attempt]);
   }
 
-  function stopQuestionAudioForSessionComplete() {
+  function stopAllQuestionPlayback() {
     questionAudioAutoplayPendingRef.current = false;
     resetFirstQuestionRetryState();
     if (questionAudioRef.current) {
@@ -821,18 +950,36 @@ function blobToBase64(blob) {
     }
     if (tryAgainAudioRef.current) {
       try {
+        tryAgainAudioRef.current.onended = null;
         tryAgainAudioRef.current.pause();
         tryAgainAudioRef.current.currentTime = 0;
       } catch (e) {}
     }
-    setQuestionAudio(null);
+    setQuestionAudio(function (prev) {
+      if (prev) {
+        try {
+          prev.pause();
+          prev.currentTime = 0;
+        } catch (e) {}
+      }
+      return null;
+    });
     setIsAudioPlaying(false);
+  }
+
+  function stopQuestionAudioForSessionComplete() {
+    stopAllQuestionPlayback();
   }
 
   React.useEffect(function () {
     if (!sessionCompleted) return;
-    stopQuestionAudioForSessionComplete();
+    stopAllQuestionPlayback();
   }, [sessionCompleted]);
+
+  React.useEffect(function () {
+    if (!awaitingExpressionMicCheck) return;
+    stopAllQuestionPlayback();
+  }, [awaitingExpressionMicCheck]);
 
   React.useEffect(function cleanupFirstQuestionRetryTimer() {
     return function () {
@@ -863,15 +1010,34 @@ function blobToBase64(blob) {
         ? "age"
         : ageInvalid
           ? "ageInvalid"
-          : !permission && !microphoneSkipped
-            ? "mic"
-            : (permission || microphoneSkipped) && !voiceIdentifierConfirmed
+          : (permission || microphoneSkipped) && !voiceIdentifierConfirmed
               ? "voice"
               : sessionCompleted
                 ? "complete"
-                : "questions";
+                : awaitingExpressionMicCheck && permission && !microphoneSkipped && !micCheckPassed
+                  ? "mic"
+                  : voiceIdentifierConfirmed && !comprIntroVideoComplete
+                    ? "compIntro"
+                    : !expIntroVideoComplete &&
+                        pendingExpressionIntroIndex >= 0 &&
+                        (micCheckPassed || microphoneSkipped)
+                      ? "expIntro"
+                      : "questions";
     onTestPhase(phase);
-  }, [onTestPhase, ageConfirmed, ageInvalid, permission, microphoneSkipped, voiceIdentifierConfirmed, sessionCompleted]);
+  }, [
+    onTestPhase,
+    ageConfirmed,
+    ageInvalid,
+    permission,
+    microphoneSkipped,
+    voiceIdentifierConfirmed,
+    awaitingExpressionMicCheck,
+    micCheckPassed,
+    comprIntroVideoComplete,
+    expIntroVideoComplete,
+    pendingExpressionIntroIndex,
+    sessionCompleted,
+  ]);
 
 
   /** Start session MP3 when expression prompt audio begins (not on navigation). */
@@ -1184,6 +1350,80 @@ function blobToBase64(blob) {
     return -1;
   }
 
+  function isOnExpressionPhaseByIndex(idx) {
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0) return false;
+    return idx >= firstExpr;
+  }
+
+  /** Pause navigation and show sound check before the first expression question. */
+  function tryGateExpressionMicCheckBeforeNavigatingTo(targetIdx) {
+    if (microphoneSkipped || !permission) return false;
+    if (micCheckPassed) return false;
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0 || targetIdx < firstExpr) return false;
+    stopAllQuestionPlayback();
+    pendingFirstExpressionIndexRef.current = targetIdx;
+    setAwaitingExpressionMicCheck(true);
+    return true;
+  }
+
+  function beginExpressionIntroBeforeIndex(targetIdx) {
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0 || targetIdx < firstExpr) return false;
+    if (expIntroVideoComplete) return false;
+    stopAllQuestionPlayback();
+    pendingFirstExpressionIndexRef.current = targetIdx;
+    setPendingExpressionIntroIndex(targetIdx);
+    return true;
+  }
+
+  function tryDeferExpressionIntroBeforeNavigatingTo(targetIdx) {
+    if (!(micCheckPassed || microphoneSkipped)) return false;
+    return beginExpressionIntroBeforeIndex(targetIdx);
+  }
+
+  function continueFromExpressionMicCheck() {
+    primeMediaPlaybackFromUserGesture();
+    setMicCheckPassed(true);
+    setMicCheckReady(false);
+    setAwaitingExpressionMicCheck(false);
+    stopMicrophoneCheck();
+    var targetIdx = pendingFirstExpressionIndexRef.current;
+    if (targetIdx == null || targetIdx < 0) {
+      targetIdx = findFirstExpressionQuestionIndex();
+    }
+    if (targetIdx >= 0 && !expIntroVideoComplete) {
+      beginExpressionIntroBeforeIndex(targetIdx);
+      return;
+    }
+    firstQuestionMicGateArmedRef.current = true;
+    resetFirstQuestionRetryState();
+    pendingFirstExpressionIndexRef.current = null;
+    setPendingExpressionIntroIndex(-1);
+    if (targetIdx >= 0) {
+      updateCurrentQuestionIndex(targetIdx);
+    }
+  }
+
+  function finishExpressionIntroVideo() {
+    setExpIntroVideoComplete(true);
+    firstQuestionMicGateArmedRef.current = true;
+    resetFirstQuestionRetryState();
+    var targetIdx = pendingExpressionIntroIndex;
+    if (targetIdx < 0) {
+      targetIdx = pendingFirstExpressionIndexRef.current;
+    }
+    if (targetIdx == null || targetIdx < 0) {
+      targetIdx = findFirstExpressionQuestionIndex();
+    }
+    pendingFirstExpressionIndexRef.current = null;
+    setPendingExpressionIntroIndex(-1);
+    if (targetIdx >= 0) {
+      updateCurrentQuestionIndex(targetIdx);
+    }
+  }
+
   /** Start continuous MP3 capture at first expression question (not during comprehension). */
   async function ensureExpressionPhaseRecording() {
     if (!permission || !voiceIdentifierConfirmed) return false;
@@ -1322,6 +1562,11 @@ function blobToBase64(blob) {
     setMicCheckReady(false);
     setMicCheckLevel(0);
     setMicCheckPeak(0);
+    setAwaitingExpressionMicCheck(false);
+    setComprIntroVideoComplete(false);
+    setExpIntroVideoComplete(false);
+    setPendingExpressionIntroIndex(-1);
+    pendingFirstExpressionIndexRef.current = null;
     const internalUserId = ensureInternalUserId();
 
     function prepareDirectTestFlowNoSeparateReading() {
@@ -1750,9 +1995,181 @@ const handleReadingValidationRetry = function () {
     trafficChoiceInProgressRef.current = false;
   }
 
+  function finishComprehensionIntroVideo() {
+    setComprIntroVideoComplete(true);
+    firstQuestionMicGateArmedRef.current = true;
+    resetFirstQuestionRetryState();
+  }
+
+  var comprIntroVideoSources = React.useMemo(function () {
+    return resolveAvatarIntroVideoSources(
+      AVATAR_INTRO_VIDEO.compr.webm,
+      AVATAR_INTRO_VIDEO.compr.mp4Fallback
+    );
+  }, []);
+
+  var expIntroVideoSources = React.useMemo(function () {
+    return resolveAvatarIntroVideoSources(
+      AVATAR_INTRO_VIDEO.exp.webm,
+      AVATAR_INTRO_VIDEO.exp.mp4Fallback
+    );
+  }, []);
+
+  function handleComprIntroVideoError() {
+    switchAvatarIntroVideoToMp4Fallback(
+      comprIntroVideoRef.current,
+      AVATAR_INTRO_VIDEO.compr.mp4Fallback,
+      finishComprehensionIntroVideo
+    );
+  }
+
+  function handleExpIntroVideoError() {
+    switchAvatarIntroVideoToMp4Fallback(
+      expIntroVideoRef.current,
+      AVATAR_INTRO_VIDEO.exp.mp4Fallback,
+      finishExpressionIntroVideo
+    );
+  }
+
+  React.useEffect(function skipComprIntroWhenResumingMidTest() {
+    if (!voiceIdentifierConfirmed || comprIntroVideoComplete || sessionCompleted) return;
+    if (!questions.length) return;
+    var idx = getSafeCurrentQuestionIndex();
+    var results = readPersistedJson("questionResults", []);
+    if (idx > 0 || (Array.isArray(results) && results.length > 0) || isOnExpressionPhaseByIndex(idx)) {
+      setComprIntroVideoComplete(true);
+    }
+  }, [voiceIdentifierConfirmed, comprIntroVideoComplete, sessionCompleted, questions.length, currentIndex]);
+
+  React.useEffect(function resumeExpressionMicGateAfterRefresh() {
+    if (sessionCompleted || !voiceIdentifierConfirmed || !questions.length) return;
+    if (micCheckPassed || microphoneSkipped || !permission) return;
+    if (awaitingExpressionMicCheck) return;
+    if (pendingExpressionIntroIndex >= 0) return;
+    var idx = getSafeCurrentQuestionIndex();
+    if (!isOnExpressionPhaseByIndex(idx)) return;
+    pendingFirstExpressionIndexRef.current = idx;
+    setAwaitingExpressionMicCheck(true);
+  }, [
+    sessionCompleted,
+    voiceIdentifierConfirmed,
+    questions.length,
+    currentIndex,
+    micCheckPassed,
+    microphoneSkipped,
+    permission,
+    awaitingExpressionMicCheck,
+    pendingExpressionIntroIndex,
+  ]);
+
+  React.useEffect(function resumeExpIntroAfterRefresh() {
+    if (sessionCompleted || expIntroVideoComplete) return;
+    if (!micCheckPassed && !microphoneSkipped) return;
+    var idx = getSafeCurrentQuestionIndex();
+    if (isOnExpressionPhaseByIndex(idx)) {
+      setExpIntroVideoComplete(true);
+      setPendingExpressionIntroIndex(-1);
+      pendingFirstExpressionIndexRef.current = null;
+      return;
+    }
+    if (pendingExpressionIntroIndex >= 0) {
+      pendingFirstExpressionIndexRef.current = pendingExpressionIntroIndex;
+    }
+  }, [
+    sessionCompleted,
+    expIntroVideoComplete,
+    micCheckPassed,
+    microphoneSkipped,
+    questions.length,
+    currentIndex,
+    pendingExpressionIntroIndex,
+  ]);
+
+  React.useEffect(function tryAutoplayExpIntroVideo() {
+    if (sessionCompleted || expIntroVideoComplete || pendingExpressionIntroIndex < 0) return;
+    if (!(micCheckPassed || microphoneSkipped)) return;
+    var el = expIntroVideoRef.current;
+    if (!el) return;
+    expIntroAutoplayBlockedRef.current = false;
+    var p = el.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(function () {
+        expIntroAutoplayBlockedRef.current = true;
+      });
+    }
+  }, [
+    sessionCompleted,
+    expIntroVideoComplete,
+    pendingExpressionIntroIndex,
+    micCheckPassed,
+    microphoneSkipped,
+  ]);
+
+  React.useEffect(function retryExpIntroVideoOnFirstInteraction() {
+    if (sessionCompleted || expIntroVideoComplete || pendingExpressionIntroIndex < 0) return;
+    if (!(micCheckPassed || microphoneSkipped)) return;
+    function tryStart() {
+      if (!expIntroAutoplayBlockedRef.current) return;
+      var el = expIntroVideoRef.current;
+      if (!el) return;
+      var p = el.play();
+      if (p && typeof p.then === "function") {
+        p.then(function () {
+          expIntroAutoplayBlockedRef.current = false;
+        }).catch(function () {});
+      }
+    }
+    document.addEventListener("pointerdown", tryStart, { passive: true });
+    document.addEventListener("touchstart", tryStart, { passive: true });
+    return function () {
+      document.removeEventListener("pointerdown", tryStart);
+      document.removeEventListener("touchstart", tryStart);
+    };
+  }, [
+    sessionCompleted,
+    expIntroVideoComplete,
+    pendingExpressionIntroIndex,
+    micCheckPassed,
+    microphoneSkipped,
+  ]);
+
+  React.useEffect(function tryAutoplayComprIntroVideo() {
+    if (!voiceIdentifierConfirmed || comprIntroVideoComplete || sessionCompleted) return;
+    var el = comprIntroVideoRef.current;
+    if (!el) return;
+    comprIntroAutoplayBlockedRef.current = false;
+    var p = el.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(function () {
+        comprIntroAutoplayBlockedRef.current = true;
+      });
+    }
+  }, [voiceIdentifierConfirmed, comprIntroVideoComplete, sessionCompleted]);
+
+  React.useEffect(function retryComprIntroVideoOnFirstInteraction() {
+    if (!voiceIdentifierConfirmed || comprIntroVideoComplete || sessionCompleted) return;
+    function tryStart() {
+      if (!comprIntroAutoplayBlockedRef.current) return;
+      var el = comprIntroVideoRef.current;
+      if (!el) return;
+      var p = el.play();
+      if (p && typeof p.then === "function") {
+        p.then(function () {
+          comprIntroAutoplayBlockedRef.current = false;
+        }).catch(function () {});
+      }
+    }
+    document.addEventListener("pointerdown", tryStart, { passive: true });
+    document.addEventListener("touchstart", tryStart, { passive: true });
+    return function () {
+      document.removeEventListener("pointerdown", tryStart);
+      document.removeEventListener("touchstart", tryStart);
+    };
+  }, [voiceIdentifierConfirmed, comprIntroVideoComplete, sessionCompleted]);
+
   // Start AFK timer when test begins
   React.useEffect(function () {
-    if (voiceIdentifierConfirmed && !isPaused && !sessionCompleted) {
+    if (voiceIdentifierConfirmed && comprIntroVideoComplete && !isPaused && !sessionCompleted) {
       resetAfkTimer();
     }
 
@@ -1760,14 +2177,14 @@ const handleReadingValidationRetry = function () {
     return function () {
       stopAfkTimer();
     };
-  }, [voiceIdentifierConfirmed]);
+  }, [voiceIdentifierConfirmed, comprIntroVideoComplete]);
 
   // Reset AFK timer when loading a new question
   React.useEffect(function () {
-    if (voiceIdentifierConfirmed && !isPaused && !sessionCompleted) {
+    if (voiceIdentifierConfirmed && comprIntroVideoComplete && !isPaused && !sessionCompleted) {
       resetAfkTimer();
     }
-  }, [currentIndex]);
+  }, [currentIndex, comprIntroVideoComplete]);
 
   // Stop AFK timer when paused or completed
   React.useEffect(function () {
@@ -1804,6 +2221,13 @@ const handleReadingValidationRetry = function () {
   const playQuestionAudio = function (opts) {
     opts = opts || {};
     var isReplayPlayback = !!(opts && opts.isReplay);
+    if (
+      awaitingExpressionMicCheckRef.current ||
+      expressionIntroActiveRef.current ||
+      sessionCompletedRef.current
+    ) {
+      return;
+    }
     if (!questionAudio || questionAudioMuted) return;
     var audioEl = questionAudio;
     prepareExpressionRecordingBeforeQuestionAudio()
@@ -1860,6 +2284,13 @@ const handleReadingValidationRetry = function () {
   const TRY_AGAIN_AUDIO_SRC = "resources/questions_audio/try_again.mp3";
 
   const playTryAgainAudio = function () {
+    if (
+      awaitingExpressionMicCheckRef.current ||
+      expressionIntroActiveRef.current ||
+      sessionCompletedRef.current
+    ) {
+      return;
+    }
     if (questionAudioMuted) return;
     try {
       if (!tryAgainAudioRef.current) {
@@ -1871,7 +2302,15 @@ const handleReadingValidationRetry = function () {
       }
       var replayQuestionIdx = getCurrentQuestionIndex();
       a.onended = function () {
-        if (questionAudioMuted || isPausedRef.current || sessionCompletedRef.current) return;
+        if (
+          questionAudioMuted ||
+          isPausedRef.current ||
+          sessionCompletedRef.current ||
+          awaitingExpressionMicCheckRef.current ||
+          expressionIntroActiveRef.current
+        ) {
+          return;
+        }
         if (getCurrentQuestionIndex() !== replayQuestionIdx) return;
         if (questionType !== "C" && questionType !== "E") return;
         replayQuestionAudio();
@@ -1879,7 +2318,13 @@ const handleReadingValidationRetry = function () {
       a.currentTime = 0;
       a.play().catch(function () {
         // If try-again fails to play (autoplay policy, decode issue), still attempt immediate question replay.
-        if (!questionAudioMuted && !isPausedRef.current && !sessionCompletedRef.current) {
+        if (
+          !questionAudioMuted &&
+          !isPausedRef.current &&
+          !sessionCompletedRef.current &&
+          !awaitingExpressionMicCheckRef.current &&
+          !expressionIntroActiveRef.current
+        ) {
           replayQuestionAudio();
         }
       });
@@ -1887,10 +2332,13 @@ const handleReadingValidationRetry = function () {
   };
 
   React.useEffect(function autoplayQuestionAudioAfterImagesReady() {
-    if (sessionCompleted || !ageConfirmed) return;
+    if (sessionCompleted || awaitingExpressionMicCheck || expressionIntroActiveRef.current || !ageConfirmed) return;
     if (!currentQuestionImagesLoaded) return;
     if (!questionAudioAutoplayPendingRef.current) return;
-    if (!micCheckPassed) return;
+    if (!comprIntroVideoComplete) return;
+    if (pendingExpressionIntroIndex >= 0) return;
+    if (!expIntroVideoComplete && isOnExpressionPhaseByIndex(getSafeCurrentQuestionIndex())) return;
+    if (!micCheckPassed && isOnExpressionPhaseByIndex(getSafeCurrentQuestionIndex())) return;
     if (questionAudioMuted) return;
     if (!(permission || microphoneSkipped) || !voiceIdentifierConfirmed) return;
     if (!questionAudio) return;
@@ -1900,7 +2348,10 @@ const handleReadingValidationRetry = function () {
     var audioEl = questionAudio;
     var currentIdxForAutoplay = getSafeCurrentQuestionIndex();
     var currentQuestion = questions[currentIdxForAutoplay];
+    var firstExprIdxForAutoplay = findFirstExpressionQuestionIndex();
     var isFirstQuestionAutoplay = currentIdxForAutoplay === 0;
+    var isFirstExpressionAutoplay =
+      firstExprIdxForAutoplay >= 0 && currentIdxForAutoplay === firstExprIdxForAutoplay;
     var currentQuestionNumber = currentQuestion ? String(currentQuestion.query_number || "") : "";
     function runPlay() {
       if (questionAudioMuted) return;
@@ -1942,7 +2393,10 @@ const handleReadingValidationRetry = function () {
         });
     }
 
-    if (isFirstQuestionAutoplay && firstQuestionMicGateArmedRef.current) {
+    if (
+      (isFirstQuestionAutoplay || isFirstExpressionAutoplay) &&
+      firstQuestionMicGateArmedRef.current
+    ) {
       // Try first question immediately while the mic-check click activation is still fresh.
       firstQuestionMicGateArmedRef.current = false;
       runPlay();
@@ -1957,11 +2411,15 @@ const handleReadingValidationRetry = function () {
     currentQuestionImagesLoaded,
     questionAudio,
     micCheckPassed,
+    comprIntroVideoComplete,
+    expIntroVideoComplete,
+    pendingExpressionIntroIndex,
     questionAudioMuted,
     voiceIdentifierConfirmed,
     permission,
     microphoneSkipped,
     sessionCompleted,
+    awaitingExpressionMicCheck,
     ageConfirmed,
     currentIndex,
     questions,
@@ -1994,12 +2452,7 @@ const handleReadingValidationRetry = function () {
   const pauseTest = function () {
     if (isPaused) return;
 
-    if (questionAudio) {
-      try {
-        questionAudio.pause();
-      } catch (e) {}
-    }
-    setIsAudioPlaying(false);
+    stopAllQuestionPlayback();
 
     setIsPaused(true);
 
@@ -2269,12 +2722,6 @@ const handleReadingValidationRetry = function () {
       }
     }
     return false;
-  }
-
-  function isOnExpressionPhaseByIndex(idx) {
-    var firstExpr = findFirstExpressionQuestionIndex();
-    if (firstExpr < 0) return false;
-    return idx >= firstExpr;
   }
 
   /** Refresh recovery applies only after mic check and on/ past first expression question (not mic/voice gates). */
@@ -2939,6 +3386,8 @@ const handleReadingValidationRetry = function () {
         var firstExprIdx = findFirstExpressionQuestionIndex();
         consecutiveCompFailRef.current = 0;
         if (firstExprIdx >= 0 && currentIdx < firstExprIdx) {
+          if (tryGateExpressionMicCheckBeforeNavigatingTo(firstExprIdx)) return;
+          if (tryDeferExpressionIntroBeforeNavigatingTo(firstExprIdx)) return;
           updateCurrentQuestionIndex(firstExprIdx);
           return;
         }
@@ -2950,7 +3399,25 @@ const handleReadingValidationRetry = function () {
         return;
       }
       if (currentIdx < questions.length - 1) {
-        updateCurrentQuestionIndex(currentIdx + 1);
+        var nextIdx = currentIdx + 1;
+        var firstExprForAdvance = findFirstExpressionQuestionIndex();
+        if (
+          firstExprForAdvance >= 0 &&
+          nextIdx >= firstExprForAdvance &&
+          currentIdx < firstExprForAdvance &&
+          tryGateExpressionMicCheckBeforeNavigatingTo(nextIdx)
+        ) {
+          return;
+        }
+        if (
+          firstExprForAdvance >= 0 &&
+          nextIdx >= firstExprForAdvance &&
+          currentIdx < firstExprForAdvance &&
+          tryDeferExpressionIntroBeforeNavigatingTo(nextIdx)
+        ) {
+          return;
+        }
+        updateCurrentQuestionIndex(nextIdx);
       } else {
         var shouldFinishAtLastQuestion = false;
         if (questionType === "E") {
@@ -3343,7 +3810,7 @@ const handleReadingValidationRetry = function () {
       questionAudioRef.current = audio;
       setQuestionAudio(audio);
       // Autoplay runs in autoplayQuestionAudioAfterImagesReady once photos + loading gate clear.
-      if (micCheckPassed) {
+      if (q.query_type !== "הבעה" || (micCheckPassed && expIntroVideoComplete)) {
         questionAudioAutoplayPendingRef.current = true;
       }
     }
@@ -3673,7 +4140,10 @@ const handleReadingValidationRetry = function () {
   React.useEffect(
     function loadCurrentQuestion() {
       if (ageConfirmed && questions.length > 0 && !sessionCompleted) {
+        if (voiceIdentifierConfirmed && !comprIntroVideoComplete) return;
+        if (pendingExpressionIntroIndex >= 0) return;
         const idx = getSafeCurrentQuestionIndex();
+        if (!expIntroVideoComplete && isOnExpressionPhaseByIndex(idx)) return;
         if (idx < 0) return;
         loadQuestion(idx);
         const q = questions[idx];
@@ -3687,7 +4157,17 @@ const handleReadingValidationRetry = function () {
         checkCurrentQuestionImages();
       }
     },
-    [ageConfirmed, questions, currentIndex, sessionCompleted, voiceIdentifierConfirmed, micCheckPassed]
+    [
+      ageConfirmed,
+      questions,
+      currentIndex,
+      sessionCompleted,
+      voiceIdentifierConfirmed,
+      micCheckPassed,
+      comprIntroVideoComplete,
+      expIntroVideoComplete,
+      pendingExpressionIntroIndex,
+    ]
   );
 
   // Monitor if current question images are loaded
@@ -3765,89 +4245,6 @@ const handleReadingValidationRetry = function () {
           requestFinishTest();
         },
       })
-    );
-  }
-
-  function ProgressBar() {
-    const currentIdx = getCurrentQuestionIndex();
-    const totalQuestions = questions.length;
-    const progressPercentage = totalQuestions > 0 ? (currentIdx / totalQuestions) * 100 : 0;
-    const isRecording = permission && sessionRecordingStarted;
-    const showControls = voiceIdentifierConfirmed && !sessionCompleted;
-    const isRtl = lang !== "en";
-    const bunnyPosition = Math.max(4, isRtl ? (100 - progressPercentage) : progressPercentage);
-    var exprBlockNextPb = questionType === "E" && (!expressionTrafficSubmitted || expressionAdvanceLock);
-    var exprBlockPrevPb = questionType === "E" && evaluationEnabled && trafficPopupOpen;
-    return React.createElement(
-      "div",
-      { className: "progress-bar-container" },
-      React.createElement(
-  "div",
-  { className: "test-controls-row" },
-
-  // Previous button
-  currentIdx > 0 && showControls
-    ? React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "ctrl-btn",
-          onClick: goToPreviousQuestion,
-          disabled: exprBlockPrevPb,
-          title: tr("test.nav.back"),
-          "aria-label": tr("test.nav.back.aria")
-        },
-        lang === "en" ? "←" : "→"
-      )
-    : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" }),
-
-  // Bunny track
-  React.createElement(
-    "div",
-    { style: { flex: 1, minWidth: 0 } },
-    React.createElement(
-      "div",
-      { className: "bunny-track-wrapper" },
-      React.createElement(
-        "div",
-        { className: "bunny-track" },
-        React.createElement("div", {
-          className: "bunny-track-fill",
-          style: { width: progressPercentage + "%" }
-        }),
-        React.createElement("span", {
-  className: "bunny-avatar",
-  style: { left: bunnyPosition + "%" }
-}, (window.NAVBAR_BUNNY_PROGRESS_ICON != null ? window.NAVBAR_BUNNY_PROGRESS_ICON : "🐰")),
-        React.createElement("span", { className: "bunny-carrot" }, "🥕")
-      ),
-      React.createElement(
-        "div",
-        { className: "progress-text" },
-        tr("test.progress", { current: currentIdx + 1, total: totalQuestions })
-      )
-    )
-  ),
-
-  // Next button
-  currentIdx < totalQuestions - 1 && showControls
-    ? React.createElement(
-        "button",
-        {
-          type: "button",
-          className: "ctrl-btn",
-          onClick: function () {
-            if (exprBlockNextPb) return;
-            updateCurrentQuestionIndex(currentIdx + 1);
-          },
-          disabled: exprBlockNextPb,
-          title: lang === "en" ? "Next question" : "השאלה הבאה",
-          "aria-label": lang === "en" ? "Next question" : "השאלה הבאה"
-        },
-        lang === "en" ? "→" : "←"
-      )
-    : React.createElement("span", { className: "ctrl-btn ctrl-btn--placeholder" })
-)
     );
   }
 
@@ -4191,7 +4588,7 @@ function renderExpectedAnswerNote() {
     );
   }
 
-  if (permission && !microphoneSkipped && !micCheckPassed) {
+  if (awaitingExpressionMicCheck && permission && !microphoneSkipped && !micCheckPassed) {
     const levelPercent = Math.max(0, Math.min(100, Math.round(micCheckLevel * 100)));
     return React.createElement(
       "div",
@@ -4241,15 +4638,7 @@ function renderExpectedAnswerNote() {
               "button",
               {
                 className: "continue-button",
-                onClick: function () {
-                  primeMediaPlaybackFromUserGesture();
-                  firstQuestionMicGateArmedRef.current = true;
-                  resetFirstQuestionRetryState();
-                  enforceFreshRunStartFromQuestionOne();
-                  setMicCheckPassed(true);
-                  setMicCheckReady(false);
-                  stopMicrophoneCheck();
-                }
+                onClick: continueFromExpressionMicCheck
               },
               tr("test.mic.check.continue")
             )
@@ -4423,6 +4812,49 @@ function renderExpectedAnswerNote() {
         },
         tr("test.cta.continue")
       )
+    );
+  }
+
+  if (voiceIdentifierConfirmed && !comprIntroVideoComplete && !sessionCompleted) {
+    return React.createElement(
+      "section",
+      { className: "test-screen test-screen--comp-intro" },
+      React.createElement("video", {
+        ref: comprIntroVideoRef,
+        className:
+          "test-comp-intro__video" +
+          (comprIntroVideoSources.isFallback ? " test-avatar-intro__video--solid-bg" : ""),
+        src: comprIntroVideoSources.src,
+        autoPlay: true,
+        playsInline: true,
+        preload: "auto",
+        onEnded: finishComprehensionIntroVideo,
+        onError: handleComprIntroVideoError,
+      })
+    );
+  }
+
+  if (
+    !sessionCompleted &&
+    !expIntroVideoComplete &&
+    pendingExpressionIntroIndex >= 0 &&
+    (micCheckPassed || microphoneSkipped)
+  ) {
+    return React.createElement(
+      "section",
+      { className: "test-screen test-screen--exp-intro" },
+      React.createElement("video", {
+        ref: expIntroVideoRef,
+        className:
+          "test-exp-intro__video" +
+          (expIntroVideoSources.isFallback ? " test-avatar-intro__video--solid-bg" : ""),
+        src: expIntroVideoSources.src,
+        autoPlay: true,
+        playsInline: true,
+        preload: "auto",
+        onEnded: finishExpressionIntroVideo,
+        onError: handleExpIntroVideoError,
+      })
     );
   }
 
@@ -5678,7 +6110,6 @@ function renderExpectedAnswerNote() {
       )
       : null,
     React.createElement(TestNavbar),
-    (!sessionCompleted && !isPortraitMobile) ? React.createElement(ProgressBar) : null,
     shouldShowSpeakerStatusUi
       ? (
         speakerVerificationStatus === "failed"
@@ -5932,14 +6363,14 @@ questionType === "C"
       {
         className:
           "comprehension-container" +
-          (isPortraitMobile && currentImageCount === 3 ? " comprehension-container--three-up" : "") +
-          (isPortraitMobile && currentImageCount >= 4 ? " comprehension-container--two-col" : "")
+          (usePhoneLikeGrid && currentImageCount === 3 ? " comprehension-container--three-up" : "") +
+          (usePhoneLikeGrid && currentImageCount >= 4 ? " comprehension-container--two-col" : "")
       },
       (function () {
-        const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
-        const shouldUseFiveUp = isPortraitMobile && currentImageCount === 5;
-        const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
-        const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
+        const shouldUseThreeUp = usePhoneLikeGrid && currentImageCount === 3;
+        const shouldUseFiveUp = usePhoneLikeGrid && currentImageCount === 5;
+        const shouldUseTwoColumnGrid = usePhoneLikeGrid && currentImageCount >= 4;
+        const shouldUseSingleColumn = usePhoneLikeGrid && currentImageCount === 2;
 
         const comprehensionGridStyle = shouldUseSingleColumn?
          { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }
@@ -6000,7 +6431,7 @@ questionType === "C"
           );
         }
 
-        if (!isPortraitMobile && isTwoRow) {
+        if (!usePhoneLikeGrid && isTwoRow) {
           const topCountDynamic = topRowCount;
           const bottomImages = images.slice(topCountDynamic);
 
@@ -6124,10 +6555,10 @@ questionType === "E"
       "div",
       { className: "expression-container" },
       (function () {
-        const shouldUseSingleColumn = isPortraitMobile && currentImageCount === 2;
-        const shouldUseThreeUp = isPortraitMobile && currentImageCount === 3;
-        const shouldUseFiveUp = isPortraitMobile && currentImageCount === 5;
-        const shouldUseTwoColumnGrid = isPortraitMobile && currentImageCount >= 4;
+        const shouldUseSingleColumn = usePhoneLikeGrid && currentImageCount === 2;
+        const shouldUseThreeUp = usePhoneLikeGrid && currentImageCount === 3;
+        const shouldUseFiveUp = usePhoneLikeGrid && currentImageCount === 5;
+        const shouldUseTwoColumnGrid = usePhoneLikeGrid && currentImageCount >= 4;
 
         const expressionGridStyle = shouldUseSingleColumn?
          { display: "grid", gridTemplateColumns: "1fr", gap: "12px" }

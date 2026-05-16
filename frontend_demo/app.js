@@ -58,6 +58,10 @@ var DEMO_TEST_RUN_LS_KEYS = [
   "permission",
   "microphoneSkipped",
   "micCheckPassed",
+  "awaitingExpressionMicCheck",
+  "comprIntroVideoComplete",
+  "expIntroVideoComplete",
+  "pendingExpressionIntroIndex",
 ];
 
 function clearStoredTestRunKeepChildProfile() {
@@ -275,20 +279,6 @@ function App() {
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
       "version 3.3"
-    ),
-    // Landscape orientation overlay — shown only in test mode + portrait
-    React.createElement(
-      "div",
-      { className: "rotate-overlay" },
-      React.createElement("div", { className: "rotate-overlay__icon" }, "📱"),
-      React.createElement("div", { className: "rotate-overlay__arrow" }, "↔️"),
-      React.createElement(
-        "p",
-        { className: "rotate-overlay__msg" },
-        lang === "en"
-          ? "Please rotate your device to landscape mode"
-          : "אנא סובבו את המכשיר למצב אופקי"
-      )
     ),
     /* Reset button moved to test navbar */
     showResetConfirm

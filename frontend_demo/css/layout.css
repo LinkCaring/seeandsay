@@ -1,0 +1,165 @@
+/* =========================================================
+   APP SHELL — reset, .app-container, .page-content, golden height fill
+   Tiers: golden ≤410×700–710 height stretch on welcome/onboarding
+   ========================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  color: var(--colors-text);
+  min-height: 100vh;
+  background: #eef0f4;
+}
+
+html[dir="rtl"] body {
+  direction: rtl;
+}
+
+html[dir="ltr"] body {
+  direction: ltr;
+}
+
+::selection {
+  background: rgba(66, 171, 199, 0.35);
+}
+
+.page-content {
+  width: min(100%, var(--layout-max-width));
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-inline: clamp(16px, 4vw, 32px);
+}
+
+/* =========================================================
+   GLOBAL LAYOUT
+   ========================================================= */
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 100vh;
+  position: relative;
+}
+
+.app-version-label {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 2px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(48, 67, 72, 0.55);
+  z-index: 30;
+  pointer-events: none;
+  user-select: none;
+}
+
+.content-area {
+  flex: 1;
+  background: var(--bg-white);
+  border-radius: 20px;
+  padding: clamp(24px, 4vw, 40px);
+  box-shadow: var(--shadow-soft);
+  line-height: 1.7;
+  text-align: start;
+  position: relative;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.content-area::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(66, 171, 199, 0.08), transparent 60%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Golden portrait height (700–710px): stretch welcome/onboarding shell to visible viewport */
+@media (max-width: 410px) and (orientation: portrait) and (min-height: 700px) and (max-height: 710px) {
+  .landing-wrapper {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: calc(100dvh - var(--app-header-height));
+  }
+
+  .onboarding-flow {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+
+/* Large phone sm tall (e.g. 412×915): flex-fill without forced min-height (avoids extra scroll) */
+@media (min-width: 411px) and (max-width: 479px) and (orientation: portrait) and (min-height: 880px) {
+  .landing-wrapper {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .onboarding-flow {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+
+/* Short-wide compact (e.g. 1168×632): no forced viewport stretch — 1280×800 (height 800) excluded */
+@media (min-width: 721px) and (max-height: 700px) {
+  .landing-wrapper {
+    min-height: 0;
+  }
+
+  .onboarding-flow {
+    min-height: 0;
+  }
+}
+
+/* Tall desktop: natural document flow — full-width shell; version label stays at bottom */
+@media (min-width: 900px) and (min-height: 861px) {
+  .landing-wrapper {
+    min-height: 0;
+    width: 100%;
+  }
+
+  .onboarding-flow {
+    min-height: 0;
+    width: 100%;
+  }
+
+  .app-container[data-page="home"] .page-content,
+  .app-container[data-page="onboarding"] .page-content {
+    width: 100%;
+    max-width: none;
+    padding-inline: 0;
+  }
+
+  .app-container[data-page="test"][data-test-phase="mic"] .page-content,
+  .app-container[data-page="test"][data-test-phase="compIntro"] .page-content,
+  .app-container[data-page="test"][data-test-phase="expIntro"] .page-content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    max-width: none;
+    min-height: calc(100dvh - var(--test-navbar-height, 56px));
+    padding-inline: clamp(12px, 2vw, 32px);
+  }
+
+  .app-version-label {
+    top: auto;
+    bottom: 2px;
+  }
+}

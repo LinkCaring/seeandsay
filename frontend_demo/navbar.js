@@ -2,7 +2,7 @@
  * Single source for all app navigation (top bar only; no separate bottom nav).
  * Use AppNavbar with variant: "home" | "test" | "complete"
  *
- * - Every page: logo, reset, languages
+ * - Home: logo; test: no logo (controls only); reset, languages on non-test pages
  * - Home button: all pages except home (variant !== "home")
  * - Pause + Dev: only on test (variant === "test")
  */
@@ -12,7 +12,6 @@
   if (!React) return;
 
   var RESET_ICON = "replay";
-  var BUNNY_PROGRESS_ICON = "\uD83D\uDC07"; // 🐇 full rabbit (walking) for progress bar
   var HOME_ICON_NAME = "home";
   var PAUSE_ACTIVE_ICON_NAME = "pause_circle";
   var PAUSE_PAUSED_ICON_NAME = "play_circle";
@@ -247,17 +246,15 @@
     return React.createElement(
       "div",
       { className: innerClass },
-      logoEl,
       homeBtn,
       resetBtn,
       questionNav,
       pauseBtn,
       finishBtn,
-      langGroup
+      isTest ? null : langGroup
     );
   }
 
   global.AppNavbar = AppNavbar;
   global.NAVBAR_RESET_ICON = RESET_ICON;
-  global.NAVBAR_BUNNY_PROGRESS_ICON = BUNNY_PROGRESS_ICON;
 })(typeof window !== "undefined" ? window : this);

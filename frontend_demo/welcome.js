@@ -94,6 +94,10 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       "permission",
       "microphoneSkipped",
       "micCheckPassed",
+      "awaitingExpressionMicCheck",
+      "comprIntroVideoComplete",
+      "expIntroVideoComplete",
+      "pendingExpressionIntroIndex",
     ].forEach(function (key) {
       try { localStorage.removeItem(key); } catch (e) {}
     });
@@ -220,6 +224,10 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       setPersistentValue("permission", true);
       setPersistentValue("microphoneSkipped", false);
       setPersistentValue("micCheckPassed", false);
+      setPersistentValue("awaitingExpressionMicCheck", false);
+      setPersistentValue("comprIntroVideoComplete", false);
+      setPersistentValue("expIntroVideoComplete", false);
+      setPersistentValue("pendingExpressionIntroIndex", -1);
       setPersistentValue("voiceIdentifierConfirmed", true);
       setPersistentValue("readingValidated", true);
       setPersistentValue("readingValidationResult", null);
