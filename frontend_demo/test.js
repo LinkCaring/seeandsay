@@ -220,6 +220,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [lastCompletedTestId, setLastCompletedTestId] = usePersistentState("lastCompletedTestId", null);
   const [expressionAiResult, setExpressionAiResult] = usePersistentState("expressionAiResult", null);
   const [expressionAiLoading, setExpressionAiLoading] = React.useState(false);
+  const [testUploadState, setTestUploadState] = React.useState("idle");
+  const [testUploadError, setTestUploadError] = React.useState(null);
+  const [expressionAiPollError, setExpressionAiPollError] = React.useState(null);
+  const expressionAiPollStartedRef = React.useRef(null);
   /** Which PLS frame is selected in the narrative report wheel (integrative | semantics | structure | phonology). */
   const [plsReportCategory, setPlsReportCategory] = React.useState("semantics");
 
@@ -3903,20 +3907,34 @@ const handleReadingValidationRetry = function () {
     stopQuestionAudioForSessionComplete();
 
     setImages([]);
-    setLastCompletedTestId(null);
     setExpressionAiResult(null);
     setExpressionAiLoading(false);
+    setTestUploadState("uploading");
+    setTestUploadError(null);
+    setExpressionAiPollError(null);
+    expressionAiPollStartedRef.current = Date.now();
     consecutiveCompFailRef.current = 0;
     consecutiveExprFailRef.current = 0;
 
     var handleUploadResult = function (result) {
-      if (result && result.transcription) {
+      if (!result || result.success === false) {
+        setTestUploadState("failed");
+        setTestUploadError(
+          (result && result.error) ? String(result.error) : (lang === "en" ? "Upload failed" : "העלאת הנתונים נכשלה")
+        );
+        console.error("[completeSession] test upload failed:", result);
+        return;
+      }
+      setTestUploadState("ok");
+      setTestUploadError(null);
+      if (result.transcription) {
         setTranscription(result.transcription);
       }
-      if (result && result.test_id) {
+      if (result.test_id) {
         setLastCompletedTestId(result.test_id);
+        console.log("[completeSession] test_id for AI polling:", result.test_id);
       }
-      if (result && result.expression_ai) {
+      if (result.expression_ai) {
         setExpressionAiResult(result.expression_ai);
       }
     };
@@ -3965,6 +3983,10 @@ const handleReadingValidationRetry = function () {
                 handleUploadResult(result);
               } catch (e) {
                 console.error("updateUserTests after recording:", e);
+                handleUploadResult({
+                  success: false,
+                  error: e && e.message ? e.message : String(e),
+                });
               }
             };
             reader.readAsDataURL(finalBlob);
@@ -3981,6 +4003,10 @@ const handleReadingValidationRetry = function () {
                 handleUploadResult(result);
               }).catch(function(err) {
                 console.error("updateUserTests (no recording blob):", err);
+                handleUploadResult({
+                  success: false,
+                  error: err && err.message ? err.message : String(err),
+                });
               }); //MongoDB
           }
         }).catch(function (err) {
@@ -3992,6 +4018,10 @@ const handleReadingValidationRetry = function () {
               handleUploadResult(result);
             }).catch(function(err) {
               console.error("updateUserTests after recording error:", err);
+              handleUploadResult({
+                success: false,
+                error: err && err.message ? err.message : String(err),
+              });
             }); //MongoDB
         });
       };
@@ -4008,6 +4038,10 @@ const handleReadingValidationRetry = function () {
           handleUploadResult(result);
         }).catch(function(err) {
           console.error("updateUserTests (no recording):", err);
+          handleUploadResult({
+            success: false,
+            error: err && err.message ? err.message : String(err),
+          });
         }); //MongoDB
     }
   }
@@ -4021,19 +4055,39 @@ const handleReadingValidationRetry = function () {
       const resp = await getExpressionAiStatus(idDigits, lastCompletedTestId);
       if (resp && resp.expression_ai) {
         setExpressionAiResult(resp.expression_ai);
+        setExpressionAiPollError(null);
+      } else {
+        setExpressionAiPollError(
+          lang === "en"
+            ? "Could not load AI status. Tap Refresh."
+            : "לא ניתן לטעון סטטוס משוב. לחצו רענון."
+        );
       }
+    } catch (pollErr) {
+      console.error("refreshExpressionAiStatus:", pollErr);
+      setExpressionAiPollError(
+        lang === "en"
+          ? "Could not load AI status. Tap Refresh."
+          : "לא ניתן לטעון סטטוס משוב. לחצו רענון."
+      );
     } finally {
       setExpressionAiLoading(false);
     }
-  }, [idDigits, lastCompletedTestId]);
+  }, [idDigits, lastCompletedTestId, lang]);
 
   React.useEffect(function pollExpressionAiWhilePending() {
     if (!sessionCompleted) return;
     if (!lastCompletedTestId) return;
-    if (!expressionAiResult || expressionAiResult.status !== "pending") return;
-    const timer = setInterval(function () {
-      refreshExpressionAiStatus();
-    }, 5000);
+    var status = expressionAiResult && expressionAiResult.status;
+    if (status === "done" || status === "failed") return;
+
+    if (expressionAiPollStartedRef.current == null) {
+      expressionAiPollStartedRef.current = Date.now();
+    }
+    refreshExpressionAiStatus();
+    var pollMs =
+      Date.now() - expressionAiPollStartedRef.current < 120000 ? 2000 : 5000;
+    var timer = setInterval(refreshExpressionAiStatus, pollMs);
     return function () {
       clearInterval(timer);
     };
@@ -4969,12 +5023,20 @@ function renderExpectedAnswerNote() {
       !hasExpressionQuestions ||
       (expressionAiResult &&
         (expressionAiStatus === "done" || expressionAiStatus === "failed"));
+    const testUploadInProgress = sessionCompleted && testUploadState === "uploading";
+    const testUploadFailed = sessionCompleted && testUploadState === "failed";
     const expressionFeedbackPending =
       hasExpressionQuestions &&
+      !testUploadFailed &&
+      (testUploadInProgress ||
+        (lastCompletedTestId &&
+          (!expressionAiResult ||
+            expressionAiStatus === "pending" ||
+            expressionAiLoading)));
+    const expressionAiFailed =
+      hasExpressionQuestions &&
       lastCompletedTestId &&
-      (!expressionAiResult ||
-        expressionAiStatus === "pending" ||
-        expressionAiLoading);
+      expressionAiStatus === "failed";
     const expressionAiProgress = expressionAiResult && expressionAiResult.meta && expressionAiResult.meta.progress
       ? expressionAiResult.meta.progress
       : null;
@@ -5716,6 +5778,98 @@ function renderExpectedAnswerNote() {
       expressionAiResult.expressive_language_impression.status === "done"
         ? renderPlsNarrativeReport(expressionAiResult.expressive_language_impression)
         : null,
+      hasExpressionQuestions && testUploadInProgress
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                marginTop: "12px",
+                textAlign: "center",
+                width: "min(100%, 560px)",
+                marginLeft: "auto",
+                marginRight: "auto",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: "1px solid #d5dbe3",
+                background: "#f5f7fa",
+                color: "#34495e",
+                fontSize: "14px"
+              }
+            },
+            lang === "en"
+              ? "Uploading recording and results…"
+              : "מעלה את ההקלטה והתוצאות…"
+          )
+        : null,
+      hasExpressionQuestions && testUploadFailed
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                marginTop: "12px",
+                textAlign: "center",
+                width: "min(100%, 560px)",
+                marginLeft: "auto",
+                marginRight: "auto",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: "1px solid #e8b4b8",
+                background: "#fff5f5",
+                color: "#8b3a3a",
+                fontSize: "14px",
+                lineHeight: 1.4
+              }
+            },
+            lang === "en" ? "Upload failed. Results were not saved." : "העלאת הנתונים נכשלה. התוצאות לא נשמרו.",
+            testUploadError
+              ? React.createElement("div", { style: { marginTop: "6px", fontSize: "12px", opacity: 0.9 } }, testUploadError)
+              : null
+          )
+        : null,
+      hasExpressionQuestions && expressionAiFailed
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                marginTop: "12px",
+                textAlign: "center",
+                width: "min(100%, 560px)",
+                marginLeft: "auto",
+                marginRight: "auto",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: "1px solid #e8b4b8",
+                background: "#fff5f5",
+                color: "#8b3a3a",
+                fontSize: "14px",
+                lineHeight: 1.4
+              }
+            },
+            lang === "en" ? "AI feedback could not be completed." : "לא ניתן היה להשלים את משוב הבעה.",
+            expressionAiResult && expressionAiResult.error
+              ? React.createElement("div", { style: { marginTop: "6px", fontSize: "12px" } }, String(expressionAiResult.error))
+              : null,
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                disabled: expressionAiLoading,
+                onClick: refreshExpressionAiStatus,
+                style: {
+                  marginTop: "8px",
+                  padding: "8px 14px",
+                  fontSize: "14px",
+                  backgroundColor: expressionAiLoading ? "#9aa3b2" : "#6c8fb0",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "8px",
+                  cursor: expressionAiLoading ? "not-allowed" : "pointer"
+                }
+              },
+              lang === "en" ? "Refresh AI status" : "רענון סטטוס AI"
+            )
+          )
+        : null,
       hasExpressionQuestions && lastCompletedTestId && expressionFeedbackPending
         ? React.createElement(
             "div",
@@ -5747,7 +5901,14 @@ function renderExpectedAnswerNote() {
                 lang === "en"
                   ? ("Progress: " + expressionAiProcessed + "/" + expressionAiTotal + " questions")
                   : ("התקדמות: " + expressionAiProcessed + "/" + expressionAiTotal + " שאלות")
-              )
+              ),
+              expressionAiPollError
+                ? React.createElement(
+                    "div",
+                    { style: { marginTop: "6px", fontSize: "13px", color: "#8b3a3a" } },
+                    expressionAiPollError
+                  )
+                : null
             ),
             React.createElement(
               "button",

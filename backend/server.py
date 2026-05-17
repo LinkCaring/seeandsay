@@ -686,13 +686,21 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
                 progress_cb("scoring_questions", idx + 1, total_expression_items, expression_ai_rows)
             continue
 
-        ai = score_expression_with_gemini_bytes(
-            audio_bytes=sliced_audio_bytes,
-            question_prompt=prompt_with_window,
-            expected_full=rubric.get("expected_full") or "",
-            expected_partial=rubric.get("expected_partial") or "",
-            expected_wrong=rubric.get("expected_wrong") or "",
-        )
+        try:
+            ai = score_expression_with_gemini_bytes(
+                audio_bytes=sliced_audio_bytes,
+                question_prompt=prompt_with_window,
+                expected_full=rubric.get("expected_full") or "",
+                expected_partial=rubric.get("expected_partial") or "",
+                expected_wrong=rubric.get("expected_wrong") or "",
+            )
+        except Exception as e:
+            logger.error(
+                "Gemini expression scoring failed for question %s: %s",
+                question_number,
+                e,
+            )
+            ai = None
 
         if not ai:
             ai = {
@@ -765,12 +773,16 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
             comprehension_context_he = _build_comprehension_impression_context_he(
                 full_array, child_gender
             )
-            imp = summarize_expressive_language_impression_gemini(
-                entries,
-                child_age_label_he,
-                max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
-                comprehension_context_he=comprehension_context_he or None,
-            )
+            try:
+                imp = summarize_expressive_language_impression_gemini(
+                    entries,
+                    child_age_label_he,
+                    max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
+                    comprehension_context_he=comprehension_context_he or None,
+                )
+            except Exception as e:
+                logger.error("Expressive-language impression Gemini call failed: %s", e)
+                imp = None
             if imp:
                 expressive_language_impression = {
                     "status": "done",
@@ -808,56 +820,78 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
     }
 
 
+def _build_failed_expression_ai_payload(test_id, started_at, total_expression_items, error_message, per_question_rows):
+    rows = list(per_question_rows or [])
+    processed = len(rows)
+    return {
+        "status": "failed",
+        "test_id": test_id,
+        "started_at": started_at,
+        "completed_at": datetime.utcnow().isoformat() + "Z",
+        "error": str(error_message),
+        "per_question": rows,
+        "summary": _aggregate_expression_ai(rows),
+        "meta": {
+            "expression_question_count": total_expression_items,
+            "parent_ai_comparison": {
+                "status": "failed",
+                "match_count": 0,
+                "total_compared": 0,
+                "match_rate": None,
+                "rows": [],
+            },
+            "progress": {
+                "phase": "failed",
+                "processed_questions": processed,
+                "total_questions": total_expression_items,
+                "last_updated_at": datetime.utcnow().isoformat() + "Z",
+            },
+        },
+        "expressive_language_impression": {
+            "status": "failed",
+            "reason": "pipeline_error",
+            "limitations_he": str(error_message),
+        },
+    }
+
+
 def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audio_file64, child_gender, age_years, age_months, started_at):
     total_expression_items = len(_parse_expression_results_from_full_array(full_array))
+    latest_rows = []
 
     def emit_progress(phase, processed_questions, total_questions, rows_snapshot):
+        latest_rows[:] = list(rows_snapshot)
         payload = _build_pending_expression_ai_payload(
             test_id=test_id,
             started_at=started_at,
             expression_question_count=total_questions,
             phase=phase,
             processed_questions=processed_questions,
-            per_question_rows=list(rows_snapshot),
+            per_question_rows=latest_rows,
         )
         storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
 
     emit_progress("processing_started", 0, total_expression_items, [])
+    payload = None
     try:
         payload = _compute_expression_ai_payload(
             full_array, timestamps, audio_file64, child_gender, age_years, age_months, progress_cb=emit_progress
         )
     except Exception as e:
         logger.error(f"Background expression AI failed for testId {test_id}: {e}")
-        payload = {
-            "status": "failed",
-            "completed_at": datetime.utcnow().isoformat() + "Z",
-            "error": str(e),
-            "per_question": [],
-            "summary": _aggregate_expression_ai([]),
-            "meta": {
-                "expression_question_count": total_expression_items,
-                "parent_ai_comparison": {
-                    "status": "failed",
-                    "match_count": 0,
-                    "total_compared": 0,
-                    "match_rate": None,
-                    "rows": [],
-                },
-                "progress": {
-                    "phase": "failed",
-                    "processed_questions": 0,
-                    "total_questions": total_expression_items,
-                    "last_updated_at": datetime.utcnow().isoformat() + "Z",
-                },
-            },
-            "expressive_language_impression": {
-                "status": "failed",
-                "reason": "pipeline_error",
-                "limitations_he": str(e),
-            },
-        }
-    storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+        preserved = latest_rows
+        if not preserved:
+            existing = storage.get_test_expression_ai(user_id=user_id, test_id=test_id) or {}
+            preserved = existing.get("per_question") or []
+        payload = _build_failed_expression_ai_payload(
+            test_id=test_id,
+            started_at=started_at,
+            total_expression_items=total_expression_items,
+            error_message=e,
+            per_question_rows=preserved,
+        )
+    if payload is not None:
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
 
 
 @app.get("/api/expressionAiStatus")

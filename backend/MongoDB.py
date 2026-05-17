@@ -220,19 +220,29 @@ class SeeSayMongoStorage:
     def get_test_expression_ai(self, user_id, test_id):
         """
         Get expressionAI payload for a specific test by testId.
+        Uses aggregation so large audioFile64 fields are not loaded over the wire.
         """
         try:
-            user = self.users_collection.find_one(
-                {"userId": user_id},
-                {"_id": 0, "tests": 1}
-            )
-            if not user:
+            test_id_str = str(test_id)
+            pipeline = [
+                {"$match": {"userId": user_id}},
+                {"$unwind": "$tests"},
+                {"$match": {"tests.testId": test_id_str}},
+                {
+                    "$project": {
+                        "_id": 0,
+                        "expressionAI": "$tests.expressionAI",
+                    }
+                },
+                {"$limit": 1},
+            ]
+            rows = list(self.users_collection.aggregate(pipeline))
+            if not rows:
                 return None
-            tests = user.get("tests", [])
-            for t in tests:
-                if str(t.get("testId") or "") == str(test_id):
-                    return t.get("expressionAI") or {}
-            return None
+            payload = rows[0].get("expressionAI")
+            if payload is None:
+                return {}
+            return payload
         except Exception as e:
             logger.error(f"❌ Error getting expressionAI for user {user_id}, testId {test_id}: {e}")
             return None

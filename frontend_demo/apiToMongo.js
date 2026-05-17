@@ -123,15 +123,33 @@ async function updateUserTests(userId, ageYears, ageMonths,
     });
 
     if (!response.ok) {
-      throw new Error(`Server responded with status ${response.status}`);
+      var errorText = "";
+      try {
+        errorText = await response.text();
+      } catch (readErr) {
+        errorText = String(readErr);
+      }
+      console.error("❌ Test upload failed:", response.status, errorText);
+      return {
+        success: false,
+        status: response.status,
+        error: errorText || ("HTTP " + response.status),
+      };
     }
 
     const result = await response.json();
     console.log("✅ Test data uploaded successfully:", result);
-    return result;
+    if (result && result.test_id) {
+      console.log("   test_id:", result.test_id, "API userId:", apiUserId);
+    }
+    return Object.assign({ success: true }, result);
   } catch (err) {
     console.error("❌ Failed to upload test data:", err);
-    return null;
+    return {
+      success: false,
+      status: 0,
+      error: err && err.message ? err.message : String(err),
+    };
   }
 }
 
