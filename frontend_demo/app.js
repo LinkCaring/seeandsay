@@ -35,9 +35,6 @@ var DEMO_TEST_RUN_LS_KEYS = [
   "partialAnswers",
   "wrongAnswers",
   "voiceIdentifierConfirmed",
-  "readingValidated",
-  "readingValidationResult",
-  "readingRecordingBlob",
   "sessionCompleted",
   "sessionRecordingStarted",
   "testPaused",
@@ -124,7 +121,7 @@ function App() {
   const [showResetConfirm, setShowResetConfirm] = React.useState(false);
   const [showStartResumeChoice, setShowStartResumeChoice] = React.useState(false);
   const [testSessionKey, setTestSessionKey] = React.useState(0);
-  const [testPhase, setTestPhase] = React.useState(null); // "age" | "mic" | "voice" | "questions" | "complete" | null
+  const [testPhase, setTestPhase] = React.useState(null); // "age" | "mic" | "compIntro" | "expIntro" | "questions" | "complete" | null
 
   const t = function (key, vars) {
     return (window.I18N && window.I18N.t) ? window.I18N.t(key, vars) : key;
@@ -278,7 +275,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 3.3"
+      "version 4"
     ),
     /* Reset button moved to test navbar */
     showResetConfirm

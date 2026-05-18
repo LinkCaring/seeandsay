@@ -252,29 +252,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const micCheckAnalyserRef = React.useRef(null);
   const micCheckRafRef = React.useRef(null);
 
-  // Reading validation states
-  const [readingValidated, setReadingValidated] = usePersistentState("readingValidated", false);
-  const [readingValidationResult, setReadingValidationResult] = usePersistentState("readingValidationResult", null); // null = no connection, true = valid, false = invalid
-  const [readingRecordingBlob, setReadingRecordingBlob] = usePersistentState("readingRecordingBlob", null);
-  const [readingValidationInProgress, setReadingValidationInProgress] = React.useState(false);
-  // Store the verification audio blob for combining with test audio
-  const [verificationAudioBlob, setVerificationAudioBlob] = React.useState(null);
-  /** Same as `verificationAudioBlob` / `speakerVerificationStatus` but updated synchronously (avoids stale reads right after `await performSpeakerVerification`). */
-  const verificationAudioBlobRef = React.useRef(null);
-  const speakerVerificationStatusRef = React.useRef("idle");
-
-  const [speakerVerificationStatus, setSpeakerVerificationStatus] = React.useState("idle");
-  // idle | processing | success | failed
-
-  const [speakerVerificationAttempts, setSpeakerVerificationAttempts] = React.useState(0);
-  const [pendingVerificationBlob, setPendingVerificationBlob] = React.useState(null);
-  const [mustFinishVerification, setMustFinishVerification] = React.useState(false);
-  /** Fullscreen overlay on questions while first reading verification is still in flight at Finish. */
-  const [blockFinishUntilVerifyOverlay, setBlockFinishUntilVerifyOverlay] = React.useState(false);
-  /** questionResults snapshot when Finish was blocked — auto-complete when verify succeeds (overlay or re-read path). */
-  const pendingCompleteAfterVerifyRef = React.useRef(null);
-  const completeSessionRef = React.useRef(null);
-
   // Session-only states
   const [images, setImages] = React.useState([]);
   const [target, setTarget] = React.useState("");
@@ -457,7 +434,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       "recordingPaused",
       "pauseStartTime",
       "totalPausedTime",
-      "readingRecordingBlob",
       "forceFreshStartAfterMicCheck",
       "comprIntroVideoComplete",
       "awaitingExpressionMicCheck",
@@ -513,6 +489,30 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   voiceIdentifierConfirmedRef.current = voiceIdentifierConfirmed;
   const awaitingExpressionMicCheckRef = React.useRef(awaitingExpressionMicCheck);
   awaitingExpressionMicCheckRef.current = awaitingExpressionMicCheck;
+
+  /** Mic-check UI only when gating navigation to the expression section (not at test start). */
+  function isExpressionMicCheckGateActive() {
+    if (!awaitingExpressionMicCheck || !permission || microphoneSkipped || micCheckPassed) {
+      return false;
+    }
+    var pendingIdx = pendingFirstExpressionIndexRef.current;
+    if (pendingIdx != null && pendingIdx >= 0) return true;
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0) return false;
+    return getSafeCurrentQuestionIndex() >= firstExpr;
+  }
+
+  /** After welcome Start game: clear expression gates; comp intro plays when comprIntroVideoComplete is false. */
+  function applyWelcomeDirectToFirstQuestion() {
+    setAwaitingExpressionMicCheck(false);
+    setMicCheckPassed(false);
+    setMicCheckReady(false);
+    pendingFirstExpressionIndexRef.current = null;
+    setPendingExpressionIntroIndex(-1);
+    setForceFreshStartAfterMicCheck(false);
+    setVoiceIdentifierConfirmed(true);
+  }
+
   expressionIntroActiveRef.current =
     !sessionCompleted &&
     !expIntroVideoComplete &&
@@ -607,10 +607,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [showQuestionLoadingRecovery, setShowQuestionLoadingRecovery] = React.useState(false);
 
   const isMountedRef = React.useRef(true);
-  /** Bumped when invalidating in-flight reading verification (retry, re-sample, new Continue). */
-  const readingVerificationGenRef = React.useRef(0);
-  /** Which `gen` last set speaker status to `"processing"` (so stale runs can clear it safely). */
-  const readingVerifyProcessingOwnerGenRef = React.useRef(null);
 
   // Layout tier: match CSS phone band (max-width: 600px); used only for legacy minImgWidth (unused in render).
   const isMobile = React.useMemo(function () {
@@ -627,130 +623,6 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       window.matchMedia("(min-width: 900px) and (min-height: 861px)").matches
     );
   }, []);
-
-  /**
-   * Speaker verification for the reading sample (runs in background after Continue).
-   * @param {number} gen Generation from `readingVerificationGenRef`; stale results are ignored.
-   * @returns {"success"|"invalid"|"error"|"stale"}
-   */
-  const performSpeakerVerification = async function (recordingBlob, gen) {
-    function clearStaleProcessing() {
-      if (gen != null && readingVerifyProcessingOwnerGenRef.current === gen) {
-        readingVerifyProcessingOwnerGenRef.current = null;
-        setSpeakerVerificationStatus("idle");
-        speakerVerificationStatusRef.current = "idle";
-      }
-    }
-    function isStale() {
-      return gen != null && gen !== readingVerificationGenRef.current;
-    }
-    try {
-      if (isStale()) {
-        return "stale";
-      }
-      setSpeakerVerificationStatus("processing");
-      speakerVerificationStatusRef.current = "processing";
-      readingVerifyProcessingOwnerGenRef.current = gen;
-
-      const audioBase64 = await blobToBase64(recordingBlob);
-      if (isStale()) {
-        clearStaleProcessing();
-        return "stale";
-      }
-
-      setReadingRecordingBlob(audioBase64);
-
-      const validationResult = await verifySpeaker(idDigits, audioBase64);
-      if (isStale()) {
-        clearStaleProcessing();
-        return "stale";
-      }
-
-      setSpeakerVerificationAttempts(function (prev) { return prev + 1; });
-
-      if (validationResult === null) {
-        readingVerifyProcessingOwnerGenRef.current = null;
-        setReadingValidationResult(false);
-        setReadingValidated(false);
-        setReadingRecordingBlob(null);
-        setVerificationAudioBlob(null);
-        verificationAudioBlobRef.current = null;
-        setSpeakerVerificationStatus("failed");
-        speakerVerificationStatusRef.current = "failed";
-        return "error";
-      }
-
-      if (validationResult && validationResult.success === true) {
-        readingVerifyProcessingOwnerGenRef.current = null;
-        setReadingValidationResult(true);
-        setReadingValidated(true);
-        setVerificationAudioBlob(recordingBlob);
-        verificationAudioBlobRef.current = recordingBlob;
-        setSpeakerVerificationStatus("success");
-        speakerVerificationStatusRef.current = "success";
-        return "success";
-      }
-
-      if (validationResult && validationResult.success === false) {
-        readingVerifyProcessingOwnerGenRef.current = null;
-        setReadingValidationResult(false);
-        setReadingValidated(false);
-        setReadingRecordingBlob(null);
-        setVerificationAudioBlob(null);
-        verificationAudioBlobRef.current = null;
-        setSpeakerVerificationStatus("failed");
-        speakerVerificationStatusRef.current = "failed";
-        return "invalid";
-      }
-
-      readingVerifyProcessingOwnerGenRef.current = null;
-      setReadingValidationResult(false);
-      setReadingValidated(false);
-      setReadingRecordingBlob(null);
-      setVerificationAudioBlob(null);
-      verificationAudioBlobRef.current = null;
-      setSpeakerVerificationStatus("failed");
-      speakerVerificationStatusRef.current = "failed";
-      return "error";
-    } catch (err) {
-      console.error("Speaker verification failed:", err);
-      if (isStale()) {
-        clearStaleProcessing();
-        return "stale";
-      }
-      readingVerifyProcessingOwnerGenRef.current = null;
-      setReadingValidationResult(false);
-      setReadingValidated(false);
-      setReadingRecordingBlob(null);
-      setVerificationAudioBlob(null);
-      verificationAudioBlobRef.current = null;
-      setSpeakerVerificationStatus("failed");
-      speakerVerificationStatusRef.current = "failed";
-      return "error";
-    }
-  };
-
-  const runSpeakerVerificationInBackground = function (recordingBlob, gen) {
-    performSpeakerVerification(recordingBlob, gen).catch(function (err) {
-      console.error("Background speaker verification:", err);
-    });
-  };
-
-function blobToBase64(blob) {
-  return new Promise(function (resolve, reject) {
-    const reader = new FileReader();
-    reader.onloadend = function () {
-      const result = reader.result;
-      if (!result) {
-        reject(new Error("Failed to convert blob to base64"));
-        return;
-      }
-      resolve(result);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
 
   function getImageFallbackUrls(url, pngFirst) {
     if (!url) return [];
@@ -994,19 +866,7 @@ function blobToBase64(blob) {
     };
   }, []);
 
-  // =============================================================================
-  // TESTING SHORTCUTS
-  // =============================================================================
-  // Local testing without mic/recording: ?skipReading=1 or ?skipMic=1 (handled in confirmAge).
-  const skipReading = React.useMemo(function () {
-    try {
-      return new URLSearchParams(window.location.search).get("skipReading") === "1";
-    } catch (e) {
-      return false;
-    }
-  }, []);
-
-  // Report current test phase to App so it can show top navbar on age/mic/voice screens
+  // Report current test phase to App so it can show top navbar on age/mic screens
   React.useEffect(function () {
     if (!onTestPhase) return;
     var phase =
@@ -1014,9 +874,7 @@ function blobToBase64(blob) {
         ? "age"
         : ageInvalid
           ? "ageInvalid"
-          : (permission || microphoneSkipped) && !voiceIdentifierConfirmed
-              ? "voice"
-              : sessionCompleted
+          : sessionCompleted
                 ? "complete"
                 : awaitingExpressionMicCheck && permission && !microphoneSkipped && !micCheckPassed
                   ? "mic"
@@ -1098,7 +956,7 @@ function blobToBase64(blob) {
     expressionEvalPausedRemainingRef.current = EXPRESSION_EVAL_DELAY_MS;
     var armedIdx = getSafeCurrentQuestionIndex();
     var armedQ = questions[armedIdx];
-    if (!isPaused && !showClappingAvatar && !incompleteSummaryConfirmOpen && !blockFinishUntilVerifyOverlay && !mustFinishVerification) {
+    if (!isPaused && !showClappingAvatar && !incompleteSummaryConfirmOpen) {
       expressionEvalDeadlineRef.current = Date.now() + EXPRESSION_EVAL_DELAY_MS;
       scheduleExpressionEvalEnable(EXPRESSION_EVAL_DELAY_MS);
       if (armedQ && armedQ.query_type === "הבעה") {
@@ -1134,7 +992,7 @@ function blobToBase64(blob) {
       freezeExpressionEvalCountdown();
       return;
     }
-    if (isPaused || incompleteSummaryConfirmOpen || blockFinishUntilVerifyOverlay || mustFinishVerification) {
+    if (isPaused || incompleteSummaryConfirmOpen) {
       return;
     }
     if (!expressionEvalDeadlineRef.current) {
@@ -1148,14 +1006,12 @@ function blobToBase64(blob) {
     evaluationEnabled,
     expressionEvalArmed,
     incompleteSummaryConfirmOpen,
-    blockFinishUntilVerifyOverlay,
-    mustFinishVerification,
   ]);
 
-  /** Freeze countdown while Finish / incomplete-summary / reading-verify gate is open. */
+  /** Freeze countdown while Finish / incomplete-summary gate is open. */
   React.useEffect(function pauseExpressionEvalDuringFinishFlow() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
-    if (incompleteSummaryConfirmOpen || blockFinishUntilVerifyOverlay || mustFinishVerification) {
+    if (incompleteSummaryConfirmOpen) {
       freezeExpressionEvalCountdown();
       return;
     }
@@ -1167,8 +1023,6 @@ function blobToBase64(blob) {
     }
   }, [
     incompleteSummaryConfirmOpen,
-    blockFinishUntilVerifyOverlay,
-    mustFinishVerification,
     isPaused,
     showClappingAvatar,
     sessionCompleted,
@@ -1185,8 +1039,6 @@ function blobToBase64(blob) {
       isPaused ||
       showClappingAvatar ||
       incompleteSummaryConfirmOpen ||
-      blockFinishUntilVerifyOverlay ||
-      mustFinishVerification ||
       !expressionEvalDeadlineRef.current
     ) {
       return;
@@ -1211,8 +1063,6 @@ function blobToBase64(blob) {
     isPaused,
     showClappingAvatar,
     incompleteSummaryConfirmOpen,
-    blockFinishUntilVerifyOverlay,
-    mustFinishVerification,
   ]);
 
   React.useEffect(function armExpressionTimerWhenQuestionAudioUnavailable() {
@@ -1573,17 +1423,14 @@ function blobToBase64(blob) {
     pendingFirstExpressionIndexRef.current = null;
     const internalUserId = ensureInternalUserId();
 
-    function prepareDirectTestFlowNoSeparateReading() {
-      setReadingValidated(true);
-      setReadingValidationResult(null);
-      setVerificationAudioBlob(null);
-      verificationAudioBlobRef.current = null;
-      setSpeakerVerificationStatus("idle");
-      speakerVerificationStatusRef.current = "idle";
-      setMustFinishVerification(false);
-      setPendingVerificationBlob(null);
+    function unlockTestSessionForQuestions() {
       setSessionRecordingStarted(false);
       setVoiceIdentifierConfirmed(true);
+      try {
+        localStorage.removeItem("readingValidated");
+        localStorage.removeItem("readingValidationResult");
+        localStorage.removeItem("readingRecordingBlob");
+      } catch (e) {}
     }
 
     if (!("MediaRecorder" in window)) {
@@ -1605,7 +1452,7 @@ function blobToBase64(blob) {
     setMicrophoneSkipped(false);
     setMicCheckPassed(false);
 
-    prepareDirectTestFlowNoSeparateReading();
+    unlockTestSessionForQuestions();
     setAgeConfirmed(true);
     createUser(internalUserId, String(childName).trim() || "SomeUserName");
   }
@@ -1634,187 +1481,19 @@ function blobToBase64(blob) {
   const skipMicrophone = function () {
     primeMediaPlaybackFromUserGesture();
     stopMicrophoneCheck();
-    // Even if skipping recording, mark that user interacted with microphone prompt
     setMicrophoneSkipped(true);
     setMicCheckPassed(true);
     setMicCheckReady(false);
     setVoiceIdentifierConfirmed(true);
-    setReadingValidated(false);
-    setReadingValidationResult(null);
-    setSpeakerVerificationStatus("idle");
-    speakerVerificationStatusRef.current = "idle";
-    verificationAudioBlobRef.current = null;
-    setMustFinishVerification(false);
     setSessionRecordingStarted(false);
-    // sessionRecordingStarted will be set by the useEffect when voice identifier screen appears
   };
 
-  const confirmVoiceIdentifier = async function () {
-  primeMediaPlaybackFromUserGesture();
-  if (permission && sessionRecordingStarted) {
-    SessionRecorder.stopContinuousRecording();
-    console.log("🛑 Stopped reading recording; verification runs in background after test starts");
-
-    var pollAttempts = 0;
-    var maxAttempts = 50;
-
-    var checkRecordingReady = async function () {
-      pollAttempts++;
-
-      try {
-        const recordingData = await SessionRecorder.getRecordingAndText();
-
-        if (recordingData && recordingData.recordingBlob) {
-          console.log("✅ Reading recording ready after " + pollAttempts + " attempts");
-
-          var finishResume = !!(mustFinishVerification && pendingCompleteAfterVerifyRef.current);
-
-          async function resumeTestSessionRecordingAfterReading() {
-            if (!permission) return;
-            // Preserve timeline only when resuming from an in-test re-verification path.
-            // Fresh runs after welcome/login must always start with clean timestamps.
-            var preserveQuestionTimestamps = !!finishResume;
-
-            SessionRecorder.cleanup({ preserveQuestionTimestamps: preserveQuestionTimestamps });
-            if (!preserveQuestionTimestamps) {
-              SessionRecorder.resetTimestamps();
-            }
-
-            const started = await SessionRecorder.startContinuousRecording({
-              preserveQuestionTimestamps: preserveQuestionTimestamps
-            });
-            if (started) {
-              setSessionRecordingStarted(true);
-              expressionPhaseRecordingStartedRef.current = true;
-              if (SessionRecorder.pauseRecordingIfActive) {
-                SessionRecorder.pauseRecordingIfActive();
-              }
-              console.log("✅ Resumed expression-phase recording after in-test verification");
-            }
-          }
-
-          if (finishResume) {
-            readingVerificationGenRef.current += 1;
-            var verifyGenAwait = readingVerificationGenRef.current;
-            setReadingValidationInProgress(true);
-            try {
-              var outcomeAwait = await performSpeakerVerification(recordingData.recordingBlob, verifyGenAwait);
-              setReadingValidationInProgress(false);
-              if (outcomeAwait === "success") {
-                var pr = pendingCompleteAfterVerifyRef.current;
-                pendingCompleteAfterVerifyRef.current = null;
-                setMustFinishVerification(false);
-                setVoiceIdentifierConfirmed(true);
-                await resumeTestSessionRecordingAfterReading();
-                completeSession(pr);
-              } else {
-                setReadingValidationInProgress(false);
-              }
-            } catch (errAwait) {
-              console.error("Reading verification after finish gate:", errAwait);
-              setReadingValidationInProgress(false);
-            }
-          } else {
-            setVoiceIdentifierConfirmed(true);
-            setSpeakerVerificationStatus("processing");
-            setReadingValidationInProgress(false);
-
-            if (permission) {
-              try {
-                SessionRecorder.stopContinuousRecording();
-                SessionRecorder.cleanup();
-                SessionRecorder.resetTimestamps();
-              } catch (e) {}
-              setSessionRecordingStarted(false);
-              expressionPhaseRecordingStartedRef.current = false;
-              console.log("📖 Reading clip saved; expression recording will start at first הבעה question");
-            }
-
-            readingVerificationGenRef.current += 1;
-            var verifyGen = readingVerificationGenRef.current;
-            runSpeakerVerificationInBackground(recordingData.recordingBlob, verifyGen);
-          }
-        } else if (pollAttempts < maxAttempts) {
-          setTimeout(checkRecordingReady, 100);
-        } else {
-          console.warn("⚠️ Reading recording conversion timeout");
-          setReadingValidationResult(null);
-          setReadingValidated(false);
-          setSpeakerVerificationStatus("failed");
-          speakerVerificationStatusRef.current = "failed";
-          setSessionRecordingStarted(false);
-        }
-      } catch (err) {
-        console.error("Error getting reading recording:", err);
-        if (pollAttempts < maxAttempts) {
-          setTimeout(checkRecordingReady, 100);
-        } else {
-          setReadingValidationResult(null);
-          setReadingValidated(false);
-          setSpeakerVerificationStatus("failed");
-          speakerVerificationStatusRef.current = "failed";
-          setSessionRecordingStarted(false);
-        }
-      }
-    };
-
-    setTimeout(checkRecordingReady, 200);
-  } else {
-    if (microphoneSkipped || !permission) {
+  React.useEffect(function unlockTestSessionWhenAgeAndMicReady() {
+    if (!ageConfirmed || sessionCompleted) return;
+    if ((permission || microphoneSkipped) && !voiceIdentifierConfirmed) {
       setVoiceIdentifierConfirmed(true);
-      setReadingValidated(false);
-      setReadingValidationResult(null);
-      setSpeakerVerificationStatus("failed");
-      speakerVerificationStatusRef.current = "failed";
-    } else {
-      alert(tr("test.reading.recordingNotReady"));
     }
-  }
-};
-
-const handleReadingValidationContinue = async function () {
-  primeMediaPlaybackFromUserGesture();
-  setVoiceIdentifierConfirmed(true);
-};
-
-const handleReadingValidationRetry = function () {
-  readingVerificationGenRef.current += 1;
-  setReadingValidated(false);
-  setReadingValidationResult(null);
-  setReadingRecordingBlob(null);
-  setVerificationAudioBlob(null);
-  verificationAudioBlobRef.current = null;
-  setSpeakerVerificationStatus("idle");
-  speakerVerificationStatusRef.current = "idle";
-  setVoiceIdentifierConfirmed(false);
-  setMustFinishVerification(true);
-  setReadingValidationInProgress(false);
-};
-
-  // Auto-start recording when voice identifier screen appears (only if not validated yet)
-  React.useEffect(function () {
-    if ((permission || microphoneSkipped) && !voiceIdentifierConfirmed && !sessionRecordingStarted && !readingValidated) {
-      if (permission) {
-        // Start recording when the voice identifier screen appears
-        async function startRecording() {
-          try {
-            const started = await SessionRecorder.startContinuousRecording();
-            if (started) {
-              setSessionRecordingStarted(true);
-              console.log("✅ Continuous recording started on voice identifier screen");
-            }
-          } catch (err) {
-            console.error("Failed to start recording:", err);
-            alert(tr("test.rec.startFailed", { msg: err.message }));
-          }
-        }
-        startRecording();
-      } else if (microphoneSkipped) {
-        // Mark as started even if no recording
-        setSessionRecordingStarted(true);
-      }
-    }
-  }, [permission, microphoneSkipped, voiceIdentifierConfirmed, sessionRecordingStarted, readingValidated]);
+  }, [ageConfirmed, sessionCompleted, permission, microphoneSkipped, voiceIdentifierConfirmed]);
 
   // Expression only: open traffic popup after 20s (evaluationEnabled) or when showContinue triggers it
   React.useEffect(function () {
@@ -2035,23 +1714,46 @@ const handleReadingValidationRetry = function () {
     );
   }
 
-  React.useEffect(function skipComprIntroWhenResumingMidTest() {
-    if (!voiceIdentifierConfirmed || comprIntroVideoComplete || sessionCompleted) return;
-    if (!questions.length) return;
-    var idx = getSafeCurrentQuestionIndex();
-    var results = readPersistedJson("questionResults", []);
-    if (idx > 0 || (Array.isArray(results) && results.length > 0) || isOnExpressionPhaseByIndex(idx)) {
-      setComprIntroVideoComplete(true);
+  React.useEffect(function applyWelcomeFreshTestEntry() {
+    if (!ageConfirmed || sessionCompleted) return;
+    if (!forceFreshStartAfterMicCheck) return;
+    applyWelcomeDirectToFirstQuestion();
+    var idx = parseInt(String(currentIndex || "0"), 10);
+    if (!Number.isFinite(idx) || idx !== 0) {
+      setCurrentIndex(0);
     }
-  }, [voiceIdentifierConfirmed, comprIntroVideoComplete, sessionCompleted, questions.length, currentIndex]);
+  }, [ageConfirmed, sessionCompleted, forceFreshStartAfterMicCheck]);
+
+  React.useEffect(function clearOrphanExpressionMicGate() {
+    if (!awaitingExpressionMicCheck || micCheckPassed || microphoneSkipped || !permission) return;
+    if (forceFreshStartAfterMicCheck) {
+      setAwaitingExpressionMicCheck(false);
+      return;
+    }
+    if (!isExpressionMicCheckGateActive()) {
+      setAwaitingExpressionMicCheck(false);
+    }
+  }, [
+    awaitingExpressionMicCheck,
+    micCheckPassed,
+    microphoneSkipped,
+    permission,
+    forceFreshStartAfterMicCheck,
+    currentIndex,
+    questions.length,
+  ]);
 
   React.useEffect(function resumeExpressionMicGateAfterRefresh() {
     if (sessionCompleted || !voiceIdentifierConfirmed || !questions.length) return;
+    if (forceFreshStartAfterMicCheck) return;
     if (micCheckPassed || microphoneSkipped || !permission) return;
     if (awaitingExpressionMicCheck) return;
     if (pendingExpressionIntroIndex >= 0) return;
     var idx = getSafeCurrentQuestionIndex();
-    if (!isOnExpressionPhaseByIndex(idx)) return;
+    var firstExpr = findFirstExpressionQuestionIndex();
+    if (firstExpr < 0 || idx < firstExpr || !isOnExpressionPhaseByIndex(idx)) return;
+    var results = readPersistedJson("questionResults", []);
+    if (!Array.isArray(results) || results.length === 0) return;
     pendingFirstExpressionIndexRef.current = idx;
     setAwaitingExpressionMicCheck(true);
   }, [
@@ -2064,6 +1766,7 @@ const handleReadingValidationRetry = function () {
     permission,
     awaitingExpressionMicCheck,
     pendingExpressionIntroIndex,
+    forceFreshStartAfterMicCheck,
   ]);
 
   React.useEffect(function resumeExpIntroAfterRefresh() {
@@ -2071,9 +1774,7 @@ const handleReadingValidationRetry = function () {
     if (!micCheckPassed && !microphoneSkipped) return;
     var idx = getSafeCurrentQuestionIndex();
     if (isOnExpressionPhaseByIndex(idx)) {
-      setExpIntroVideoComplete(true);
-      setPendingExpressionIntroIndex(-1);
-      pendingFirstExpressionIndexRef.current = null;
+      beginExpressionIntroBeforeIndex(idx);
       return;
     }
     if (pendingExpressionIntroIndex >= 0) {
@@ -3189,7 +2890,11 @@ const handleReadingValidationRetry = function () {
               var a4 = orderedClickSequence[0];
               var b4 = orderedClickSequence[1];
               setOrderedClickSequence([a4, b4, imgIndex]);
-              if (b4 === expFirst && imgIndex === expSecond) {
+              // Partial: X→1→2 or 1→X→2 (correct last tap on expSecond).
+              var fourUpThirdTapPartial =
+                imgIndex === expSecond &&
+                (b4 === expFirst || a4 === expFirst);
+              if (fourUpThirdTapPartial) {
                 setClickedCorrect(true);
                 finalizeComprehensionResult("partial");
               } else {
@@ -3475,85 +3180,6 @@ const handleReadingValidationRetry = function () {
     });
   }
 
-  // Combine two audio blobs into one
-  async function combineAudioBlobs(blob1, blob2) {
-    if (!blob1 && !blob2) return null;
-    if (!blob1) return blob2;
-    if (!blob2) return blob1;
-
-    try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-      // Decode both audio blobs
-      const arrayBuffer1 = await blob1.arrayBuffer();
-      const arrayBuffer2 = await blob2.arrayBuffer();
-      const audioBuffer1 = await audioContext.decodeAudioData(arrayBuffer1);
-      const audioBuffer2 = await audioContext.decodeAudioData(arrayBuffer2);
-
-      // Get the sample rate (use the higher one)
-      const sampleRate = Math.max(audioBuffer1.sampleRate, audioBuffer2.sampleRate);
-
-      // Calculate total length
-      const totalLength = audioBuffer1.length + audioBuffer2.length;
-
-      // Create a new audio buffer with combined length
-      const combinedBuffer = audioContext.createBuffer(
-        audioBuffer1.numberOfChannels,
-        totalLength,
-        sampleRate
-      );
-
-      // Copy first audio
-      for (let channel = 0; channel < audioBuffer1.numberOfChannels; channel++) {
-        const channelData = combinedBuffer.getChannelData(channel);
-        const sourceData = audioBuffer1.getChannelData(channel);
-        for (let i = 0; i < sourceData.length; i++) {
-          channelData[i] = sourceData[i];
-        }
-      }
-
-      // Copy second audio (append after first)
-      const offset = audioBuffer1.length;
-      for (let channel = 0; channel < audioBuffer2.numberOfChannels; channel++) {
-        const channelData = combinedBuffer.getChannelData(channel);
-        const sourceData = audioBuffer2.getChannelData(channel);
-        for (let i = 0; i < sourceData.length; i++) {
-          channelData[offset + i] = sourceData[i];
-        }
-      }
-
-      // Convert back to blob using lamejs (MP3)
-      const samples = combinedBuffer.getChannelData(0);
-      const int16Samples = new Int16Array(samples.length);
-      for (let i = 0; i < samples.length; i++) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        int16Samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      }
-
-      const mp3encoder = new lamejs.Mp3Encoder(1, sampleRate, 128);
-      const sampleBlockSize = 1152;
-      const mp3Data = [];
-
-      for (let i = 0; i < int16Samples.length; i += sampleBlockSize) {
-        const sampleChunk = int16Samples.subarray(i, i + sampleBlockSize);
-        const mp3buf = mp3encoder.encodeBuffer(sampleChunk);
-        if (mp3buf.length > 0) {
-          mp3Data.push(mp3buf);
-        }
-      }
-
-      const mp3buf = mp3encoder.flush();
-      if (mp3buf.length > 0) {
-        mp3Data.push(mp3buf);
-      }
-
-      return new Blob(mp3Data, { type: "audio/mpeg" });
-    } catch (err) {
-      console.error("Error combining audio:", err);
-      // Fallback: return the test audio if combination fails
-      return blob2 || blob1;
-    }
-  }
   // Test to convert for a real Array
   //  function formatQuestionResultsArray() {
   //    return questionResults.map(item => {
@@ -3840,69 +3466,18 @@ const handleReadingValidationRetry = function () {
     // Simplified: just complete the session
     completeSession();
   }
-  function ensureSpeakerVerifiedBeforeFinish(resultsArg) {
-  if (microphoneSkipped || !permission) {
-    return true;
-  }
-
-  var hasSeparateVerifyClip = !!(verificationAudioBlobRef.current || verificationAudioBlob);
-  if (!hasSeparateVerifyClip) {
-    return true;
-  }
-
-  if (speakerVerificationStatusRef.current === "success" && verificationAudioBlobRef.current) {
-    return true;
-  }
-
-  if (speakerVerificationStatusRef.current === "processing") {
-    pendingCompleteAfterVerifyRef.current = resultsArg;
-    setBlockFinishUntilVerifyOverlay(true);
-    return false;
-  }
-
-  pendingCompleteAfterVerifyRef.current = resultsArg;
-  readingVerificationGenRef.current += 1;
-  setMustFinishVerification(true);
-  setVoiceIdentifierConfirmed(false);
-  // Avoid voice-identifier "no server" branch (blob + null result) — show reading / read-again flow instead
-  setReadingRecordingBlob(null);
-  setReadingValidationResult(null);
-  setVerificationAudioBlob(null);
-  setSpeakerVerificationStatus("idle");
-  speakerVerificationStatusRef.current = "idle";
-  verificationAudioBlobRef.current = null;
-  // Stop test-phase recording so the voice screen can auto-start a fresh reading capture
-  if (permission && sessionRecordingStarted) {
-    try {
-      SessionRecorder.stopContinuousRecording();
-    } catch (e) {
-      console.warn("stopContinuousRecording when returning to reading:", e);
-    }
-  }
-  setSessionRecordingStarted(false);
-  return false;
-  }
-
   function completeSession(updatedQuestionResults) {
     // If test is paused, unpause it first
     if (isPaused) {
       setIsPaused(false);
     }
 
-    const resultsArg = updatedQuestionResults !== undefined ? updatedQuestionResults : questionResults;
     markCurrentQuestionEndTimestamp();
-
-    if (!ensureSpeakerVerifiedBeforeFinish(resultsArg)) {
-      return;
-    }
 
     expressionAnswerCaptureActiveRef.current = false;
     if (typeof SessionRecorder !== "undefined" && SessionRecorder.pauseRecordingIfActive) {
       SessionRecorder.pauseRecordingIfActive();
     }
-
-    pendingCompleteAfterVerifyRef.current = null;
-    setBlockFinishUntilVerifyOverlay(false);
 
     stopQuestionAudioForSessionComplete();
 
@@ -3956,14 +3531,7 @@ const handleReadingValidationRetry = function () {
           if (data && data.recordingBlob) {
             console.log("✅ Recording ready after " + pollAttempts + " attempts= " + (pollAttempts * 100) + "ms");
 
-            // Combine verification audio with test audio if verification audio exists
-            let finalBlob = data.recordingBlob;
-            var verifyBlobForCombine = verificationAudioBlobRef.current || verificationAudioBlob;
-            if (verifyBlobForCombine) {
-              console.log("🔗 Combining verification audio with test audio...");
-              finalBlob = await combineAudioBlobs(verifyBlobForCombine, data.recordingBlob);
-              console.log("✅ Audio combined successfully");
-            }
+            var finalBlob = data.recordingBlob;
 
             // Keep final audio in memory to avoid localStorage quota failures.
             SessionRecorder.setFinalRecordingBlob(finalBlob, {
@@ -4046,8 +3614,6 @@ const handleReadingValidationRetry = function () {
     }
   }
 
-  completeSessionRef.current = completeSession;
-
   const refreshExpressionAiStatus = React.useCallback(async function () {
     if (!lastCompletedTestId) return;
     setExpressionAiLoading(true);
@@ -4096,45 +3662,6 @@ const handleReadingValidationRetry = function () {
   React.useEffect(function resetPlsReportCategoryOnNewTest() {
     setPlsReportCategory("semantics");
   }, [lastCompletedTestId]);
-
-  // After Finish was blocked because reading verify was still processing, resume completion automatically.
-  React.useEffect(function autoCompleteWhenVerifyReadyAfterFinish() {
-    if (!blockFinishUntilVerifyOverlay) return;
-    if (speakerVerificationStatusRef.current !== "success" || !verificationAudioBlobRef.current) return;
-    const pending = pendingCompleteAfterVerifyRef.current;
-    if (!pending) return;
-    pendingCompleteAfterVerifyRef.current = null;
-    setBlockFinishUntilVerifyOverlay(false);
-    setMustFinishVerification(false);
-    var run = completeSessionRef.current;
-    if (typeof run === "function") {
-      run(pending);
-    }
-  }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, verificationAudioBlob]);
-
-  // Reading verify failed while waiting on Finish (still-processing overlay) — go to read-again flow.
-  React.useEffect(function readingVerifyFailedDuringFinishOverlay() {
-    if (!blockFinishUntilVerifyOverlay) return;
-    if (speakerVerificationStatus !== "failed") return;
-    setBlockFinishUntilVerifyOverlay(false);
-    readingVerificationGenRef.current += 1;
-    setMustFinishVerification(true);
-    setVoiceIdentifierConfirmed(false);
-    setReadingRecordingBlob(null);
-    setReadingValidationResult(null);
-    setSpeakerVerificationStatus("idle");
-    speakerVerificationStatusRef.current = "idle";
-    verificationAudioBlobRef.current = null;
-    if (permission && sessionRecordingStarted) {
-      try {
-        SessionRecorder.stopContinuousRecording();
-      } catch (e) {
-        console.warn("stopContinuousRecording after verify failed on finish overlay:", e);
-      }
-    }
-    setSessionRecordingStarted(false);
-    expressionPhaseRecordingStartedRef.current = false;
-  }, [blockFinishUntilVerifyOverlay, speakerVerificationStatus, permission, sessionRecordingStarted]);
 
   function checkCurrentQuestionImages() {
     const idx = getSafeCurrentQuestionIndex();
@@ -4642,7 +4169,7 @@ function renderExpectedAnswerNote() {
     );
   }
 
-  if (awaitingExpressionMicCheck && permission && !microphoneSkipped && !micCheckPassed) {
+  if (isExpressionMicCheckGateActive()) {
     const levelPercent = Math.max(0, Math.min(100, Math.round(micCheckLevel * 100)));
     return React.createElement(
       "div",
@@ -4697,174 +4224,6 @@ function renderExpectedAnswerNote() {
               tr("test.mic.check.continue")
             )
           : null
-      )
-    );
-  }
-
-  if ((permission || microphoneSkipped) && !voiceIdentifierConfirmed) {
-    // Show loading screen while validating
-    if (readingValidationInProgress) {
-      return React.createElement(
-        "div",
-        { className: "voice-identifier-screen" },
-        React.createElement("h2", null, tr("test.reading.validating")),
-        React.createElement("p", { style: { fontSize: "18px", color: "#666", margin: "30px 0" } },
-          tr("test.reading.wait")
-        ),
-        React.createElement(
-          "div",
-          {
-            style: {
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              marginTop: "20px"
-            }
-          },
-          React.createElement(
-            "div",
-            {
-              style: {
-                width: "40px",
-                height: "40px",
-                border: "4px solid #f3f3f3",
-                borderTop: "4px solid #4CAF50",
-                borderRadius: "50%",
-                animation: "spin 1s linear infinite"
-              }
-            }
-          )
-        )
-      );
-    }
-
-    // Invalid / could not verify (includes network or server errors) — always read-again, never "no server" branch
-    if (readingValidationResult === false) {
-      return React.createElement(
-        "div",
-        { className: "voice-identifier-screen" },
-        React.createElement("h2", null, tr("test.reading.invalid")),
-        React.createElement("p", { style: { fontSize: "18px", color: "#c62828", margin: "20px 0" } },
-          tr("test.reading.invalidMsg")
-        ),
-        React.createElement(
-          "div",
-          { style: { display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px", flexWrap: "wrap" } },
-          React.createElement(
-            "button",
-            {
-              className: "continue-button",
-              onClick: handleReadingValidationRetry,
-              style: {
-                padding: "12px 24px",
-                fontSize: "18px",
-                backgroundColor: "#FF9800",
-                color: "white",
-                border: "none",
-                borderRadius: "8px",
-                cursor: "pointer",
-                fontWeight: "bold"
-              }
-            },
-            tr("test.reading.tryAgain")
-          ),
-          devMode
-            ? React.createElement(
-              "button",
-              {
-                className: "continue-button",
-                onClick: handleReadingValidationContinue,
-                style: {
-                  padding: "12px 24px",
-                  fontSize: "18px",
-                  backgroundColor: "#9E9E9E",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontWeight: "bold"
-                }
-              },
-              tr("test.reading.skipDev")
-            )
-            : null
-        )
-      );
-    }
-
-    // Show reading instruction screen
-    return React.createElement(
-      "div",
-      { className: "voice-identifier-screen" },
-      React.createElement("h2", null, tr("test.reading.title")),
-      mustFinishVerification
-  ? React.createElement(
-      "div",
-      {
-        className: "speaker-status-banner speaker-status-banner--warning"
-      },
-      tr("test.reading.finishGateBody")
-    )
-  : null,
-      permission && sessionRecordingStarted
-        ? React.createElement(
-          "div",
-          {
-            style: {
-              backgroundColor: "#ffebee",
-              padding: "10px 20px",
-              borderRadius: "8px",
-              marginBottom: "20px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "10px"
-            }
-          },
-          React.createElement("span", { style: { fontSize: "20px" } }, "🔴"),
-          React.createElement("span", { style: { fontWeight: "bold", color: "#c62828" } }, tr("test.reading.recording"))
-        )
-        : null,
-      React.createElement("p", null, tr("test.reading.prompt")),
-      React.createElement(
-        "div",
-        {
-          className: "hebrew-text",
-          style: {
-            fontSize: "24px",
-            fontWeight: "bold",
-            margin: "30px 0",
-            padding: "20px",
-            backgroundColor: "#f0f0f0",
-            borderRadius: "8px",
-            direction: "inherit"
-          }
-        },
-        lang === "en"
-          ? "Let’s start the game and try to answer correctly."
-          : "בואו נתחיל את המשחק, וננסה לענות על תשובות באופן נכון"
-      ),
-      React.createElement("p", { style: { fontSize: "14px", color: "#666", fontStyle: "italic" } },
-        tr("test.reading.hint")
-      ),
-      React.createElement(
-        "button",
-        {
-          className: "continue-button",
-          onClick: confirmVoiceIdentifier,
-          style: {
-            padding: "12px 24px",
-            fontSize: "18px",
-            backgroundColor: "#4CAF50",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: "pointer",
-            fontWeight: "bold",
-            marginTop: "20px"
-          }
-        },
-        tr("test.cta.continue")
       )
     );
   }
@@ -6084,8 +5443,6 @@ function renderExpectedAnswerNote() {
     "images-container" +
     (currentImageCount === 1 ? " images-container--single" : "") +
     (questionType === "C" ? " images-container--comprehension" : " images-container--expression");
-  const shouldShowSpeakerStatusUi =
-    !sessionCompleted && !trafficPopupOpen && !showContinue;
   const getTrafficOptionExample = function (resultKey) {
     if (!currentQuestion) return "";
     if (resultKey === "success") return String(currentQuestion.expected_full_parents || "").trim();
@@ -6111,48 +5468,6 @@ function renderExpectedAnswerNote() {
     renderConfettiOverlay(),
     renderClappingAvatarOverlay(),
     renderExpressionRefreshRecoveryModal(),
-
-    blockFinishUntilVerifyOverlay
-      ? React.createElement(
-        "div",
-        {
-          className: "finish-verify-blocking-overlay",
-          style: {
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(255, 255, 255, 0.97)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 10002,
-            padding: "28px 20px",
-            boxSizing: "border-box",
-            textAlign: "center",
-            pointerEvents: "auto"
-          },
-          role: "dialog",
-          "aria-modal": "true",
-          "aria-live": "polite"
-        },
-        React.createElement("div", {
-          style: {
-            width: "44px",
-            height: "44px",
-            border: "4px solid #f3f3f3",
-            borderTop: "4px solid #4CAF50",
-            borderRadius: "50%",
-            animation: "spin 1s linear infinite",
-            marginBottom: "22px"
-          }
-        }),
-        React.createElement("h2", { style: { fontSize: "22px", marginBottom: "14px", color: "#304348", maxWidth: "440px" } }, tr("test.finish.verifyOverlayTitle")),
-        React.createElement("p", { style: { fontSize: "17px", color: "#556", maxWidth: "440px", lineHeight: 1.55 } }, tr("test.finish.verifyOverlayBody"))
-      )
-      : null,
 
     // Paused overlay
     isPaused
@@ -6271,30 +5586,6 @@ function renderExpectedAnswerNote() {
       )
       : null,
     React.createElement(TestNavbar),
-    shouldShowSpeakerStatusUi
-      ? (
-        speakerVerificationStatus === "failed"
-          ? React.createElement(
-            "div",
-            { className: "speaker-status-banner speaker-status-banner--warning" },
-            lang === "en"
-              ? "Parent voice verification failed. You can continue for now, but you must retry before finishing."
-              : "אימות קול ההורה נכשל. אפשר להמשיך כרגע, אך חייבים לנסות שוב לפני סיום."
-          )
-          : speakerVerificationStatus === "success"
-            ? React.createElement(
-              "div",
-              { className: "speaker-status-banner speaker-status-banner--success" },
-              lang === "en"
-                ? "Parent voice verified successfully."
-                : "קול ההורה אומת בהצלחה."
-            )
-            : null
-      )
-      : null,
-    null,
-
-
     trafficPopupOpen
       ? React.createElement(
         "div",

@@ -71,8 +71,6 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       "partialAnswers",
       "wrongAnswers",
       "voiceIdentifierConfirmed",
-      "readingValidated",
-      "readingValidationResult",
       "readingRecordingBlob",
       "sessionCompleted",
       "sessionRecordingStarted",
@@ -229,8 +227,11 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       setPersistentValue("expIntroVideoComplete", false);
       setPersistentValue("pendingExpressionIntroIndex", -1);
       setPersistentValue("voiceIdentifierConfirmed", true);
-      setPersistentValue("readingValidated", true);
-      setPersistentValue("readingValidationResult", null);
+      try {
+        localStorage.removeItem("readingValidated");
+        localStorage.removeItem("readingValidationResult");
+        localStorage.removeItem("readingRecordingBlob");
+      } catch (e) {}
       setPersistentValue("sessionRecordingStarted", false);
       setPersistentValue("sessionCompleted", false);
       setPersistentValue("forceFreshStartAfterMicCheck", true);
@@ -527,6 +528,10 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               type="button"
               className="onboarding-btn onboarding-btn--primary"
               onClick={function () {
+                setPersistentValue("awaitingExpressionMicCheck", false);
+                setPersistentValue("micCheckPassed", false);
+                setPersistentValue("currentIndex", "0");
+                setPersistentValue("forceFreshStartAfterMicCheck", true);
                 setPage("test");
               }}
             >

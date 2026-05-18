@@ -154,49 +154,6 @@ async function updateUserTests(userId, ageYears, ageMonths,
 }
 
 
-// Speaker Verification API call
-async function verifySpeaker(userId, audioFile64) {
-  const url = getApiBaseUrl() + "/api/VerifySpeaker";
-  var apiUserId = resolveBackendUserId(userId);
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: apiUserId,
-        audioFile64: audioFile64
-      }),
-    });
-
-    // Backend returned an error → verification failed
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Verification failed (${response.status}): ${errorText}`);
-    }
-
-    // Wait for backend JSON response
-    const result = await response.json();
-
-    if (result.success === true) {
-      console.log("✅ Speaker verification successful");
-      console.log("👤 Parent speaker:", result.parent_speaker);
-      return {
-        success: true,
-        parentSpeaker: result.parent_speaker
-      };
-    } else {
-      console.warn("⚠️ Verification returned success=false");
-      return { success: false };
-    }
-
-  } catch (err) {
-    console.error("❌ Speaker verification error:", err);
-    // Return null on network errors to allow testing without backend connection
-    return null;
-  }
-}
-
 async function getExpressionAiStatus(userId, testId) {
   if (!testId) return null;
   var apiUserId = resolveBackendUserId(userId);
