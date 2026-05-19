@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blob direct upload smoke test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+    pre { background: #f4f4f4; padding: 1rem; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+    .ok { color: #0a0; }
+    .err { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>Azure Blob direct upload (Phase A)</h1>
+  <p>Serve this folder on <strong>http://localhost:8000</strong> (must match Blob CORS).</p>
+  <p>Run first: <code>python backend/tools/blob_smoke_phase_a.py</code></p>
+  <button type="button" id="run">Run browser PUT</button>
+  <pre id="log">Loading config…</pre>
+  <script>
+    (function () {
+      var logEl = document.getElementById("log");
+      var config = null;
+
+      function log(msg, isErr) {
+        logEl.className = isErr ? "err" : "ok";
+        logEl.textContent = msg;
+      }
+
+      fetch("blob-smoke-config.local.json", { cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("Missing blob-smoke-config.local.json — run backend/tools/blob_smoke_phase_a.py");
+          return r.json();
+        })
+        .then(function (cfg) {
+          config = cfg;
+          log(
+            "Config OK.\nOrigin: " + window.location.origin +
+            "\nBlob: " + cfg.blobName +
+            "\nClick \"Run browser PUT\" to test CORS + SAS from this browser."
+          );
+        })
+        .catch(function (e) {
+          log(String(e.message || e), true);
+        });
+
+      document.getElementById("run").addEventListener("click", function () {
+        if (!config || !config.uploadUrl) {
+          log("No config loaded.", true);
+          return;
+        }
+        log("PUT in progress…");
+        var body = new Blob(["seeandsay-browser-smoke"], { type: "audio/mpeg" });
+        fetch(config.uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "x-ms-blob-type": "BlockBlob",
+          },
+          body: body,
+        })
+          .then(function (res) {
+            if (res.status === 201 || res.status === 200) {
+              log("SUCCESS: HTTP " + res.status + " — direct Blob upload works from browser.\nCheck Azure Portal for blob (may be a second smoke file).");
+            } else {
+              return res.text().then(function (t) {
+                throw new Error("HTTP " + res.status + " " + res.statusText + "\n" + (t || "").slice(0, 400));
+              });
+            }
+          })
+          .catch(function (e) {
+            var msg = String(e.message || e);
+            if (/Failed to fetch/i.test(msg) || /NetworkError/i.test(msg)) {
+              msg += "\n\nLikely CORS: confirm Blob CORS includes " + window.location.origin;
+            }
+            log(msg, true);
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

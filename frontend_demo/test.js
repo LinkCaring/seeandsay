@@ -224,6 +224,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [testUploadError, setTestUploadError] = React.useState(null);
   const [expressionAiPollError, setExpressionAiPollError] = React.useState(null);
   const expressionAiPollStartedRef = React.useRef(null);
+  const pendingCompleteSessionResultsRef = React.useRef(null);
+  const retryRecordingUploadRef = React.useRef(null);
   /** Which PLS frame is selected in the narrative report wheel (integrative | semantics | structure | phonology). */
   const [plsReportCategory, setPlsReportCategory] = React.useState("semantics");
 
@@ -1430,6 +1432,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         localStorage.removeItem("readingValidated");
         localStorage.removeItem("readingValidationResult");
         localStorage.removeItem("readingRecordingBlob");
+        if (typeof ensurePendingTestId === "function") {
+          ensurePendingTestId();
+        } else if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.resetPendingTestId) {
+          window.SeeAndSayTestSession.resetPendingTestId();
+        }
       } catch (e) {}
     }
 
@@ -1529,6 +1536,21 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     permission,
     currentIndex,
   ]);
+
+  React.useEffect(function registerSessionRecordingMaxDuration() {
+    if (typeof SessionRecorder === "undefined" || !SessionRecorder.setOnMaxDurationReached) {
+      return undefined;
+    }
+    SessionRecorder.setOnMaxDurationReached(function () {
+      console.warn("Recording stopped: maximum session audio length (12:30) reached.");
+      if (SessionRecorder.pauseRecordingIfActive) {
+        SessionRecorder.pauseRecordingIfActive();
+      }
+    });
+    return function () {
+      SessionRecorder.setOnMaxDurationReached(null);
+    };
+  }, []);
 
   function playTrafficFeedback(result) {
     // Cute feedback: short beep pattern (no speech)
@@ -1717,6 +1739,22 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   React.useEffect(function applyWelcomeFreshTestEntry() {
     if (!ageConfirmed || sessionCompleted) return;
     if (!forceFreshStartAfterMicCheck) return;
+    if (
+      window.SeeAndSayTestRun &&
+      typeof window.SeeAndSayTestRun.hasInProgressTestState === "function" &&
+      window.SeeAndSayTestRun.hasInProgressTestState()
+    ) {
+      setForceFreshStartAfterMicCheck(false);
+      return;
+    }
+    if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+      window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+    }
+    setLastCompletedTestId(null);
+    setExpressionAiResult(null);
+    setExpressionAiPollError(null);
+    expressionAiPollStartedRef.current = null;
+    resetFreshTestRunReactState();
     applyWelcomeDirectToFirstQuestion();
     var idx = parseInt(String(currentIndex || "0"), 10);
     if (!Number.isFinite(idx) || idx !== 0) {
@@ -2659,28 +2697,55 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     }, 2400);
   }
 
+  function shouldShowIncompleteSummaryBeforeFinish(results) {
+    if (!questions.length) return false;
+    var rows = results || questionResults;
+    var idx = getSafeCurrentQuestionIndex();
+    var currentQ = idx >= 0 ? questions[idx] : null;
+    var qType = currentQ ? getQuestionTypeLabel(currentQ) : null;
+    if (qType === "expression") {
+      var exprTotal = countQuestionsByType("expression");
+      var exprAnswered = countAnsweredByType(rows, "expression");
+      return exprTotal > 0 && exprAnswered < exprTotal;
+    }
+    return countUniqueQuestionsAnswered(rows) < questions.length;
+  }
+
+  function requestCompleteSessionOrConfirm(results) {
+    var rows = results || questionResults;
+    if (shouldShowIncompleteSummaryBeforeFinish(rows)) {
+      if (results) {
+        setQuestionResults(results);
+      }
+      setIncompleteSummaryConfirmOpen(true);
+      return;
+    }
+    completeSession(results);
+  }
+
   function requestFinishTest() {
     if (sessionCompleted) return;
     if (questions.length === 0) {
       completeSession(questionResults);
       return;
     }
+    requestCompleteSessionOrConfirm(questionResults);
+  }
 
-    var shouldShowIncompletePopup = false;
-    if (questionType === "E") {
-      var exprTotal = countQuestionsByType("expression");
-      var exprAnswered = countAnsweredByType(questionResults, "expression");
-      shouldShowIncompletePopup = exprTotal > 0 && exprAnswered < exprTotal;
-    } else {
-      shouldShowIncompletePopup = countUniqueQuestionsAnswered(questionResults) < questions.length;
+  function resetFreshTestRunReactState() {
+    setQuestionResults([]);
+    setCorrectAnswers(0);
+    setPartialAnswers(0);
+    setWrongAnswers(0);
+    setCurrentIndex(0);
+    setSessionCompleted(false);
+    setSessionRecordingStarted(false);
+    setIsPaused(false);
+    consecutiveCompFailRef.current = 0;
+    consecutiveExprFailRef.current = 0;
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.cleanup) {
+      SessionRecorder.cleanup(false);
     }
-
-    if (shouldShowIncompletePopup) {
-      setIncompleteSummaryConfirmOpen(true);
-      return;
-    }
-
-    completeSession(questionResults);
   }
 
   const handleClick = function (img, event) {
@@ -3088,7 +3153,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       if (consecutiveExprFailRef.current >= 2) {
         consecutiveExprFailRef.current = 0;
         consecutiveCompFailRef.current = 0;
-        completeSession(updatedQuestionResults);
+        requestCompleteSessionOrConfirm(updatedQuestionResults);
         return;
       }
       if (consecutiveCompFailRef.current >= 2) {
@@ -3101,10 +3166,9 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
           return;
         }
       }
-      // If we just answered the last question in the active CSV-driven flow,
-      // always finish via the same completeSession path used by the Finish button.
+      // Last question in the CSV flow — still confirm if expression section is incomplete.
       if (currentIdx >= questions.length - 1) {
-        completeSession(updatedQuestionResults);
+        requestCompleteSessionOrConfirm(updatedQuestionResults);
         return;
       }
       if (currentIdx < questions.length - 1) {
@@ -3138,9 +3202,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
           shouldFinishAtLastQuestion = answeredCount >= questions.length;
         }
         if (shouldFinishAtLastQuestion) {
-          completeSession(updatedQuestionResults);
+          requestCompleteSessionOrConfirm(updatedQuestionResults);
         } else {
           setIncompleteSummaryConfirmOpen(true);
+          if (updatedQuestionResults) {
+            setQuestionResults(updatedQuestionResults);
+          }
         }
       }
     }
@@ -3462,6 +3529,45 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     setNonClickableImage(null);
   }
 
+  const tryRecoverSavedTest = React.useCallback(async function () {
+    if (typeof recoverLatestTest !== "function") return;
+    setTestUploadError(null);
+    var recovered = await recoverLatestTest(idDigits);
+    if (!recovered || !recovered.success || !recovered.test_id) {
+      setTestUploadError(
+        lang === "en"
+          ? "No saved test found for this session."
+          : "לא נמצא מבחן שמור לסשן הזה."
+      );
+      return;
+    }
+    setLastCompletedTestId(recovered.test_id);
+    if (recovered.expression_ai) {
+      setExpressionAiResult(recovered.expression_ai);
+    }
+    setTestUploadState("ok");
+    setExpressionAiPollError(null);
+  }, [idDigits, lang]);
+
+  React.useEffect(function autoRecoverAfterUploadFailure() {
+    if (!sessionCompleted || testUploadState !== "failed" || lastCompletedTestId) return;
+    var pendingId = null;
+    try {
+      pendingId = sessionStorage.getItem("seeandsayPendingTestId");
+    } catch (e) {}
+    if (!pendingId || typeof getTestStatus !== "function") return;
+    getTestStatus(idDigits, pendingId).then(function (statusResp) {
+      if (statusResp && statusResp.success && statusResp.test_id) {
+        setLastCompletedTestId(statusResp.test_id);
+        if (statusResp.expression_ai) {
+          setExpressionAiResult(statusResp.expression_ai);
+        }
+        setTestUploadState("ok");
+        setExpressionAiPollError(null);
+      }
+    });
+  }, [sessionCompleted, testUploadState, lastCompletedTestId, idDigits]);
+
   function handleLevelCompletion() {
     // Simplified: just complete the session
     completeSession();
@@ -3484,12 +3590,14 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     setImages([]);
     setExpressionAiResult(null);
     setExpressionAiLoading(false);
-    setTestUploadState("uploading");
     setTestUploadError(null);
     setExpressionAiPollError(null);
     expressionAiPollStartedRef.current = Date.now();
     consecutiveCompFailRef.current = 0;
     consecutiveExprFailRef.current = 0;
+
+    var resultsForFinish = updatedQuestionResults || questionResults;
+    pendingCompleteSessionResultsRef.current = resultsForFinish;
 
     var handleUploadResult = function (result) {
       if (!result || result.success === false) {
@@ -3514,93 +3622,172 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       }
     };
 
+    function seedLocalExpressionUploadPhase(phaseKey) {
+      setExpressionAiResult({
+        status: "pending",
+        meta: {
+          progress: {
+            phase: phaseKey,
+            processed_questions: 0,
+            total_questions: 0,
+            last_updated_at: new Date().toISOString(),
+          },
+        },
+        expressive_language_impression: { status: "pending" },
+      });
+    }
+
+    async function uploadSessionResults(finalBlob, timestampText, fullArray) {
+      var testId =
+        typeof ensurePendingTestId === "function" ? ensurePendingTestId() : "test-" + Date.now();
+
+      if (typeof prepareAudioUpload === "function" && typeof putSessionAudioToBlob === "function") {
+        setTestUploadState("uploading_blob");
+        seedLocalExpressionUploadPhase("uploading_audio");
+        try {
+          if (typeof sessionStorage !== "undefined") {
+            sessionStorage.setItem("seeandsayPendingBlobUploaded", "0");
+          }
+        } catch (ssErr) {}
+
+        var prep = await prepareAudioUpload(idDigits, testId);
+        if (!prep || prep.success === false) {
+          throw new Error((prep && prep.error) || "prepareUpload failed");
+        }
+
+        var putResult = await putSessionAudioToBlob(prep.uploadUrl, finalBlob);
+        if (!putResult || putResult.success === false) {
+          throw new Error((putResult && putResult.error) || "Blob upload failed");
+        }
+
+        try {
+          if (typeof sessionStorage !== "undefined") {
+            sessionStorage.setItem("seeandsayPendingBlobUploaded", "1");
+          }
+        } catch (ssErr2) {}
+
+        setTestUploadState("saving_metadata");
+        seedLocalExpressionUploadPhase("saving_metadata");
+        return await updateUserTests(
+          idDigits,
+          ageYears,
+          ageMonths,
+          fullArray,
+          correctAnswers,
+          partialAnswers,
+          wrongAnswers,
+          null,
+          timestampText,
+          childGender,
+          prep.blobPath,
+          testId
+        );
+      }
+
+      setTestUploadState("uploading");
+      return await new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onloadend = async function () {
+          try {
+            var legacyResult = await updateUserTests(
+              idDigits,
+              ageYears,
+              ageMonths,
+              fullArray,
+              correctAnswers,
+              partialAnswers,
+              wrongAnswers,
+              reader.result,
+              timestampText,
+              childGender,
+              null,
+              testId
+            );
+            resolve(legacyResult);
+          } catch (legacyErr) {
+            reject(legacyErr);
+          }
+        };
+        reader.onerror = function () {
+          reject(new Error("Failed to read recording for upload"));
+        };
+        reader.readAsDataURL(finalBlob);
+      });
+    }
+
+    async function runRecordingFinishPipeline() {
+      var fullArray = formatQuestionResultsArray(resultsForFinish);
+      setTestUploadState("preparing_recording");
+
+      if (typeof SessionRecorder !== "undefined" && SessionRecorder.stopContinuousRecording) {
+        SessionRecorder.stopContinuousRecording();
+      }
+      expressionPhaseRecordingStartedRef.current = false;
+
+      var waitMs = 120000;
+      if (typeof SessionRecorder !== "undefined" && SessionRecorder.getConversionWaitMs) {
+        waitMs = SessionRecorder.getConversionWaitMs();
+      }
+      console.log("🛑 Waiting for session recording (up to " + Math.round(waitMs / 1000) + "s)...");
+
+      try {
+        if (typeof SessionRecorder === "undefined" || !SessionRecorder.whenFinalBlobReady) {
+          throw new Error("SessionRecorder is not available");
+        }
+
+        var data = await SessionRecorder.whenFinalBlobReady({ timeoutMs: waitMs });
+        if (!data || !data.recordingBlob) {
+          throw new Error("Recording file is not available after preparation");
+        }
+
+        if (SessionRecorder.setFinalRecordingBlob) {
+          SessionRecorder.setFinalRecordingBlob(data.recordingBlob, {
+            mimeType: data.mimeType || "audio/mpeg",
+            timestamp: data.recordingDate || Date.now(),
+          });
+        }
+        var recordingUrl = URL.createObjectURL(data.recordingBlob);
+        localStorage.setItem("sessionRecordingUrl", recordingUrl);
+        setSessionCompleted(true);
+
+        var uploadResult = await uploadSessionResults(
+          data.recordingBlob,
+          data.timestampText,
+          fullArray
+        );
+        handleUploadResult(uploadResult);
+      } catch (prepErr) {
+        console.error("[completeSession] recording prepare/upload failed:", prepErr);
+        setSessionCompleted(true);
+        setTestUploadState("failed");
+        var prepMsg =
+          lang === "en"
+            ? "Could not prepare the session recording. Wait a moment, then tap Retry."
+            : "לא ניתן להכין את הקלטת המבחן. המתינו רגע ולחצו על ניסיון חוזר.";
+        if (prepErr && prepErr.message) {
+          prepMsg += " (" + prepErr.message + ")";
+        }
+        setTestUploadError(prepMsg);
+      }
+    }
+
+    async function retryRecordingUpload() {
+      var results = pendingCompleteSessionResultsRef.current || questionResults;
+      pendingCompleteSessionResultsRef.current = results;
+      setTestUploadError(null);
+      await runRecordingFinishPipeline();
+    }
+    retryRecordingUploadRef.current = retryRecordingUpload;
+
     // Stop continuous session recording and send data to backend
     if (sessionRecordingStarted && permission) {
-      SessionRecorder.stopContinuousRecording();
-      expressionPhaseRecordingStartedRef.current = false;
-      console.log("🛑 Stopped session recording, waiting for MP3 conversion...");
-
-      // Poll until recording is ready, then send to backend
-      var pollAttempts = 0;
-      var maxAttempts = 300; // Max 30 seconds (300 * 100ms)
-
-      var checkRecordingReady = async function () {
-        pollAttempts++;
-
-        SessionRecorder.getRecordingAndText().then(async function (data) {
-          if (data && data.recordingBlob) {
-            console.log("✅ Recording ready after " + pollAttempts + " attempts= " + (pollAttempts * 100) + "ms");
-
-            var finalBlob = data.recordingBlob;
-
-            // Keep final audio in memory to avoid localStorage quota failures.
-            SessionRecorder.setFinalRecordingBlob(finalBlob, {
-              mimeType: "audio/mpeg",
-              timestamp: Date.now()
-            });
-            const url = URL.createObjectURL(finalBlob);
-            localStorage.setItem("sessionRecordingUrl", url);
-            setSessionCompleted(true);
-
-            const reader = new FileReader();
-            reader.onloadend = async function () {
-              const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-              try {
-                const result = await updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-                  reader.result, data.timestampText, childGender); //MongoDB
-                handleUploadResult(result);
-              } catch (e) {
-                console.error("updateUserTests after recording:", e);
-                handleUploadResult({
-                  success: false,
-                  error: e && e.message ? e.message : String(e),
-                });
-              }
-            };
-            reader.readAsDataURL(finalBlob);
-          } else if (pollAttempts < maxAttempts) {
-            // Not ready yet, check again in 100ms
-            setTimeout(checkRecordingReady, 100);
-          } else {
-            // Timeout - send without recording, then show completion
-            console.warn("⚠️ Recording conversion timeout after " + maxAttempts + " attempts= " + (maxAttempts * 100) + "ms");
-            setSessionCompleted(true);
-            const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-            updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-              null, null, childGender).then(function(result) {
-                handleUploadResult(result);
-              }).catch(function(err) {
-                console.error("updateUserTests (no recording blob):", err);
-                handleUploadResult({
-                  success: false,
-                  error: err && err.message ? err.message : String(err),
-                });
-              }); //MongoDB
-          }
-        }).catch(function (err) {
-          console.error("❌ Error checking recording:", err);
-          setSessionCompleted(true);
-          const fullArray = formatQuestionResultsArray(updatedQuestionResults);
-          updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
-            null, null, childGender).then(function(result) {
-              handleUploadResult(result);
-            }).catch(function(err) {
-              console.error("updateUserTests after recording error:", err);
-              handleUploadResult({
-                success: false,
-                error: err && err.message ? err.message : String(err),
-              });
-            }); //MongoDB
-        });
-      };
-
-      // Start polling after a small initial delay
-      setTimeout(checkRecordingReady, 200);
+      runRecordingFinishPipeline();
     } else {
+      setTestUploadState("uploading");
       // No recording, show completion and send immediately
       expressionPhaseRecordingStartedRef.current = false;
       setSessionCompleted(true);
-      const fullArray = formatQuestionResultsArray(updatedQuestionResults);
+      const fullArray = formatQuestionResultsArray(resultsForFinish);
       updateUserTests(idDigits, ageYears, ageMonths, fullArray, correctAnswers, partialAnswers, wrongAnswers,
         null, null, childGender).then(function(result) {
           handleUploadResult(result);
@@ -3661,6 +3848,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   React.useEffect(function resetPlsReportCategoryOnNewTest() {
     setPlsReportCategory("semantics");
+    expressionAiPollStartedRef.current = Date.now();
   }, [lastCompletedTestId]);
 
   function checkCurrentQuestionImages() {
@@ -4271,6 +4459,38 @@ function renderExpectedAnswerNote() {
     );
   }
 
+  if (testUploadState === "preparing_recording") {
+    var prepWaitSec = 120;
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.getConversionWaitMs) {
+      prepWaitSec = Math.round(SessionRecorder.getConversionWaitMs() / 1000);
+    }
+    return React.createElement(
+      "section",
+      {
+        className: "test-screen test-screen--preparing-recording",
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "min(70vh, calc(100dvh - var(--app-header-height, 64px)))",
+          padding: "24px 16px",
+          textAlign: "center",
+        },
+      },
+      React.createElement("div", {
+        className: "kicker",
+        style: { marginBottom: 12, fontSize: 18, fontWeight: 700, color: "#304348" },
+      }, lang === "en" ? "Preparing recording…" : "מכין הקלטה…"),
+      React.createElement("p", {
+        className: "muted",
+        style: { maxWidth: 420, lineHeight: 1.5, margin: 0 },
+      }, lang === "en"
+        ? "Please keep this page open. Longer sessions may take up to " + prepWaitSec + " seconds."
+        : "אנא השאירו את הדף פתוח. מבחנים ארוכים עשויים לקחת עד " + prepWaitSec + " שניות.")
+    );
+  }
+
   if (sessionCompleted) {
     const totalAnswered = correctAnswers + partialAnswers + wrongAnswers;
     const hasSessionRecording = !!(permission && sessionRecordingStarted);
@@ -4382,7 +4602,12 @@ function renderExpectedAnswerNote() {
       !hasExpressionQuestions ||
       (expressionAiResult &&
         (expressionAiStatus === "done" || expressionAiStatus === "failed"));
-    const testUploadInProgress = sessionCompleted && testUploadState === "uploading";
+    const testUploadInProgress =
+      sessionCompleted &&
+      (testUploadState === "uploading" ||
+        testUploadState === "uploading_blob" ||
+        testUploadState === "saving_metadata" ||
+        testUploadState === "preparing_recording");
     const testUploadFailed = sessionCompleted && testUploadState === "failed";
     const expressionFeedbackPending =
       hasExpressionQuestions &&
@@ -4414,12 +4639,18 @@ function renderExpectedAnswerNote() {
         if (phaseKey === "processing_started") return "Started";
         if (phaseKey === "preparing_audio") return "Processing audio";
         if (phaseKey === "scoring_questions") return "Scoring questions";
+        if (phaseKey === "uploading_audio") return "Uploading recording to cloud";
+        if (phaseKey === "saving_metadata") return "Saving test results";
+        if (phaseKey === "awaiting_audio") return "Waiting for recording in cloud";
         if (phaseKey === "building_impression") return "Building summary";
         if (phaseKey === "done") return "Done";
         if (phaseKey === "failed") return "Failed";
         return "Pending";
       }
       if (phaseKey === "queued") return "יצירת המשוב תתחיל בקרוב";
+      if (phaseKey === "uploading_audio") return "מעלה הקלטה לענן…";
+      if (phaseKey === "saving_metadata") return "שומר נתוני מבחן…";
+      if (phaseKey === "awaiting_audio") return "ממתין להקלטה בענן…";
       if (phaseKey === "processing_started") return "התחיל עיבוד";
       if (phaseKey === "preparing_audio") return "מעבד שמע";
       if (phaseKey === "scoring_questions") return "מחשב ציונים";
@@ -5156,8 +5387,20 @@ function renderExpectedAnswerNote() {
               }
             },
             lang === "en"
-              ? "Uploading recording and results…"
-              : "מעלה את ההקלטה והתוצאות…"
+              ? testUploadState === "preparing_recording"
+                ? "Preparing recording…"
+                : testUploadState === "uploading_blob"
+                  ? "Uploading recording to cloud…"
+                  : testUploadState === "saving_metadata"
+                    ? "Saving test results…"
+                    : "Uploading recording and results…"
+              : testUploadState === "preparing_recording"
+                ? "מכין הקלטה…"
+                : testUploadState === "uploading_blob"
+                  ? "מעלה הקלטה לענן…"
+                  : testUploadState === "saving_metadata"
+                    ? "שומר נתוני מבחן…"
+                    : "מעלה את ההקלטה והתוצאות…"
           )
         : null,
       hasExpressionQuestions && testUploadFailed
@@ -5179,10 +5422,38 @@ function renderExpectedAnswerNote() {
                 lineHeight: 1.4
               }
             },
-            lang === "en" ? "Upload failed. Results were not saved." : "העלאת הנתונים נכשלה. התוצאות לא נשמרו.",
+            lang === "en" ? "Upload failed." : "העלאת הנתונים נכשלה.",
             testUploadError
               ? React.createElement("div", { style: { marginTop: "6px", fontSize: "12px", opacity: 0.9 } }, testUploadError)
-              : null
+              : null,
+            hasSessionRecording
+              ? React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn",
+                    style: { marginTop: "10px" },
+                    onClick: function () {
+                      if (retryRecordingUploadRef.current) {
+                        retryRecordingUploadRef.current();
+                      }
+                    },
+                  },
+                  lang === "en" ? "Retry recording upload" : "נסה שוב להעלות הקלטה"
+                )
+              : null,
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "btn",
+                style: { marginTop: "10px" },
+                onClick: function () {
+                  tryRecoverSavedTest();
+                },
+              },
+              lang === "en" ? "Check if test was saved" : "בדוק אם המבחן נשמר"
+            )
           )
         : null,
       hasExpressionQuestions && expressionAiFailed

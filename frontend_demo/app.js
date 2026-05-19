@@ -28,6 +28,12 @@ function lsRemove(key) {
   } catch (e) {}
 }
 
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {}
+}
+
 var DEMO_TEST_RUN_LS_KEYS = [
   "currentIndex",
   "questionResults",
@@ -67,6 +73,9 @@ function clearStoredTestRunKeepChildProfile() {
     sessionStorage.removeItem("seeandsayTempBackendUserId");
     sessionStorage.removeItem("seeandsayWasInTest");
   } catch (e) {}
+  if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+    window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+  }
 }
 
 window.SeeAndSayTestRun = {
@@ -76,6 +85,7 @@ window.SeeAndSayTestRun = {
     setResumeBlockedAfterDataLoss(false);
   },
   clearStoredTestRunKeepChildProfile: clearStoredTestRunKeepChildProfile,
+  hasInProgressTestState: hasInProgressTestState,
 };
 
 function isResumeBlockedAfterDataLoss() {
@@ -179,6 +189,14 @@ function App() {
     if (hasInProgressTestState()) {
       setShowStartResumeChoice(true);
     } else {
+      lsSet("forceFreshStartAfterMicCheck", true);
+      lsSet("sessionCompleted", false);
+      if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+        window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+      }
+      setTestSessionKey(function (k) {
+        return k + 1;
+      });
       setPage("test");
     }
   }
@@ -275,7 +293,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 4"
+      "version 4.1"
     ),
     /* Reset button moved to test navbar */
     showResetConfirm
@@ -403,6 +421,7 @@ function App() {
               {
                 type: "button",
                 onClick: function () {
+                  lsSet("forceFreshStartAfterMicCheck", false);
                   setShowStartResumeChoice(false);
                   setPage("test");
                 },
@@ -426,6 +445,8 @@ function App() {
                 onClick: function () {
                   setResumeBlockedAfterDataLoss(false);
                   clearStoredTestRunKeepChildProfile();
+                  lsSet("forceFreshStartAfterMicCheck", true);
+                  lsSet("sessionCompleted", false);
                   setTestSessionKey(function (k) { return k + 1; });
                   setShowStartResumeChoice(false);
                   setPage("test");

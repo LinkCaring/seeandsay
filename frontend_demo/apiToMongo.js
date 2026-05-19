@@ -89,37 +89,229 @@ async function createUser(userId, userName) {
 }
 
 
-// update user info with test results, audio base64, and timestamps
-// full_array --> is the new, full array of right and wrong
-async function updateUserTests(userId, ageYears, ageMonths,
-                    full_array,correct, partly, wrong,
-                    audioBase64, timestampText, childGender) {
+var PENDING_TEST_ID_KEY = "seeandsayPendingTestId";
+var PENDING_BLOB_UPLOADED_KEY = "seeandsayPendingBlobUploaded";
+var COMPLETED_TEST_FEEDBACK_LS_KEYS = ["lastCompletedTestId", "expressionAiResult"];
+/** Cleared on each new game so stale answers are not uploaded or scored (child age/login flags kept). */
+var IN_PROGRESS_TEST_RUN_LS_KEYS = [
+  "currentIndex",
+  "questionResults",
+  "correctAnswers",
+  "partialAnswers",
+  "wrongAnswers",
+  "sessionCompleted",
+  "sessionRecordingStarted",
+  "testPaused",
+  "audioChunks",
+  "audioUrl",
+  "recPaused",
+  "sessionRecordingActive",
+  "sessionRecordingUrl",
+  "sessionRecordingFinal",
+  "sessionRecordingFinalMeta",
+  "sessionRecordingChunks",
+  "recordingStartTime",
+  "questionTimestamps",
+  "recordingPaused",
+  "pauseStartTime",
+  "totalPausedTime",
+  "sessionActiveRecordingMs",
+];
+/** Blob PUT timeout (slow networks); not tied to max recording length (12:30). Default 2 hours. */
+var BLOB_UPLOAD_TIMEOUT_MS = 7200000;
+
+function createNewTestId() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : "test-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9);
+}
+
+function clearPendingTestUploadKeys() {
+  try {
+    sessionStorage.removeItem(PENDING_TEST_ID_KEY);
+    sessionStorage.removeItem(PENDING_BLOB_UPLOADED_KEY);
+  } catch (e) {}
+}
+
+function clearCompletedTestFeedbackKeys() {
+  COMPLETED_TEST_FEEDBACK_LS_KEYS.forEach(function (key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  });
+}
+
+function clearInProgressTestRunProgress() {
+  IN_PROGRESS_TEST_RUN_LS_KEYS.forEach(function (key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  });
+  try {
+    sessionStorage.removeItem("seeandsayWasInTest");
+  } catch (e) {}
+}
+
+/**
+ * New game only (Start game / login / New run / no in-progress start).
+ * Clears questionResults, scores, pending testId, and prior summary AI keys.
+ * Do NOT call on resume Continue — use ensurePendingTestId() to keep the same run id.
+ */
+function beginNewTestSessionIdentity() {
+  clearInProgressTestRunProgress();
+  clearCompletedTestFeedbackKeys();
+  clearPendingTestUploadKeys();
+  try {
+    var id = createNewTestId();
+    sessionStorage.setItem(PENDING_TEST_ID_KEY, id);
+    return id;
+  } catch (e) {
+    return createNewTestId();
+  }
+}
+
+function resetPendingTestId() {
+  clearPendingTestUploadKeys();
+  return ensurePendingTestId();
+}
+
+function ensurePendingTestId() {
+  try {
+    var id = sessionStorage.getItem(PENDING_TEST_ID_KEY);
+    if (id) return id;
+    id = createNewTestId();
+    sessionStorage.setItem(PENDING_TEST_ID_KEY, id);
+    return id;
+  } catch (e) {
+    return createNewTestId();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.SeeAndSayTestSession = {
+    beginNewTestSessionIdentity: beginNewTestSessionIdentity,
+    resetPendingTestId: resetPendingTestId,
+    clearCompletedTestFeedbackKeys: clearCompletedTestFeedbackKeys,
+    clearPendingTestUploadKeys: clearPendingTestUploadKeys,
+    clearInProgressTestRunProgress: clearInProgressTestRunProgress,
+  };
+}
+
+async function prepareAudioUpload(userId, testId) {
+  var apiUserId = resolveBackendUserId(userId);
+  var url = getApiBaseUrl() + "/api/tests/prepareUpload";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId: apiUserId, testId: testId }),
+  });
+  if (!response.ok) {
+    var errText = "";
+    try {
+      errText = await response.text();
+    } catch (readErr) {
+      errText = String(readErr);
+    }
+    return { success: false, status: response.status, error: errText || "prepareUpload failed" };
+  }
+  var data = await response.json();
+  return Object.assign({ success: true }, data);
+}
+
+async function putSessionAudioToBlob(uploadUrl, audioBlob) {
+  var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  var timeoutId = setTimeout(function () {
+    if (controller) controller.abort();
+  }, BLOB_UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "x-ms-blob-type": "BlockBlob",
+      },
+      body: audioBlob,
+      signal: controller ? controller.signal : undefined,
+    });
+    if (response.status !== 200 && response.status !== 201) {
+      var body = "";
+      try {
+        body = await response.text();
+      } catch (e) {}
+      return {
+        success: false,
+        status: response.status,
+        error: body || "Blob PUT failed with HTTP " + response.status,
+      };
+    }
+    return { success: true, status: response.status };
+  } catch (err) {
+    return {
+      success: false,
+      status: 0,
+      error: err && err.message ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// update user info with test results; audio via Azure blob path or legacy base64
+async function updateUserTests(
+  userId,
+  ageYears,
+  ageMonths,
+  full_array,
+  correct,
+  partly,
+  wrong,
+  audioBase64,
+  timestampText,
+  childGender,
+  audioBlobPath,
+  testId
+) {
   const url = getApiBaseUrl() + "/api/addTestToUser";
   var apiUserId = resolveBackendUserId(userId);
 
   try {
     console.log("📤 Uploading test data to MongoDB...");
     console.log("   User ID:", userId, USE_TEMP_RANDOM_BACKEND_USER_ID ? "→ API " + apiUserId : "");
+    console.log("   testId:", testId || "(server-generated)");
     console.log("   Array Results:", full_array);
     console.log("   Results:", correct, "correct,", partly, "partial,", wrong, "wrong");
-    console.log("   Audio:", audioBase64 ? "Present (" + (audioBase64.length / 1024).toFixed(2) + " KB base64)" : "None");
+    if (audioBlobPath) {
+      console.log("   Audio: Azure blob", audioBlobPath);
+    } else {
+      console.log(
+        "   Audio:",
+        audioBase64 ? "Present (" + (audioBase64.length / 1024).toFixed(2) + " KB base64)" : "None"
+      );
+    }
     console.log("   Timestamps:", timestampText ? "Present" : "None");
+
+    const payload = {
+      userId: apiUserId,
+      ageYears: ageYears,
+      ageMonths: ageMonths,
+      full_array: full_array,
+      correct: correct,
+      partly: partly,
+      wrong: wrong,
+      timestamps: timestampText,
+      childGender: childGender || null,
+    };
+    if (testId) payload.testId = testId;
+    if (audioBlobPath) {
+      payload.audioBlobPath = audioBlobPath;
+    } else if (audioBase64) {
+      payload.audioFile64 = audioBase64;
+    }
 
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: apiUserId,
-        ageYears: ageYears,
-        ageMonths: ageMonths,
-        full_array: full_array,          // Format: [(1,"correct"),(2,"partly"),(3,"wrong")]
-        correct: correct,
-        partly: partly,
-        wrong: wrong,
-        audioFile64: audioBase64,        // Base64 string: "data:audio/mpeg;base64,..."
-        timestamps: timestampText,
-        childGender: childGender || null
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -164,6 +356,43 @@ async function getExpressionAiStatus(userId, testId) {
     return await response.json();
   } catch (err) {
     console.error("❌ Failed to fetch expression AI status:", err);
+    return null;
+  }
+}
+
+async function recoverLatestTest(userId) {
+  var apiUserId = resolveBackendUserId(userId);
+  var url =
+    getApiBaseUrl() +
+    "/api/tests/recoverLatest?userId=" +
+    encodeURIComponent(apiUserId);
+  try {
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) {
+      return { success: false, status: response.status };
+    }
+    return await response.json();
+  } catch (err) {
+    console.error("❌ recoverLatestTest failed:", err);
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function getTestStatus(userId, testId) {
+  if (!testId) return null;
+  var apiUserId = resolveBackendUserId(userId);
+  var url =
+    getApiBaseUrl() +
+    "/api/testStatus?userId=" +
+    encodeURIComponent(apiUserId) +
+    "&testId=" +
+    encodeURIComponent(testId);
+  try {
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) throw new Error("Server responded with status " + response.status);
+    return await response.json();
+  } catch (err) {
+    console.error("❌ getTestStatus failed:", err);
     return null;
   }
 }

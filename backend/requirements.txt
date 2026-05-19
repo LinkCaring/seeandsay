@@ -6,6 +6,7 @@ certifi
 pydantic
 openai
 httpx
+requests
 speechmatics-python
 google-genai
 pydub

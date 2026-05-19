@@ -27,6 +27,11 @@ from typing import Optional
 import traceback
 
 from AI_Models_API import * ## NEW LINE
+import azure_blob
+
+EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES = int(
+    os.environ.get("EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES", "10")
+)
 
 # ------------------------------------------------------
 # Setup
@@ -435,9 +440,17 @@ class AddTestRequest(BaseModel):
     correct: Optional[int] = None
     partly: Optional[int] = None
     wrong: Optional[int] = None
-    audioFile64: str
+    audioFile64: Optional[str] = None
+    audioBlobPath: Optional[str] = None
     timestamps: str
     childGender: Optional[str] = None
+    testId: Optional[str] = None
+
+
+class PrepareUploadRequest(BaseModel):
+    userId: int
+    testId: str
+
 
 class SpeakerVerificationRequest(BaseModel):
     userId: int
@@ -469,13 +482,57 @@ def create_user(user: CreateUserRequest):
             # "user": user
             }
 
+@app.post("/api/tests/prepareUpload")
+def prepare_upload(body: PrepareUploadRequest):
+    if not azure_blob.is_configured():
+        raise HTTPException(status_code=503, detail="Azure Blob storage is not configured")
+    test_id = str(body.testId).strip()
+    if not test_id:
+        raise HTTPException(status_code=400, detail="testId is required")
+    blob_path = azure_blob.session_blob_path(body.userId, test_id)
+    return {
+        "success": True,
+        "testId": test_id,
+        "blobPath": blob_path,
+        "uploadUrl": azure_blob.build_upload_url(blob_path),
+    }
+
+
 @app.post("/api/addTestToUser")
 def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     logger.warning(f"Received user test: {test.userId}")
 
-    # Speaker verification is intentionally disabled in this flow.
     updated_transcription = {"updated_transcription": "None", "success": False, "parent_speaker": "None"}
-    test_id = str(uuid.uuid4())
+    test_id = str(test.testId).strip() if test.testId else str(uuid.uuid4())
+
+    existing = storage.get_user_test_by_id(test.userId, test_id)
+    if existing:
+        existing_ai = existing.get("expressionAI") or {}
+        return {
+            "success": True,
+            "test_id": test_id,
+            "transcription": existing.get("transcription") or updated_transcription["updated_transcription"],
+            "expression_ai": existing_ai,
+            "idempotent": True,
+        }
+
+    audio_blob_path = (test.audioBlobPath or "").strip() or None
+    audio_file64 = test.audioFile64
+
+    if audio_blob_path:
+        if not azure_blob.is_configured():
+            raise HTTPException(status_code=503, detail="Azure Blob storage is not configured")
+        ok, size = azure_blob.verify_blob_exists(audio_blob_path)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail="Session audio not found in Azure yet. Upload the recording to Blob before saving test metadata.",
+            )
+        logger.info("Verified audio blob for test %s (size=%s)", test_id, size)
+        audio_file64 = None
+    elif not audio_file64:
+        raise HTTPException(status_code=400, detail="audioBlobPath or audioFile64 is required")
+
     expression_items = _parse_expression_results_from_full_array(test.full_array)
     started_at = datetime.utcnow().isoformat() + "Z"
     pending_expression_ai = _build_pending_expression_ai_payload(
@@ -495,7 +552,8 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         correct=test.correct,
         partly=test.partly,
         wrong=test.wrong,
-        audio_file_base64=test.audioFile64,
+        audio_file_base64=audio_file64,
+        audio_blob_path=audio_blob_path,
         updated_transcription=updated_transcription["updated_transcription"],
         timestamps=test.timestamps,
         expression_ai=pending_expression_ai,
@@ -510,11 +568,12 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         test_id,
         test.full_array,
         test.timestamps,
-        test.audioFile64,
+        audio_file64,
         test.childGender,
         test.ageYears,
         test.ageMonths,
         started_at,
+        audio_blob_path,
     )
 
     return {
@@ -525,7 +584,16 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     }
 
 
-def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_gender, age_years, age_months, progress_cb=None):
+def _compute_expression_ai_payload(
+    full_array,
+    timestamps,
+    child_gender,
+    age_years,
+    age_months,
+    progress_cb=None,
+    audio_file64=None,
+    audio_blob_path=None,
+):
     expression_ai_rows = []
     impression_pool = []
     expression_items = _parse_expression_results_from_full_array(full_array)
@@ -534,10 +602,15 @@ def _compute_expression_ai_payload(full_array, timestamps, audio_file64, child_g
     decoded_audio_bytes = None
     decode_audio_error = None
     try:
-        decoded_audio_bytes = decode_base64_to_bytes(audio_file64)
+        if audio_blob_path:
+            decoded_audio_bytes = azure_blob.download_blob_bytes(audio_blob_path)
+        elif audio_file64:
+            decoded_audio_bytes = decode_base64_to_bytes(audio_file64)
+        else:
+            decode_audio_error = "no_audio_source"
     except Exception as e:
         decode_audio_error = str(e)
-        logger.warning(f"Failed decoding test audio for expression slicing: {e}")
+        logger.warning(f"Failed loading test audio for expression slicing: {e}")
 
     if callable(progress_cb):
         progress_cb("preparing_audio", 0, total_expression_items, expression_ai_rows)
@@ -855,13 +928,51 @@ def _build_failed_expression_ai_payload(test_id, started_at, total_expression_it
     }
 
 
-def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audio_file64, child_gender, age_years, age_months, started_at):
+def _finalize_stuck_pending_expression_ai(user_id, test_id, started_at, total_expression_items, latest_rows):
+    """Ensure background job never leaves impression/status pending forever."""
+    preserved = list(latest_rows or [])
+    if not preserved:
+        existing = storage.get_test_expression_ai(user_id=user_id, test_id=test_id) or {}
+        preserved = existing.get("per_question") or []
+    return _build_failed_expression_ai_payload(
+        test_id=test_id,
+        started_at=started_at,
+        total_expression_items=total_expression_items,
+        error_message="expression_ai_job_ended_before_completion",
+        per_question_rows=preserved,
+    )
+
+
+def _expression_ai_payload_is_terminal(payload):
+    if not payload:
+        return False
+    status = payload.get("status")
+    if status in ("done", "failed"):
+        return True
+    impression = payload.get("expressive_language_impression") or {}
+    return impression.get("status") in ("done", "failed", "skipped")
+
+
+def _run_expression_ai_background(
+    user_id,
+    test_id,
+    full_array,
+    timestamps,
+    audio_file64,
+    child_gender,
+    age_years,
+    age_months,
+    started_at,
+    audio_blob_path=None,
+):
     total_expression_items = len(_parse_expression_results_from_full_array(full_array))
     latest_rows = []
+    payload = None
+    terminal_written = False
 
     def emit_progress(phase, processed_questions, total_questions, rows_snapshot):
         latest_rows[:] = list(rows_snapshot)
-        payload = _build_pending_expression_ai_payload(
+        pending = _build_pending_expression_ai_payload(
             test_id=test_id,
             started_at=started_at,
             expression_question_count=total_questions,
@@ -869,29 +980,83 @@ def _run_expression_ai_background(user_id, test_id, full_array, timestamps, audi
             processed_questions=processed_questions,
             per_question_rows=latest_rows,
         )
-        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=pending)
 
-    emit_progress("processing_started", 0, total_expression_items, [])
-    payload = None
     try:
+        if audio_blob_path:
+            emit_progress("awaiting_audio", 0, total_expression_items, [])
+            if not azure_blob.wait_for_blob(audio_blob_path):
+                raise RuntimeError(
+                    f"Session audio blob not available within {azure_blob.AUDIO_BLOB_WAIT_SECONDS}s"
+                )
+
+        emit_progress("processing_started", 0, total_expression_items, [])
         payload = _compute_expression_ai_payload(
-            full_array, timestamps, audio_file64, child_gender, age_years, age_months, progress_cb=emit_progress
+            full_array,
+            timestamps,
+            child_gender,
+            age_years,
+            age_months,
+            progress_cb=emit_progress,
+            audio_file64=audio_file64,
+            audio_blob_path=audio_blob_path,
         )
+        payload["test_id"] = test_id
+        payload["started_at"] = started_at
+        terminal_written = _expression_ai_payload_is_terminal(payload)
     except Exception as e:
         logger.error(f"Background expression AI failed for testId {test_id}: {e}")
-        preserved = latest_rows
-        if not preserved:
-            existing = storage.get_test_expression_ai(user_id=user_id, test_id=test_id) or {}
-            preserved = existing.get("per_question") or []
         payload = _build_failed_expression_ai_payload(
             test_id=test_id,
             started_at=started_at,
             total_expression_items=total_expression_items,
             error_message=e,
-            per_question_rows=preserved,
+            per_question_rows=latest_rows,
         )
-    if payload is not None:
-        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+        terminal_written = True
+    finally:
+        if not terminal_written:
+            payload = _finalize_stuck_pending_expression_ai(
+                user_id, test_id, started_at, total_expression_items, latest_rows
+            )
+        if payload is not None:
+            storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+
+
+def _maybe_finalize_stale_building_impression(payload, user_id, test_id):
+    """If worker died during building_impression, mark failed while keeping scores."""
+    if not payload or payload.get("status") in ("done", "failed"):
+        return payload
+    meta = payload.get("meta") or {}
+    progress = meta.get("progress") or {}
+    phase = progress.get("phase")
+    if phase != "building_impression":
+        return payload
+    updated_at = progress.get("last_updated_at") or payload.get("started_at")
+    if not updated_at:
+        return payload
+    try:
+        ts = updated_at.replace("Z", "+00:00")
+        last = datetime.fromisoformat(ts)
+        if last.tzinfo:
+            from datetime import timezone
+            age_sec = (datetime.now(timezone.utc) - last).total_seconds()
+        else:
+            age_sec = (datetime.utcnow() - last).total_seconds()
+    except Exception:
+        return payload
+    if age_sec < EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES * 60:
+        return payload
+    rows = payload.get("per_question") or []
+    failed = _build_failed_expression_ai_payload(
+        test_id=test_id,
+        started_at=payload.get("started_at") or datetime.utcnow().isoformat() + "Z",
+        total_expression_items=progress.get("total_questions") or len(rows),
+        error_message="stale_building_impression_timeout",
+        per_question_rows=rows,
+    )
+    storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=failed)
+    return failed
 
 
 @app.get("/api/expressionAiStatus")
@@ -899,7 +1064,41 @@ def expression_ai_status(userId: int, testId: str):
     payload = storage.get_test_expression_ai(user_id=userId, test_id=testId)
     if payload is None:
         raise HTTPException(status_code=404, detail="Test or expression AI payload not found")
+    payload = _maybe_finalize_stale_building_impression(payload, userId, testId)
     return {"success": True, "test_id": testId, "expression_ai": payload}
+
+
+@app.get("/api/tests/recoverLatest")
+def recover_latest_test(userId: int):
+    latest = storage.get_latest_user_test(userId)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No tests found for user")
+    test_id = latest.get("testId")
+    expression_ai = latest.get("expressionAI") or {}
+    upload_complete = bool(latest.get("audioBlobPath") or latest.get("audioFile64"))
+    return {
+        "success": True,
+        "test_id": test_id,
+        "createdAt": latest.get("dateFinished"),
+        "uploadComplete": upload_complete,
+        "expression_ai": expression_ai,
+    }
+
+
+@app.get("/api/testStatus")
+def test_status(userId: int, testId: str):
+    test_doc = storage.get_user_test_by_id(userId, testId)
+    if not test_doc:
+        raise HTTPException(status_code=404, detail="Test not found")
+    expression_ai = test_doc.get("expressionAI") or {}
+    expression_ai = _maybe_finalize_stale_building_impression(expression_ai, userId, testId)
+    return {
+        "success": True,
+        "test_id": testId,
+        "uploadComplete": bool(test_doc.get("audioBlobPath") or test_doc.get("audioFile64")),
+        "audioBlobPath": test_doc.get("audioBlobPath"),
+        "expression_ai": expression_ai,
+    }
 
 
 

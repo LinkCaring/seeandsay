@@ -148,20 +148,51 @@ class SeeSayMongoStorage:
             return False
 
 
+    def get_user_test_by_id(self, user_id, test_id):
+        """Return a single test subdocument by testId, or None."""
+        try:
+            test_id_str = str(test_id)
+            pipeline = [
+                {"$match": {"userId": user_id}},
+                {"$unwind": "$tests"},
+                {"$match": {"tests.testId": test_id_str}},
+                {"$replaceRoot": {"newRoot": "$tests"}},
+                {"$limit": 1},
+            ]
+            rows = list(self.users_collection.aggregate(pipeline))
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"❌ Error getting test {test_id} for user {user_id}: {e}")
+            return None
+
+    def get_latest_user_test(self, user_id):
+        """Latest test by dateFinished for userId (recovery)."""
+        try:
+            pipeline = [
+                {"$match": {"userId": user_id}},
+                {"$unwind": "$tests"},
+                {"$sort": {"tests.dateFinished": -1}},
+                {"$limit": 1},
+                {"$replaceRoot": {"newRoot": "$tests"}},
+            ]
+            rows = list(self.users_collection.aggregate(pipeline))
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"❌ Error getting latest test for user {user_id}: {e}")
+            return None
+
     def add_test_to_user(self,
                          user_id,age_years,age_months,
                          full_array,correct, partly, wrong,
                          audio_file_base64,updated_transcription, timestamps,
-                         expression_ai=None, test_id=None):
+                         expression_ai=None, test_id=None,
+                         audio_blob_path=None):
         """
         Adds a new exam record to the 'tests' array of a specific user.
         Time_took --> how long it took to finish
         """
         try:
-            ## Upload audio --- NOT IN USE (We save string base64)
-            # audio_file_id = self.upload_audio(audio_file_path)
-
-            ## Data storage - audio as reference
+            ## Data storage - audio as base64 (legacy) or Azure blob pointer
             new_test = {
                 'testId': test_id,
                 'dateFinished': datetime.now(),
@@ -171,11 +202,16 @@ class SeeSayMongoStorage:
                 'correct': correct,
                 'partly': partly,
                 'wrong': wrong,
-                'audioFile64': audio_file_base64,
                 'transcription': updated_transcription,
                 'timestamps': timestamps,
                 'expressionAI': expression_ai or {}
             }
+            if audio_blob_path:
+                new_test['audioBlobPath'] = audio_blob_path
+                new_test['audioFile64'] = None
+            else:
+                new_test['audioFile64'] = audio_file_base64
+                new_test['audioBlobPath'] = None
 
             ## Save
             result = self.users_collection.update_one(

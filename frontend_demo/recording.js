@@ -20,6 +20,159 @@ const SessionRecorder = (function() {
   let finalRecordingBlob = null;
   let finalRecordingMeta = null;
 
+  /** Max expression-phase session audio (12 min 30 sec); only MediaRecorder "recording" time counts. */
+  var MAX_SESSION_RECORDING_MS = (12 * 60 + 30) * 1000;
+  var maxDurationCheckTimer = null;
+  var onMaxDurationReached = null;
+  var activeRecordingAccumulatedMs = 0;
+  var activeRecordingSegmentStart = null;
+
+  var CONVERSION_WAIT_MIN_MS = 60000;
+  var CONVERSION_WAIT_MAX_MS = 300000;
+  var finalBlobReadyPromise = null;
+  var finalBlobReadyResolve = null;
+  var finalBlobReadyReject = null;
+
+  function resetFinalBlobReadyWait() {
+    finalBlobReadyPromise = null;
+    finalBlobReadyResolve = null;
+    finalBlobReadyReject = null;
+  }
+
+  function settleFinalBlobReadySuccess(payload) {
+    if (typeof finalBlobReadyResolve === "function") {
+      var resolve = finalBlobReadyResolve;
+      resetFinalBlobReadyWait();
+      resolve(payload);
+    }
+  }
+
+  function settleFinalBlobReadyFailure(err) {
+    if (typeof finalBlobReadyReject === "function") {
+      var reject = finalBlobReadyReject;
+      resetFinalBlobReadyWait();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  function beginFinalBlobReadyWait() {
+    if (!finalBlobReadyPromise) {
+      finalBlobReadyPromise = new Promise(function (resolve, reject) {
+        finalBlobReadyResolve = resolve;
+        finalBlobReadyReject = reject;
+      });
+    }
+    return finalBlobReadyPromise;
+  }
+
+  /** Wait budget for on-device MP3 prep: scales with active capture length, 1–5 min. */
+  function getConversionWaitMs() {
+    var activeMs = getActiveRecordingMs();
+    var scaled = Math.max(CONVERSION_WAIT_MIN_MS, activeMs * 0.5 + 30000);
+    return Math.min(scaled, CONVERSION_WAIT_MAX_MS);
+  }
+
+  function buildRecordingPayload(blob, mimeType) {
+    return {
+      recordingBlob: blob,
+      mimeType: mimeType || "audio/mpeg",
+      timestampText: generateTimestampText(),
+      recordingDate: Date.now(),
+    };
+  }
+
+  function persistActiveRecordingMs() {
+    try {
+      localStorage.setItem("sessionActiveRecordingMs", String(activeRecordingAccumulatedMs));
+    } catch (e) {}
+  }
+
+  function loadActiveRecordingMs() {
+    try {
+      var stored = localStorage.getItem("sessionActiveRecordingMs");
+      var n = stored != null ? parseInt(stored, 10) : 0;
+      activeRecordingAccumulatedMs = Number.isFinite(n) && n > 0 ? n : 0;
+    } catch (e) {
+      activeRecordingAccumulatedMs = 0;
+    }
+  }
+
+  function resetActiveRecordingMeter() {
+    activeRecordingAccumulatedMs = 0;
+    activeRecordingSegmentStart = null;
+    try {
+      localStorage.removeItem("sessionActiveRecordingMs");
+    } catch (e) {}
+  }
+
+  /** Time the mic was actually capturing (recorder state === "recording"), not pause/resume idle. */
+  function accrueActiveRecordingTime() {
+    if (activeRecordingSegmentStart == null) {
+      return;
+    }
+    activeRecordingAccumulatedMs += Date.now() - activeRecordingSegmentStart;
+    activeRecordingSegmentStart = null;
+    persistActiveRecordingMs();
+  }
+
+  function beginActiveRecordingSegment() {
+    if (activeRecordingSegmentStart != null) {
+      return;
+    }
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      activeRecordingSegmentStart = Date.now();
+    }
+  }
+
+  function getActiveRecordingMs() {
+    var total = activeRecordingAccumulatedMs;
+    if (activeRecordingSegmentStart != null) {
+      total += Date.now() - activeRecordingSegmentStart;
+    }
+    return total;
+  }
+
+  function clearMaxDurationCheckTimer() {
+    if (maxDurationCheckTimer) {
+      clearInterval(maxDurationCheckTimer);
+      maxDurationCheckTimer = null;
+    }
+  }
+
+  function startMaxDurationCheck() {
+    clearMaxDurationCheckTimer();
+    maxDurationCheckTimer = setInterval(function () {
+      if (!isRecording && !isPaused) {
+        return;
+      }
+      var activeMs = getActiveRecordingMs();
+      if (activeMs >= MAX_SESSION_RECORDING_MS) {
+        console.warn("⏱️ Session recording reached max duration (12:30), stopping capture.");
+        clearMaxDurationCheckTimer();
+        stopContinuousRecording();
+        if (typeof onMaxDurationReached === "function") {
+          try {
+            onMaxDurationReached(activeMs);
+          } catch (cbErr) {
+            console.error("onMaxDurationReached callback error:", cbErr);
+          }
+        }
+      }
+    }, 1000);
+  }
+
+  function setOnMaxDurationReached(callback) {
+    onMaxDurationReached = typeof callback === "function" ? callback : null;
+  }
+
+  function getMaxSessionRecordingMs() {
+    return MAX_SESSION_RECORDING_MS;
+  }
+
+  function isAtMaxSessionDuration() {
+    return getActiveRecordingMs() >= MAX_SESSION_RECORDING_MS;
+  }
+
   /** Matches test UI timer / backend slice — reads window.SEEANDSAY_EXPRESSION_ANSWER_MS from expressionTiming.js */
   function getExpressionAnswerMaxMs() {
     try {
@@ -204,29 +357,40 @@ const SessionRecorder = (function() {
       };
 
       // Handle recording stop
-      recorder.onstop = async function() {
-        const blobType = preferredMime || currentMimeType || (audioChunks[0] && audioChunks[0].type) || "audio/webm";
-        const originalBlob = new Blob(audioChunks, { type: blobType });
-        
-        // Convert to MP3
-        console.log("🎵 Converting recording to MP3...");
-        const mp3Blob = await convertToMP3(originalBlob);
-        const url = URL.createObjectURL(mp3Blob);
-        
-        finalRecordingBlob = mp3Blob;
-        finalRecordingMeta = {
-          mimeType: "audio/mpeg",
-          timestamp: Date.now()
-        };
-        // Keep only lightweight metadata in localStorage to avoid quota overflows.
-        localStorage.setItem("sessionRecordingFinalMeta", JSON.stringify(finalRecordingMeta));
-        localStorage.setItem("sessionRecordingUrl", url);
-        console.log("✅ Session recording completed and converted to MP3, length:", audioChunks.length, "size:", mp3Blob.size);
+      recorder.onstop = async function () {
+        try {
+          const blobType =
+            preferredMime || currentMimeType || (audioChunks[0] && audioChunks[0].type) || "audio/webm";
+          const originalBlob = new Blob(audioChunks, { type: blobType });
+
+          console.log("🎵 Converting recording to MP3...");
+          const mp3Blob = await convertToMP3(originalBlob);
+          const url = URL.createObjectURL(mp3Blob);
+
+          finalRecordingBlob = mp3Blob;
+          finalRecordingMeta = {
+            mimeType: "audio/mpeg",
+            timestamp: Date.now(),
+          };
+          localStorage.setItem("sessionRecordingFinalMeta", JSON.stringify(finalRecordingMeta));
+          localStorage.setItem("sessionRecordingUrl", url);
+          console.log(
+            "✅ Session recording completed and converted to MP3, length:",
+            audioChunks.length,
+            "size:",
+            mp3Blob.size
+          );
+          settleFinalBlobReadySuccess(buildRecordingPayload(mp3Blob, "audio/mpeg"));
+        } catch (err) {
+          console.error("❌ Session recording onstop failed:", err);
+          settleFinalBlobReadyFailure(err);
+        }
       };
 
       // Start recording
       recorder.start(10000); // Collect data every 10 seconds
       isRecording = true;
+      beginActiveRecordingSegment();
       
       if (preserveTs) {
         try {
@@ -239,10 +403,13 @@ const SessionRecorder = (function() {
         recordingStartTime = rst ? parseInt(rst, 10) : Date.now();
         var tpt = localStorage.getItem("totalPausedTime");
         totalPausedTime = tpt ? parseInt(tpt, 10) : 0;
+        loadActiveRecordingMs();
         console.log("🎙️ Resuming session recording (preserved marks:", questionTimestamps.length + ")");
       } else {
         recordingStartTime = Date.now();
         questionTimestamps = [];
+        resetActiveRecordingMeter();
+        resetFinalBlobReadyWait();
       }
       
       // Store in localStorage
@@ -251,7 +418,8 @@ const SessionRecorder = (function() {
       localStorage.setItem("totalPausedTime", String(totalPausedTime));
       localStorage.setItem("questionTimestamps", JSON.stringify(questionTimestamps));
 
-      console.log("🎙️ Started continuous session recording");
+      startMaxDurationCheck();
+      console.log("🎙️ Started continuous session recording (max", MAX_SESSION_RECORDING_MS / 1000, "s)");
       return true;
     } catch (error) {
       console.error("❌ Failed to start recording:", error);
@@ -261,7 +429,10 @@ const SessionRecorder = (function() {
 
   // Stop continuous recording
   function stopContinuousRecording() {
+    clearMaxDurationCheckTimer();
+    accrueActiveRecordingTime();
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      beginFinalBlobReadyWait();
       // If paused, resume before stopping to ensure proper onstop handling
       if (mediaRecorder.state === "paused") {
         mediaRecorder.resume();
@@ -289,6 +460,7 @@ const SessionRecorder = (function() {
   // Pause recording
   function pauseRecording() {
     if (mediaRecorder && mediaRecorder.state === "recording") {
+      accrueActiveRecordingTime();
       mediaRecorder.pause();
       isPaused = true;
       pauseStartTime = Date.now();
@@ -315,6 +487,10 @@ const SessionRecorder = (function() {
 
   // Resume recording
   async function resumeRecording() {
+    if (isAtMaxSessionDuration()) {
+      console.warn("⏱️ Cannot resume recording: max session duration (12:30) already reached.");
+      return false;
+    }
     if (isPaused && mediaRecorder && mediaRecorder.state === "paused") {
       // Calculate paused duration
       if (pauseStartTime) {
@@ -341,6 +517,7 @@ const SessionRecorder = (function() {
       // Resume the paused recording
       try {
         mediaRecorder.resume();
+        beginActiveRecordingSegment();
         console.log("▶️ Resumed recording at", formatTimestamp(elapsedMs));
         return true;
       } catch (error) {
@@ -589,19 +766,61 @@ const SessionRecorder = (function() {
 
   // Get recording and text data for backend upload
   async function getRecordingAndText() {
-    const timestampText = getTimestampText();
-
     if (!finalRecordingBlob) {
       console.warn("No recording data found");
       return null;
     }
+    return buildRecordingPayload(
+      finalRecordingBlob,
+      (finalRecordingMeta && finalRecordingMeta.mimeType) || "audio/mpeg"
+    );
+  }
 
-    return {
-      recordingBlob: finalRecordingBlob,                                         // Audio blob (MP3 format)
-      mimeType: (finalRecordingMeta && finalRecordingMeta.mimeType) || "audio/mpeg",
-      timestampText: timestampText,                                              // Timestamp text for questions
-      recordingDate: (finalRecordingMeta && finalRecordingMeta.timestamp) || Date.now()
-    };
+  /**
+   * Resolves when MediaRecorder onstop + MP3 conversion finish (or rejects on timeout / error).
+   * Call after stopContinuousRecording().
+   */
+  function whenFinalBlobReady(options) {
+    if (finalRecordingBlob) {
+      return Promise.resolve(
+        buildRecordingPayload(
+          finalRecordingBlob,
+          (finalRecordingMeta && finalRecordingMeta.mimeType) || "audio/mpeg"
+        )
+      );
+    }
+
+    var timeoutMs =
+      options && typeof options.timeoutMs === "number" && options.timeoutMs > 0
+        ? options.timeoutMs
+        : getConversionWaitMs();
+
+    var readyPromise = beginFinalBlobReadyWait();
+
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      function finish(fn, value) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(value);
+      }
+
+      var timer = setTimeout(function () {
+        finish(
+          reject,
+          new Error(
+            "Recording preparation timed out after " + Math.round(timeoutMs / 1000) + " seconds"
+          )
+        );
+      }, timeoutMs);
+
+      readyPromise.then(function (payload) {
+        finish(resolve, payload);
+      }).catch(function (err) {
+        finish(reject, err);
+      });
+    });
   }
 
   // Reset timestamps (for restarting recording)
@@ -615,6 +834,7 @@ const SessionRecorder = (function() {
   // options.preserveQuestionTimestamps — keep timeline data when re-starting recording after mid-test voice re-verify
   function cleanup(options) {
     var preserveTs = options && options.preserveQuestionTimestamps;
+    clearMaxDurationCheckTimer();
     stopContinuousRecording();
     localStorage.removeItem("sessionRecordingActive");
     localStorage.removeItem("sessionRecordingUrl");
@@ -623,6 +843,7 @@ const SessionRecorder = (function() {
     localStorage.removeItem("sessionRecordingChunks");
     finalRecordingBlob = null;
     finalRecordingMeta = null;
+    settleFinalBlobReadyFailure(new Error("Session recording cleanup"));
     if (!preserveTs) {
       localStorage.removeItem("recordingStartTime");
       localStorage.removeItem("questionTimestamps");
@@ -634,6 +855,7 @@ const SessionRecorder = (function() {
       totalPausedTime = 0;
       pauseStartTime = null;
       isPaused = false;
+      resetActiveRecordingMeter();
     } else {
       try {
         var qts = localStorage.getItem("questionTimestamps");
@@ -686,7 +908,13 @@ const SessionRecorder = (function() {
     getTimestampText: getTimestampText,
     getRecordingAndText: getRecordingAndText,
     resetTimestamps: resetTimestamps,
-    cleanup: cleanup
+    cleanup: cleanup,
+    setOnMaxDurationReached: setOnMaxDurationReached,
+    getMaxSessionRecordingMs: getMaxSessionRecordingMs,
+    isAtMaxSessionDuration: isAtMaxSessionDuration,
+    getActiveRecordingMs: getActiveRecordingMs,
+    getConversionWaitMs: getConversionWaitMs,
+    whenFinalBlobReady: whenFinalBlobReady,
   };
 })();
 

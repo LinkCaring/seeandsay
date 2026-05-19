@@ -106,6 +106,9 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     try {
       localStorage.removeItem("seeandsayBlockResume");
     } catch (e) {}
+    if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+      window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+    }
   }
 
   function maybeAskResume(stage) {
@@ -235,6 +238,9 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
       setPersistentValue("sessionRecordingStarted", false);
       setPersistentValue("sessionCompleted", false);
       setPersistentValue("forceFreshStartAfterMicCheck", true);
+      if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+        window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+      }
 
       var internalUserId = ensureInternalUserId();
       if (typeof createUser === "function") {
@@ -528,9 +534,13 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
               type="button"
               className="onboarding-btn onboarding-btn--primary"
               onClick={function () {
+                if (window.SeeAndSayTestSession && window.SeeAndSayTestSession.beginNewTestSessionIdentity) {
+                  window.SeeAndSayTestSession.beginNewTestSessionIdentity();
+                }
                 setPersistentValue("awaitingExpressionMicCheck", false);
                 setPersistentValue("micCheckPassed", false);
                 setPersistentValue("currentIndex", "0");
+                setPersistentValue("sessionCompleted", false);
                 setPersistentValue("forceFreshStartAfterMicCheck", true);
                 setPage("test");
               }}
