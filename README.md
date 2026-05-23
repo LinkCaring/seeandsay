@@ -1,178 +1,167 @@
+# MILI (See&Say)
 
-# __See&Say__
-קובץ מפרט לפרויקט.
+**MILI** (מיל"י) is a browser-based language game for children: onboarding, age-tailored comprehension and expression questions, one continuous session recording, and a results screen with optional AI feedback on expressive answers.
 
-## DashBoard
-DashBoard
+This repository holds the **web demo** (`frontend_demo/`) and the **API** (`backend/`). The git repo is still named `seeandsay`; production API host is `seeandsay-backend.onrender.com`. User-facing branding is **MILI**; storage keys and infra names were kept for compatibility.
 
-* The Dashboard is a standalone desktop application used for managing all educational content in the See&Say project.
-* Designed for educators and content creators, it allows full control over questions and media without requiring coding knowledge.
+---
 
-Purpose
-* Serves as the content management layer of See&Say.
-* Enables editing of questions and answers.
-* Allows management of question order and numbering.
-* Supports uploading and processing images.
-* Synchronizes all changes with the "seeandsay-resources" GitHub repository: https://github.com/almoggiat/seeandsay-resources
+## Repository map
 
+| Folder | Role |
+|--------|------|
+| **[`frontend_demo/`](frontend_demo/)** | **Deployable web app** — React (CDN), no bundler; loads via [`index.html`](frontend_demo/index.html). Questions, images, audio, CSS, and all client logic. |
+| **[`backend/`](backend/)** | **FastAPI API** — users, tests, Azure session audio, MongoDB, Gemini expression scoring. Entry: `uvicorn server:app`. |
+| **[`changes/`](changes/)** | **Engineering log** — dated `CHANGES_*.md` plus [`changes/docs/`](changes/docs/) for historical notes and archived backend audits. |
+| **[`.github/`](.github/)** | CI / GitHub Pages workflow (if enabled for your fork). |
+| **[`.cursor/`](.cursor/)** | Editor rules and agent skills (optional for contributors). |
+| **`docs/plans/`** | Local planning artifacts (not part of runtime). |
 
-Running the Dashboard
-* Executable: Run the bundled application (e.g. dashboard.exe on Windows).
-* From source: Run python dashboard.py (requires Python with tkinter and PIL).
+**Not in this repo (separate):**
 
-Basic Workflow
-* Load Questions
-  * All questions are automatically loaded from the local CSV database.
-* Edit Content
-  * Select a question from the left panel.
-  * Modify question text, correct answer, hint, comments, or question type.
-  * Toggle Hebrew text with or without ניקוד.
-  * Upload, remove, or reorder images.
-* Save Changes
-  * Use "שמור שינויים" to save the selected question.
-  * Changes are saved locally and automatically pushed to GitHub.
+- **Content dashboard** — desktop Tkinter app for editing `query_database.csv` and images; syncs to [seeandsay-resources](https://github.com/almoggiat/seeandsay-resources). Copy updated assets into `frontend_demo/resources/`.
+- **Legacy trees** — old `frontend/` copies were removed; deploy **only** `frontend_demo/`.
 
-Advanced Features
+---
 
-* Question Number Management (ניהול מספרי שאלות)
-  * Reorder, add, or delete questions.
-  * Associated image folders are automatically renamed to match updated question numbers.
-  * Data integrity is preserved during renumbering operations.
+## How the pieces fit together
 
-* Batch Upload (שמור הכל ל-GitHub)
-  * Uploads the entire local seeandsay-resources folder to GitHub.
-  * Intended for initial setup or after large-scale content changes.
+```mermaid
+flowchart LR
+  subgraph browser [Browser — frontend_demo]
+    UI[MILI UI]
+    REC[SessionRecorder]
+    API_JS[apiToMongo.js]
+  end
+  subgraph api [backend — FastAPI]
+    SRV[server.py]
+    DB[(MongoDB)]
+    BLOB[Azure Blob]
+    GEM[Gemini]
+  end
+  CSV[query_database.csv]
 
-* Image Processing
-  * All uploaded images are automatically resized to 300x300 pixels.
-  * Images are converted to WebP format for optimal frontend performance.
-  * Transparency is preserved when available.
+  UI --> REC
+  UI --> API_JS
+  API_JS -->|REST /api/*| SRV
+  REC -->|PUT session.mp3| BLOB
+  SRV --> DB
+  SRV --> BLOB
+  SRV --> GEM
+  SRV --> CSV
+```
 
-Integration with the Main Project
+1. **Onboarding** — child profile, consents, mic check → `POST /api/createUser`.
+2. **Test** — questions from CSV; continuous recording with per-question timestamps.
+3. **Finish** — `prepareUpload` → upload MP3 to Azure → `addTestToUser` with scores and timestamps.
+4. **Background** — server runs expression AI (Gemini) on audio segments.
+5. **Summary** — client polls `GET /api/expressionAiStatus` for scores and Hebrew impression text.
 
-* After making changes in the Dashboard:
-  * Navigate to the seeandsay-resources folder located next to the Dashboard executable.
-  * Copy all contents, including the CSV database and the test_assets image folders.
-  * Paste them into frontend-demo/resources in the main project directory.
+---
 
-* Verification
-  * Run the frontend application.
-  * Confirm that updated questions load correctly.
-  * Ensure images appear properly during the test.
+## Quick start (local)
 
-Technical Overview
+### 1. Frontend
 
-* Architecture
-  * Standalone Tkinter application.
-  * Interacts with:
-    * Local CSV database (question metadata).
-    * Local image folders organized by question number.
-    * GitHub repository for collaboration and version control.
+From the **repo root**:
 
-* Key Features
-  * Dual storage model: local editing with GitHub synchronization.
-  * Full Hebrew right-to-left interface support.
-  * Automatic image optimization pipeline.
-  * Robust error recovery during question renumbering.
-  * Supports both script execution and packaged executable usage.
+```bash
+python -m http.server 8000
+```
 
-* Data Flow
-  * User edits in Dashboard -> Local CSV updated -> GitHub synchronization ->
-    Frontend resources updated -> Students see updated content in the test interface.
+Open **`http://localhost:8000/frontend_demo/`** (trailing slash matters).
 
-Security Considerations
+### 2. Backend
 
-* GitHub token is hardcoded for simplicity in an educational context.
-* No sensitive student data is handled; only educational content is managed.
-* All changes are version-controlled via GitHub.
+```bash
+cd backend
+python -m venv .venv
+.\.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+# Create backend/.env (MongoDB, Azure SAS, GEMINI_API_KEY — see team)
+uvicorn server:app --reload --port 8001
+```
 
-Summary
+On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **8001** when the page is served from **8000**.
 
-* The Dashboard bridges content creation and deployment.
-* Allows non-technical users to maintain and update the See&Say educational platform.
-* Remains fully integrated with the development and deployment workflow.
+### 3. Smoke check
 
-## FrontEnd
-### app.js
-* Main React application component with routing and state management.
-* Loads questions from CSV (`resources/query_database.csv`) using PapaParse.
-* Manages page navigation (home, test, help) and persistent state via localStorage.
-* Handles language switching (Hebrew/English) and image preloading.
+- Login → start test → finish session → summary shows AI status progressing.
+- Network tab: `createUser`, `prepareUpload`, blob PUT, `addTestToUser`, `expressionAiStatus` return 200.
 
-### test.js
-* Main test interface component - handles the entire exam flow.
-* Manages UI states: age input, microphone permission, voice verification, question navigation.
-* **Key functions:**
-  * `confirmVoiceIdentifier()` - Validates speaker with backend, creates snapshot of verification recording.
-  * `handleContinue(result)` - Records question results ("correct", "partly", "wrong") and moves to next question.
-  * `completeSession()` - Stops recording, converts to MP3, sends test data to backend via `updateUserTests()`.
-  * `formatQuestionResultsArray()` - Formats results as Python tuple string: `[(1,"correct"),(2,"partly"),(3,"wrong")]`.
-* Tracks question timestamps, handles pause/resume, AFK detection, and developer mode features.
+---
 
-### recording.js
-* Continuous audio recording module (SessionRecorder).
-* **Key functions:**
-  * `startContinuousRecording()` - Starts recording from verification screen, continues through entire test.
-  * `markQuestionStart(questionNumber)` - Records timestamp when each question begins.
-  * `getCurrentRecordingBlob()` - Creates snapshot of current recording for backend validation (without stopping).
-  * `generateTimestampText()` - Generates Python tuple format: `[(1,0),(2,65),(3,127)]` where timestamps are in seconds, question 1 = 0.
-  * `convertToMP3()` - Converts WebM/MP4 audio to MP3 using lamejs before sending to backend.
-* Handles pause/resume tracking, stores recording in localStorage for persistence.
+## Documentation index
 
-### apiToMongo.js
-* Sends POST requests to the Backend.
-* Being used at user creation, adding test (at end of exam), verification of speaker.
-* Being called from `test.js`
+| Area | Start here |
+|------|------------|
+| **Whole demo (UI)** | [`frontend_demo/README.md`](frontend_demo/README.md) |
+| Frontend layout & load order | [`frontend_demo/docs/STRUCTURE.md`](frontend_demo/docs/STRUCTURE.md) |
+| Test module map | [`frontend_demo/docs/TEST_MODULE_MAP.md`](frontend_demo/docs/TEST_MODULE_MAP.md) |
+| **API** | [`backend/docs/BACKEND_MODULE_MAP.md`](backend/docs/BACKEND_MODULE_MAP.md) |
+| Backend layout & rules | [`backend/docs/BACKEND_STRUCTURE.md`](backend/docs/BACKEND_STRUCTURE.md) |
+| Recent engineering changes | [`changes/CHANGES_2026-05-21_22-05.md`](changes/CHANGES_2026-05-21_22-05.md) |
 
+---
 
-## BackEnd
+## `frontend_demo/` at a glance
 
-.env file && accounts passwords will be sent privately.
+| Path | Purpose |
+|------|---------|
+| `index.html` | Script load order (treat as public API) |
+| `js/app/` | Shell, welcome flow, routing |
+| `js/test/` | Game orchestrator (`test.js`) + modules (`utils/`, `flow/`, `scoring/`, `ui/`, `finish/`) |
+| `js/api/` | HTTP client to backend |
+| `js/record_session/` | Continuous recorder (loaded via `recording.js`) |
+| `resources/` | `query_database.csv`, images, question audio, avatar video |
+| `css/screens/` | Per-screen styles |
+| `docs/` | Structure, module map, dead-code notes |
 
-### server.py
-* contains POST handle functions. --> main Render backend file.
-* user creation, test adding, verification of speaker at the start of the test.
-* server.py uses: `MongoDB.py` & `AI_Models_API.py`
+Globals use **`Mili*`**; `localStorage` keys still use **`seeandsay*`** so existing saves work.
 
-### AI_Models_API.py
-הקוד מכיל את הפונקציות שאותם הסרבר מריץ מאחורי הקלעים.
+---
 
-* Starts from **speaker_verification** --> **decode_base64_to_bytes** --> **speechmatics_runner_from_bytes** --> **speaker_recognition**
-* When:
-1. **speaker_verification** --> Wrapper Function
-2. **decode_base64_to_bytes** --> Takes the base64 audio file from Frontend and converts to bytes. Returns the bytes.
-3. **speechmatics_runner_from_bytes** --> Gets the bytes, stores on temp file, runs the transcription model. Returns the transcription.
-4. **speaker_recognition** --> Gets the transcription, recognizes the SPEAK :S(i) who said the starting statement, marks him as "parent".
-                            The other SPEAKER:S is marked as "child". (Only if 2 speakers were recognized.). Returns dict.
-`
-result["success"], result["parent_speaker"], result["updated_transcription"]
-result["success"] --> True if found the statement and less than 2 speakers.
-result["parent_speaker"] --> SPEAKER:S of parent
-result["updated_transcription"] --> Transcription with parent and child.
-`
+## `backend/` at a glance
 
-* The speaker's recognition sensitivity can be change at `speechmatics_runner_from_bytes`, **0.3 works well**.
+| File | Purpose |
+|------|---------|
+| `server.py` | FastAPI routes, rubric load, expression AI pipeline |
+| `MongoDB.py` | Users, tests, `expressionAI`, API quotas |
+| `azure_blob.py` | SAS URLs and blob verification for session MP3 |
+| `AI_Models_API.py` | Audio slice/decode, Gemini scoring + impression |
+| `prompts.py` | Prompt templates for Gemini |
+| `requirements.txt` / `runtime.txt` | Dependencies and Python version (e.g. Render) |
 
-### MongoDB.py
-* Basic database operations codes.
-* Functions in use:
-* create_storage, connect, add_user, add_test_to_use.
-* **Being used in server.py** for example:
-`storage = SeeSayMongoStorage(mongodb_url, database_name)
-success = storage.add_user(
-        user_id=user.userId,
-        user_name=user.userName
-    )`
+Rubrics are read from **`frontend_demo/resources/query_database.csv`** at startup.
 
+---
 
-### TTS_Google.py
-* Was used as behind the scenes code.
-* Using Google TTS API to create audio for question.
-* Before using Google's TTS, we manually created "Nikud" for each question:
-https://nakdan.dicta.org.il/
+## Content workflow (educators)
 
-* Steps:
-1. Copy Questions to "Nikud". --> Look for possible Nikud mistakes.
-2. Copy the results from web and paste at new column at CVS(the XL file) named "query_nikud"
-3. Copy the PATH of CVS file -> paste in main.
-4. Run --> The results will be stored at `"frontend_demo/resources/questions_audio"`
+1. Edit questions/media in the **Dashboard** (external app).
+2. Sync or copy into **`frontend_demo/resources/`** (CSV + `test_assets/` + `questions_audio/`).
+3. Reload the demo in the browser (hard refresh after asset changes).
+
+---
+
+## Deploy notes
+
+| Piece | Typical target |
+|-------|----------------|
+| Frontend | Static host or GitHub Pages — publish **`frontend_demo/`** contents |
+| Backend | Render — `uvicorn server:app`, env vars from `.env` template |
+| Secrets | Never commit `backend/.env` |
+
+---
+
+## Conventions
+
+- **Changelog:** append to the active `changes/CHANGES_YYYY-MM-DD_MM-DD.md` when behavior changes.
+- **API contract:** keep `/api/...` paths in sync with `frontend_demo/js/api/apiToMongo.js`.
+- **Scope:** prefer small, focused diffs; question-only or docs-only PRs when possible.
+
+---
+
+## License & contact
+
+Educational / research project. Credentials and `.env` values are shared privately by the team.

@@ -1685,6 +1685,10 @@
   margin: 0;
 }
 
+.onboarding-screen--s2 .onboarding-s1-unified-card .age-screen .start-consent-row span {
+  color: #1c3b53;
+}
+
 .onboarding-screen--s2 .age-screen .start-consent-row--legal span {
   font-size: clamp(14px, 1.8vw, 16px);
   line-height: 1.45;

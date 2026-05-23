@@ -1,8 +1,0 @@
-{
-  "name": "my-static-frontend",
-  "version": "1.0.0",
-  "description": "Plain HTML/CSS/JS frontend for Render.",
-  "scripts": {
-    "build": "echo 'No frontend build step required' > build.log"
-  }
-}

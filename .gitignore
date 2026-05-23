@@ -2,7 +2,6 @@
 /.idea
 /.env
 backend/.env
-frontend_demo/blob-smoke-config.local.json
 backend/.venv/
 __pycache__/
 .venv/

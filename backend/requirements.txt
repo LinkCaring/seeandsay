@@ -7,7 +7,6 @@ pydantic
 openai
 httpx
 requests
-speechmatics-python
 google-genai
 pydub
 # Python 3.13 removed stdlib `audioop` (PEP 594); pydub then fails with No module named 'pyaudioop'.

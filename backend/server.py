@@ -3,7 +3,7 @@ FastAPI backend server for See&Say Application
 Uses external MongoDB manager from storage_manager.py
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import logging
@@ -26,7 +26,12 @@ from fastapi import BackgroundTasks
 from typing import Optional
 import traceback
 
-from AI_Models_API import * ## NEW LINE
+from AI_Models_API import (
+    decode_base64_to_bytes,
+    slice_audio_window_bytes,
+    score_expression_with_gemini_bytes,
+    summarize_expressive_language_impression_gemini,
+)
 import azure_blob
 
 EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES = int(
@@ -452,16 +457,6 @@ class PrepareUploadRequest(BaseModel):
     testId: str
 
 
-class SpeakerVerificationRequest(BaseModel):
-    userId: int
-    audioFile64:str
-    # returns {"success": True, "parent_speaker": parent_speaker, "updated_transcription: updated_transcription }
-
-class GetFinalTranscriptionRequest(BaseModel):
-    userId: int
-
-
-
 # Routes
 @app.get("/")
 def home():
@@ -477,10 +472,7 @@ def create_user(user: CreateUserRequest):
 
     if not success:
         raise HTTPException(status_code=400, detail="User already exists or could not be added")
-    # user = storage.get_user_config(user.userId)
-    return {"success": True
-            # "user": user
-            }
+    return {"success": True}
 
 @app.post("/api/tests/prepareUpload")
 def prepare_upload(body: PrepareUploadRequest):
@@ -1103,44 +1095,5 @@ def test_status(userId: int, testId: str):
 
 
 
-@app.post("/api/VerifySpeaker")
-def verify_speaker(data: SpeakerVerificationRequest):
-    logger.warning(
-        f"Received speaker verification request for user: {data.userId}"
-    )
-
-    try:
-        verification_result = speaker_verification(data.audioFile64)
-        logger.warning(
-            f"Speaker verification data for user: {data.userId}\n{verification_result}"
-        )
-        return {
-            "success": verification_result["success"],
-            "parent_speaker": verification_result["parent_speaker"]
-        }
-
-    except Exception as e:
-        logger.error(f"Unexpected error during speaker verification: {e}")
-        logger.error(traceback.format_exc())
-
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error"
-        )
-
-
-
-
-
-
-
-
-# Not In Use
-# @app.get("/api/getUser/{user_id}")
-# def get_user(user_id: str):
-#     user = storage.get_user_config(user_id)
-#     if not user:
-#         raise HTTPException(status_code=404, detail="User not found")
-#     return {"success": True, "user": user}
 
 

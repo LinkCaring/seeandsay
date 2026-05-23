@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <title>See&Say</title>
+  <title>MILI</title>
 
   <script>
     (function () {
@@ -50,21 +50,42 @@
 <body>
   <div id="root"></div>
 
-  <!-- Components — version injected automatically via window._v -->
+  <!-- Load order matters — paths relative to frontend_demo/ (index.html) -->
   <script>
     (function () {
       var v = window._v;
       var files = [
         "expressionTiming.js",
+        "js/core/i18n.js",
+        "js/record_session/recordingTimestamps.js",
+        "js/record_session/recordingCapture.js",
+        "js/record_session/recordingEncode.js",
         "recording.js",
-        "i18n.js",
-        "navbar.js",
-        "test.js",
-        "help.js",
-        "app.js",
-        "welcome.js",
-        "loader.js",
-        "apiToMongo.js"
+        "js/core/loader.js",
+        "js/api/apiToMongo.js",
+        "js/components/navbar.js",
+        "js/components/help.js",
+        "js/test/utils/testConstants.js",
+        "js/test/utils/testAvatarVideo.js",
+        "js/test/utils/testAgeUtils.js",
+        "js/test/utils/testQuestionUtils.js",
+        "js/test/flow/testExpressionTimers.js",
+        "js/test/flow/testMicIntro.js",
+        "js/test/flow/testStartScreens.js",
+        "js/test/flow/testQuestionFlow.js",
+        "js/test/scoring/testScoring.js",
+        "js/test/ui/testPauseAfk.js",
+        "js/test/finish/testSessionFinish.js",
+        "js/test/finish/testExpressionAiPoll.js",
+        "js/test/ui/testOverlays.js",
+        "js/test/ui/testQuestionRender.js",
+        "js/test/ui/testSummaryRender.js",
+        "js/test/test.js",
+        "js/app/app.js",
+        "js/app/welcomeShared.js",
+        "js/app/welcomeLogin.js",
+        "js/app/welcomeScreens.js",
+        "js/app/welcome.js"
       ];
       files.forEach(function (file) {
         document.write('<scr' + 'ipt type="text/babel" src="./' + file + '?v=' + v + '"><\/scr' + 'ipt>');
