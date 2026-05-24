@@ -187,6 +187,55 @@
       );
     }
 
+    function renderRecordingInterruptedBanner() {
+      var ctx = getCtx();
+      if (!ctx.recordingInterruptedBannerOpen) return null;
+      if (ctx.sessionCompleted) return null;
+      return React.createElement(
+        "div",
+        {
+          className: "recording-interrupted-banner",
+          role: "alert",
+          style: {
+            position: "fixed",
+            top: "calc(var(--app-header-height, 64px) + 8px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 10040,
+            width: "min(92vw, 520px)",
+            background: "#fff3e0",
+            border: "1px solid #ffb74d",
+            borderRadius: "12px",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+            padding: "14px 16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "10px",
+          },
+        },
+        React.createElement(
+          "strong",
+          { style: { color: "#e65100", fontSize: "15px" } },
+          ctx.tr("test.rec.interrupted.title")
+        ),
+        React.createElement(
+          "p",
+          { style: { margin: 0, fontSize: "14px", lineHeight: 1.45, color: "#304348" } },
+          ctx.tr("test.rec.interrupted.body")
+        ),
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            className: "continue-button",
+            style: { alignSelf: "center", minWidth: "120px" },
+            onClick: ctx.dismissRecordingInterruptedBanner,
+          },
+          ctx.tr("test.rec.interrupted.dismiss")
+        )
+      );
+    }
+
     function renderPausedOverlay() {
       var ctx = getCtx();
       if (!ctx.isPaused || ctx.incompleteSummaryConfirmOpen) return null;
@@ -469,6 +518,7 @@
       renderClappingAvatarOverlay: renderClappingAvatarOverlay,
       renderExpressionRefreshRecoveryModal: renderExpressionRefreshRecoveryModal,
       renderPausedOverlay: renderPausedOverlay,
+      renderRecordingInterruptedBanner: renderRecordingInterruptedBanner,
       renderAfkWarningOverlay: renderAfkWarningOverlay,
       renderTrafficPopup: renderTrafficPopup,
       renderIncompleteSummaryConfirm: renderIncompleteSummaryConfirm,

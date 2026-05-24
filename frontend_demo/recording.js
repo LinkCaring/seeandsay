@@ -30,6 +30,8 @@ const SessionRecorder = (function () {
     finalBlobReadyReject: null,
     currentMimeType: "",
     getActiveRecordingMs: null,
+    recordingInterrupted: false,
+    onRecordingInterrupted: null,
   };
 
   var timestamps = parts.createTimestamps(state);
@@ -54,6 +56,7 @@ const SessionRecorder = (function () {
     localStorage.removeItem("sessionRecordingChunks");
     encode.clearFinalRecording();
     encode.settleFinalBlobReadyFailure(new Error("Session recording cleanup"));
+    capture.clearRecordingInterrupted();
     if (!preserveTs) {
       timestamps.clearTimestampsOnCleanup();
       capture.resetActiveRecordingMeter();
@@ -82,6 +85,11 @@ const SessionRecorder = (function () {
     getCurrentFileExtension: encode.getCurrentFileExtension,
     isRecordingActive: capture.isRecordingActive,
     isMediaRecorderLive: capture.isMediaRecorderLive,
+    checkRecordingHealth: capture.checkRecordingHealth,
+    isRecordingInterrupted: capture.isRecordingInterrupted,
+    clearRecordingInterrupted: capture.clearRecordingInterrupted,
+    setOnRecordingInterrupted: capture.setOnRecordingInterrupted,
+    markRecordingInterrupted: capture.markRecordingInterrupted,
     markQuestionStart: timestamps.markQuestionStart,
     markQuestionEnd: timestamps.markQuestionEnd,
     downloadTimestampFile: timestamps.downloadTimestampFile,

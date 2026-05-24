@@ -200,6 +200,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
+  const [recordingInterruptedBannerOpen, setRecordingInterruptedBannerOpen] = React.useState(false);
   const expressionPhaseRecordingStartedRef = React.useRef(false);
   /** True only during expression answer capture: after prompt audio ends until end-mark / score / navigation / finish. */
   const expressionAnswerCaptureActiveRef = React.useRef(false);
@@ -1892,7 +1893,36 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const resumeTest = async function () {
     var api = ensurePauseAfk();
     if (api) await api.resumeTest();
+    checkExpressionRecordingHealth();
   };
+
+  function checkExpressionRecordingHealth() {
+    if (!sessionRecordingStartedRef.current || sessionCompletedRef.current) return;
+    if (typeof SessionRecorder === "undefined" || !SessionRecorder.checkRecordingHealth) return;
+    var health = SessionRecorder.checkRecordingHealth();
+    if (health && health.ok === false) {
+      setRecordingInterruptedBannerOpen(true);
+    }
+  }
+
+  function dismissRecordingInterruptedBanner() {
+    setRecordingInterruptedBannerOpen(false);
+  }
+
+  const checkExpressionRecordingHealthRef = React.useRef(checkExpressionRecordingHealth);
+  checkExpressionRecordingHealthRef.current = checkExpressionRecordingHealth;
+
+  React.useEffect(function bindRecordingInterruptedCallback() {
+    if (typeof SessionRecorder === "undefined" || !SessionRecorder.setOnRecordingInterrupted) {
+      return;
+    }
+    SessionRecorder.setOnRecordingInterrupted(function () {
+      setRecordingInterruptedBannerOpen(true);
+    });
+    return function () {
+      SessionRecorder.setOnRecordingInterrupted(null);
+    };
+  }, []);
 
   const pauseTestRef = React.useRef(pauseTest);
   pauseTestRef.current = pauseTest;
@@ -1925,13 +1955,20 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       }
 
       if (document.visibilityState === "visible") {
+        if (sessionRecordingStartedRef.current && !sessionCompletedRef.current) {
+          checkExpressionRecordingHealthRef.current();
+        }
         if (!pausedRecordingForVisibilityOnlyRef.current) return;
         pausedRecordingForVisibilityOnlyRef.current = false;
         if (sessionCompletedRef.current) return;
         if (isPausedRef.current) return;
         try {
           if (typeof SessionRecorder !== "undefined" && SessionRecorder.resumeRecording) {
-            SessionRecorder.resumeRecording().catch(function () {});
+            SessionRecorder.resumeRecording()
+              .catch(function () {})
+              .then(function () {
+                checkExpressionRecordingHealthRef.current();
+              });
           }
         } catch (e) {}
       }
@@ -2362,10 +2399,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   React.useEffect(function autoRecoverAfterUploadFailure() {
     if (!sessionCompleted || testUploadState !== "failed" || lastCompletedTestId) return;
-    var pendingId = null;
-    try {
-      pendingId = sessionStorage.getItem("seeandsayPendingTestId");
-    } catch (e) {}
+    var pendingId =
+      typeof ensurePendingTestId === "function" ? ensurePendingTestId() : null;
     if (!pendingId || typeof getTestStatus !== "function") return;
     getTestStatus(idDigits, pendingId).then(function (statusResp) {
       if (statusResp && statusResp.success && statusResp.test_id) {
@@ -2599,6 +2634,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return api ? api.renderExpressionRefreshRecoveryModal() : null;
   }
 
+  function renderRecordingInterruptedBanner() {
+    var api = ensureTestOverlays();
+    return api ? api.renderRecordingInterruptedBanner() : null;
+  }
+
   function renderPausedOverlay() {
     var api = ensureTestOverlays();
     return api ? api.renderPausedOverlay() : null;
@@ -2652,6 +2692,9 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     handleTrafficPopupChoice: handleTrafficPopupChoice,
     stayAfterIncompleteSummaryConfirm: stayAfterIncompleteSummaryConfirm,
     finishAnywayFromIncompleteSummaryConfirm: finishAnywayFromIncompleteSummaryConfirm,
+    recordingInterruptedBannerOpen: recordingInterruptedBannerOpen,
+    sessionCompleted: sessionCompleted,
+    dismissRecordingInterruptedBanner: dismissRecordingInterruptedBanner,
   };
 
   summaryRenderCtxRef.current = {
@@ -3063,6 +3106,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     renderConfettiOverlay(),
     renderClappingAvatarOverlay(),
     renderExpressionRefreshRecoveryModal(),
+    renderRecordingInterruptedBanner(),
     renderPausedOverlay(),
     renderAfkWarningOverlay(),
     renderTestNavbar(),

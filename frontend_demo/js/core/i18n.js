@@ -111,6 +111,9 @@ window.I18N = (function () {
             "test.mic.check.start": "התחל בדיקה",
             "test.mic.check.done": "העוצמה תקינה, אפשר להתחיל.",
             "test.mic.check.continue": "התחל משחק",
+            "test.rec.interrupted.title": "ההקלטה נפסקה",
+            "test.rec.interrupted.body": "שיחה, יציאה מהאפליקציה או הרשאת מיקרופון שינו את ההקלטה. אפשר להמשיך במשחק, אבל חלק מהשמע עלול להיות חסר.",
+            "test.rec.interrupted.dismiss": "הבנתי",
             "test.rec.startFailed": "לא הצלחנו להתחיל הקלטה: {msg}",
 
             "test.reading.recordingNotReady": "עדיין אין הקלטת קריאה. המתינו שההקלטה תתחיל ונסו שוב.",
@@ -250,6 +253,9 @@ window.I18N = (function () {
             "test.mic.check.start": "Start check",
             "test.mic.check.done": "Great, the level is good enough to start.",
             "test.mic.check.continue": "Start game",
+            "test.rec.interrupted.title": "Recording stopped",
+            "test.rec.interrupted.body": "A call, leaving the app, or a microphone change may have interrupted recording. You can keep playing, but part of the audio may be missing.",
+            "test.rec.interrupted.dismiss": "Got it",
             "test.rec.startFailed": "Failed to start recording: {msg}",
 
             "test.reading.recordingNotReady": "There is no reading recording yet. Wait for recording to start, then try again.",

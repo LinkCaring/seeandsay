@@ -96,6 +96,72 @@
       return getActiveRecordingMs() >= state.MAX_SESSION_RECORDING_MS;
     }
 
+    function attachStreamHealthMonitor(stream) {
+      if (!stream || !stream.getAudioTracks) {
+        return;
+      }
+      var tracks = stream.getAudioTracks();
+      if (!tracks.length) {
+        return;
+      }
+      var track = tracks[0];
+      track.onended = function () {
+        markRecordingInterrupted("track_ended");
+      };
+    }
+
+    function markRecordingInterrupted(reason) {
+      if (state.recordingInterrupted) {
+        return;
+      }
+      state.recordingInterrupted = true;
+      accrueActiveRecordingTime();
+      console.warn("⚠️ Session recording interrupted:", reason || "unknown");
+      if (typeof state.onRecordingInterrupted === "function") {
+        try {
+          state.onRecordingInterrupted(reason || "unknown");
+        } catch (cbErr) {
+          console.error("onRecordingInterrupted callback error:", cbErr);
+        }
+      }
+    }
+
+    function clearRecordingInterrupted() {
+      state.recordingInterrupted = false;
+    }
+
+    function isRecordingInterrupted() {
+      return !!state.recordingInterrupted;
+    }
+
+    function setOnRecordingInterrupted(callback) {
+      state.onRecordingInterrupted = typeof callback === "function" ? callback : null;
+    }
+
+    function checkRecordingHealth() {
+      if (!state.isRecording && !state.isPaused) {
+        return { ok: true, interrupted: false };
+      }
+      if (state.recordingInterrupted) {
+        return { ok: false, interrupted: true, reason: "interrupted" };
+      }
+      var track =
+        state.stream && state.stream.getAudioTracks ? state.stream.getAudioTracks()[0] : null;
+      if (track && track.readyState === "ended") {
+        markRecordingInterrupted("track_ended");
+        return { ok: false, interrupted: true, reason: "track_ended" };
+      }
+      if (
+        state.mediaRecorder &&
+        state.mediaRecorder.state === "inactive" &&
+        (state.isRecording || state.isPaused)
+      ) {
+        markRecordingInterrupted("recorder_inactive");
+        return { ok: false, interrupted: true, reason: "recorder_inactive" };
+      }
+      return { ok: true, interrupted: false };
+    }
+
     function getSupportedMimeType() {
       const candidates = [
         "audio/mp4;codecs=mp4a.40.2",
@@ -124,6 +190,8 @@
         var preserveTs = options && options.preserveQuestionTimestamps;
         const userStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         state.stream = userStream;
+        clearRecordingInterrupted();
+        attachStreamHealthMonitor(userStream);
 
         const preferredMime = getSupportedMimeType();
         state.currentMimeType = preferredMime;
@@ -309,6 +377,7 @@
           return true;
         } catch (error) {
           console.error("❌ Failed to resume recording:", error);
+          markRecordingInterrupted("resume_failed");
           return false;
         }
       }
@@ -357,6 +426,11 @@
       isRecordingPaused: isRecordingPaused,
       isRecordingActive: isRecordingActive,
       isMediaRecorderLive: isMediaRecorderLive,
+      checkRecordingHealth: checkRecordingHealth,
+      isRecordingInterrupted: isRecordingInterrupted,
+      clearRecordingInterrupted: clearRecordingInterrupted,
+      setOnRecordingInterrupted: setOnRecordingInterrupted,
+      markRecordingInterrupted: markRecordingInterrupted,
     };
   }
 

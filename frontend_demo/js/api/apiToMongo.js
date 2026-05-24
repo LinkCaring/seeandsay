@@ -1,13 +1,49 @@
 /**
  * TEMPORARY: FastAPI expects userId:int; demo-… / non-numeric ids return 422.
- * While flag is true, all API calls use one random integer per browser tab session
- * (sessionStorage). Set USE_TEMP_RANDOM_BACKEND_USER_ID to false after backend
+ * While flag is true, all API calls use one random integer per device profile
+ * (localStorage). Set USE_TEMP_RANDOM_BACKEND_USER_ID to false after backend
  * accepts string ids.
  */
 var USE_TEMP_RANDOM_BACKEND_USER_ID = true;
 var TEMP_BACKEND_USER_ID_SESSION_KEY = "seeandsayTempBackendUserId";
 
 var inMemoryTempBackendUserId = null;
+
+function readStoredApiKey(key) {
+  try {
+    var ls = localStorage.getItem(key);
+    if (ls != null && ls !== "") {
+      return ls;
+    }
+    if (typeof sessionStorage !== "undefined") {
+      var ss = sessionStorage.getItem(key);
+      if (ss != null && ss !== "") {
+        localStorage.setItem(key, ss);
+        sessionStorage.removeItem(key);
+        return ss;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function writeStoredApiKey(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem(key);
+    }
+  } catch (e) {}
+}
+
+function removeStoredApiKey(key) {
+  try {
+    localStorage.removeItem(key);
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem(key);
+    }
+  } catch (e) {}
+}
 
 function getApiBaseUrl() {
   var apiBaseOverride =
@@ -31,25 +67,30 @@ function getApiBaseUrl() {
 
 function getOrCreateTempBackendUserId() {
   try {
-    if (typeof sessionStorage !== "undefined") {
-      var s = sessionStorage.getItem(TEMP_BACKEND_USER_ID_SESSION_KEY);
-      if (s != null && s !== "") {
-        var parsed = parseInt(s, 10);
-        if (!Number.isNaN(parsed)) return parsed;
+    var s = readStoredApiKey(TEMP_BACKEND_USER_ID_SESSION_KEY);
+    if (s != null && s !== "") {
+      var parsed = parseInt(s, 10);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
       }
-      var rnd = 100000000 + Math.floor(Math.random() * 900000000);
-      sessionStorage.setItem(TEMP_BACKEND_USER_ID_SESSION_KEY, String(rnd));
-      console.warn("[apiToMongo] TEMP random backend userId:", rnd, "(new for this tab session)");
-      return rnd;
     }
+    var rnd = 100000000 + Math.floor(Math.random() * 900000000);
+    writeStoredApiKey(TEMP_BACKEND_USER_ID_SESSION_KEY, rnd);
+    console.warn("[apiToMongo] TEMP random backend userId:", rnd, "(new for this device profile)");
+    return rnd;
   } catch (e) {
-    console.warn("[apiToMongo] sessionStorage unavailable for temp user id:", e);
+    console.warn("[apiToMongo] localStorage unavailable for temp user id:", e);
   }
   if (inMemoryTempBackendUserId == null) {
     inMemoryTempBackendUserId = 100000000 + Math.floor(Math.random() * 900000000);
     console.warn("[apiToMongo] TEMP random backend userId (in-memory):", inMemoryTempBackendUserId);
   }
   return inMemoryTempBackendUserId;
+}
+
+function clearTempBackendUserId() {
+  removeStoredApiKey(TEMP_BACKEND_USER_ID_SESSION_KEY);
+  inMemoryTempBackendUserId = null;
 }
 
 function resolveBackendUserId(storedUserId) {
@@ -129,10 +170,8 @@ function createNewTestId() {
 }
 
 function clearPendingTestUploadKeys() {
-  try {
-    sessionStorage.removeItem(PENDING_TEST_ID_KEY);
-    sessionStorage.removeItem(PENDING_BLOB_UPLOADED_KEY);
-  } catch (e) {}
+  removeStoredApiKey(PENDING_TEST_ID_KEY);
+  removeStoredApiKey(PENDING_BLOB_UPLOADED_KEY);
 }
 
 function clearCompletedTestFeedbackKeys() {
@@ -165,7 +204,7 @@ function beginNewTestSessionIdentity() {
   clearPendingTestUploadKeys();
   try {
     var id = createNewTestId();
-    sessionStorage.setItem(PENDING_TEST_ID_KEY, id);
+    writeStoredApiKey(PENDING_TEST_ID_KEY, id);
     return id;
   } catch (e) {
     return createNewTestId();
@@ -179,10 +218,12 @@ function resetPendingTestId() {
 
 function ensurePendingTestId() {
   try {
-    var id = sessionStorage.getItem(PENDING_TEST_ID_KEY);
-    if (id) return id;
+    var id = readStoredApiKey(PENDING_TEST_ID_KEY);
+    if (id) {
+      return id;
+    }
     id = createNewTestId();
-    sessionStorage.setItem(PENDING_TEST_ID_KEY, id);
+    writeStoredApiKey(PENDING_TEST_ID_KEY, id);
     return id;
   } catch (e) {
     return createNewTestId();
@@ -196,6 +237,8 @@ if (typeof window !== "undefined") {
     clearCompletedTestFeedbackKeys: clearCompletedTestFeedbackKeys,
     clearPendingTestUploadKeys: clearPendingTestUploadKeys,
     clearInProgressTestRunProgress: clearInProgressTestRunProgress,
+    clearTempBackendUserId: clearTempBackendUserId,
+    ensurePendingTestId: ensurePendingTestId,
   };
 }
 

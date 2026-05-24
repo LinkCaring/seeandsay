@@ -78,9 +78,7 @@
           uploadCtx.setTestUploadState("uploading_blob");
           seedLocalExpressionUploadPhase("uploading_audio");
           try {
-            if (typeof sessionStorage !== "undefined") {
-              sessionStorage.setItem("seeandsayPendingBlobUploaded", "0");
-            }
+            localStorage.setItem("seeandsayPendingBlobUploaded", "0");
           } catch (ssErr) {}
 
           var prep = await uploadCtx.prepareAudioUpload(uploadCtx.idDigits, testId);
@@ -94,9 +92,7 @@
           }
 
           try {
-            if (typeof sessionStorage !== "undefined") {
-              sessionStorage.setItem("seeandsayPendingBlobUploaded", "1");
-            }
+            localStorage.setItem("seeandsayPendingBlobUploaded", "1");
           } catch (ssErr2) {}
 
           uploadCtx.setTestUploadState("saving_metadata");

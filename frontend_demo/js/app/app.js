@@ -71,8 +71,16 @@ function clearStoredTestRunKeepChildProfile() {
   DEMO_TEST_RUN_LS_KEYS.forEach(lsRemove);
   try {
     sessionStorage.removeItem("seeandsayTempBackendUserId");
+    sessionStorage.removeItem("seeandsayPendingTestId");
+    sessionStorage.removeItem("seeandsayPendingBlobUploaded");
     sessionStorage.removeItem("seeandsayWasInTest");
   } catch (e) {}
+  lsRemove("seeandsayTempBackendUserId");
+  lsRemove("seeandsayPendingTestId");
+  lsRemove("seeandsayPendingBlobUploaded");
+  if (window.MiliTestSession && window.MiliTestSession.clearTempBackendUserId) {
+    window.MiliTestSession.clearTempBackendUserId();
+  }
   if (window.MiliTestSession && window.MiliTestSession.beginNewTestSessionIdentity) {
     window.MiliTestSession.beginNewTestSessionIdentity();
   }
@@ -293,7 +301,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 4.2"
+      "version 4.3"
     ),
     /* Reset button moved to test navbar */
     showResetConfirm

@@ -77,7 +77,7 @@ index.html
                  → user can go home; progress may resume from localStorage
 ```
 
-**Persistence:** Most game state lives in `localStorage` via `usePersistentState` in `app.js` and `test.js`. A run’s backend id is `testId` in `sessionStorage` (`seeandsayPendingTestId`), managed by `MiliTestSession`.
+**Persistence:** Most game state lives in `localStorage` via `usePersistentState` in `app.js` and `test.js`. API identity keys (`seeandsayTempBackendUserId`, `seeandsayPendingTestId`, `seeandsayPendingBlobUploaded`) also use `localStorage` via `MiliTestSession` (legacy `sessionStorage` values migrate on read).
 
 **Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores.
 
