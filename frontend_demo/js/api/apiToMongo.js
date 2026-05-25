@@ -134,6 +134,86 @@ async function createUser(userId, userName) {
 
 var PENDING_TEST_ID_KEY = "seeandsayPendingTestId";
 var PENDING_BLOB_UPLOADED_KEY = "seeandsayPendingBlobUploaded";
+/** Keep in sync with `app-version-label` in js/app/app.js */
+var MILI_APP_VERSION = "5";
+
+/**
+ * Debug metadata sent with each finished test (device, browser, upload state).
+ * @param {string|number} demoUserId - UI/local idDigits passed to API layer
+ * @param {string} [testId] - pending test id at finish
+ * @param {{ blobUploadOk?: boolean }} [opts]
+ */
+function collectClientInfo(demoUserId, testId, opts) {
+  opts = opts || {};
+  var apiUserId = resolveBackendUserId(demoUserId);
+  var pendingTestId = testId || ensurePendingTestId();
+  var blobFlag = null;
+  try {
+    blobFlag = readStoredApiKey(PENDING_BLOB_UPLOADED_KEY);
+  } catch (e) {}
+  var blobUploadOk =
+    typeof opts.blobUploadOk === "boolean" ? opts.blobUploadOk : blobFlag === "1";
+
+  var info = {
+    capturedAt: new Date().toISOString(),
+    appVersion: MILI_APP_VERSION,
+    demoUserId: demoUserId != null ? String(demoUserId) : null,
+    apiUserId: apiUserId,
+    pendingTestId: pendingTestId,
+    blobUploadOk: blobUploadOk,
+    recordingInterrupted: false,
+    userAgent: "",
+    platform: "",
+    maxTouchPoints: 0,
+    language: "",
+    screen: "",
+    viewport: "",
+    devicePixelRatio: 1,
+    origin: "",
+    visibilityState: "",
+    mediaRecorderMime: null,
+  };
+
+  try {
+    if (typeof navigator !== "undefined") {
+      info.userAgent = String(navigator.userAgent || "").slice(0, 512);
+      info.platform = navigator.platform || "";
+      info.maxTouchPoints =
+        typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0;
+      info.language = navigator.language || "";
+      if (navigator.userAgentData) {
+        info.clientHints = {
+          mobile: !!navigator.userAgentData.mobile,
+          platform: navigator.userAgentData.platform || "",
+          brands: (navigator.userAgentData.brands || []).map(function (b) {
+            return b.brand + "/" + b.version;
+          }),
+        };
+      }
+    }
+    if (typeof screen !== "undefined") {
+      info.screen = screen.width + "x" + screen.height;
+    }
+    if (typeof window !== "undefined") {
+      info.viewport = window.innerWidth + "x" + window.innerHeight;
+      info.devicePixelRatio = window.devicePixelRatio || 1;
+      info.origin = window.location && window.location.origin ? window.location.origin : "";
+      info.visibilityState = document.visibilityState || "";
+    }
+    if (typeof SessionRecorder !== "undefined") {
+      if (SessionRecorder.isRecordingInterrupted) {
+        info.recordingInterrupted = !!SessionRecorder.isRecordingInterrupted();
+      }
+      if (SessionRecorder.getCurrentMimeType) {
+        info.mediaRecorderMime = SessionRecorder.getCurrentMimeType() || null;
+      }
+    }
+  } catch (collectErr) {
+    info.collectError = collectErr && collectErr.message ? collectErr.message : String(collectErr);
+  }
+
+  return info;
+}
 var COMPLETED_TEST_FEEDBACK_LS_KEYS = ["lastCompletedTestId", "expressionAiResult"];
 /** Cleared on each new game so stale answers are not uploaded or scored (child age/login flags kept). */
 var IN_PROGRESS_TEST_RUN_LS_KEYS = [
@@ -239,6 +319,7 @@ if (typeof window !== "undefined") {
     clearInProgressTestRunProgress: clearInProgressTestRunProgress,
     clearTempBackendUserId: clearTempBackendUserId,
     ensurePendingTestId: ensurePendingTestId,
+    collectClientInfo: collectClientInfo,
   };
 }
 
@@ -335,6 +416,16 @@ async function updateUserTests(
     }
     console.log("   Timestamps:", timestampText ? "Present" : "None");
 
+    var clientInfo = collectClientInfo(userId, testId);
+    console.log(
+      "   clientInfo:",
+      clientInfo.appVersion,
+      "apiUserId=" + clientInfo.apiUserId,
+      "testId=" + clientInfo.pendingTestId,
+      "blobOk=" + clientInfo.blobUploadOk,
+      "recInterrupted=" + clientInfo.recordingInterrupted
+    );
+
     const payload = {
       userId: apiUserId,
       ageYears: ageYears,
@@ -352,6 +443,8 @@ async function updateUserTests(
     } else if (audioBase64) {
       payload.audioFile64 = audioBase64;
     }
+
+    payload.clientInfo = clientInfo;
 
     const response = await fetch(url, {
       method: "POST",

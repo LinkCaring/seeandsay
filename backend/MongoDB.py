@@ -131,7 +131,7 @@ class SeeSayMongoStorage:
                          full_array,correct, partly, wrong,
                          audio_file_base64,updated_transcription, timestamps,
                          expression_ai=None, test_id=None,
-                         audio_blob_path=None):
+                         audio_blob_path=None, client_info=None):
         """
         Adds a new exam record to the 'tests' array of a specific user.
         Time_took --> how long it took to finish
@@ -157,6 +157,9 @@ class SeeSayMongoStorage:
             else:
                 new_test['audioFile64'] = audio_file_base64
                 new_test['audioBlobPath'] = None
+
+            if client_info and isinstance(client_info, dict):
+                new_test['clientInfo'] = client_info
 
             ## Save
             result = self.users_collection.update_one(

@@ -5,7 +5,7 @@ Uses external MongoDB manager from storage_manager.py
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 import os
 import csv
@@ -450,6 +450,7 @@ class AddTestRequest(BaseModel):
     timestamps: str
     childGender: Optional[str] = None
     testId: Optional[str] = None
+    clientInfo: Optional[Dict[str, Any]] = None
 
 
 class PrepareUploadRequest(BaseModel):
@@ -493,6 +494,18 @@ def prepare_upload(body: PrepareUploadRequest):
 @app.post("/api/addTestToUser")
 def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     logger.warning(f"Received user test: {test.userId}")
+    if test.clientInfo:
+        ci = test.clientInfo
+        logger.warning(
+            "clientInfo testId=%s apiUserId=%s app=%s blobOk=%s recInterrupted=%s screen=%s ua=%s",
+            ci.get("pendingTestId"),
+            ci.get("apiUserId"),
+            ci.get("appVersion"),
+            ci.get("blobUploadOk"),
+            ci.get("recordingInterrupted"),
+            ci.get("screen"),
+            (str(ci.get("userAgent") or ""))[:120],
+        )
 
     updated_transcription = {"updated_transcription": "None", "success": False, "parent_speaker": "None"}
     test_id = str(test.testId).strip() if test.testId else str(uuid.uuid4())
@@ -550,6 +563,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         timestamps=test.timestamps,
         expression_ai=pending_expression_ai,
         test_id=test_id,
+        client_info=test.clientInfo,
     )
     if not success:
         raise HTTPException(status_code=404, detail="User not found or exam not added")
