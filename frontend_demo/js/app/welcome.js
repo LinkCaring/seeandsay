@@ -38,6 +38,11 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
   });
   var legalConfirmation = legalConfirmationState[0];
   var setLegalConfirmation = legalConfirmationState[1];
+  var parentPhoneState = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("parentPhone") || "\"\""); } catch (e) { return ""; }
+  });
+  var parentPhone = parentPhoneState[0];
+  var setParentPhone = parentPhoneState[1];
   var micPermissionErrorState = React.useState("");
   var micPermissionError = micPermissionErrorState[0];
   var setMicPermissionError = micPermissionErrorState[1];
@@ -71,6 +76,8 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     setRecordingConsent: setRecordingConsent,
     legalConfirmation: legalConfirmation,
     setLegalConfirmation: setLegalConfirmation,
+    parentPhone: parentPhone,
+    setParentPhone: setParentPhone,
     micPermissionError: micPermissionError,
     setMicPermissionError: setMicPermissionError,
     loginSubmitting: loginSubmitting,

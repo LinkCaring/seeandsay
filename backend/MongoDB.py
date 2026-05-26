@@ -11,7 +11,8 @@ import certifi
 import os
 from dotenv import load_dotenv
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 
 
 logging.basicConfig(level=logging.INFO)
@@ -67,7 +68,26 @@ class SeeSayMongoStorage:
         except Exception as e:
             logger.error(f"❌ MongoDB connection error: {e}")
             raise
-    def add_user(self, user_id, user_name):
+    @staticmethod
+    def normalize_parent_phone(phone):
+        """Normalize Israeli mobile for SMS; returns None if empty/invalid."""
+        if phone is None:
+            return None
+        raw = str(phone).strip()
+        if not raw:
+            return None
+        digits = re.sub(r"\D", "", raw)
+        if digits.startswith("972"):
+            digits = digits[3:]
+        if digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) == 9 and digits[0] in ("5", "7"):
+            return "0" + digits
+        if len(digits) == 10 and digits[0] == "0" and digits[1] in ("5", "7"):
+            return digits
+        return None
+
+    def add_user(self, user_id, user_name, parent_phone=None):
         """Add a new user to MongoDB if userId does not already exist"""
         logger.info(f"Adding new user....: {user_id} ({user_name})")
         try:
@@ -79,6 +99,10 @@ class SeeSayMongoStorage:
                 'tests': [],
                 'active': True,
             }
+            normalized_phone = self.normalize_parent_phone(parent_phone)
+            if normalized_phone:
+                user_data['parentPhone'] = normalized_phone
+                user_data['parentPhoneUpdatedAt'] = datetime.now()
 
             result = self.users_collection.insert_one(user_data)
             logger.info(f"✅ Added new user: {user_id} ({user_name})")
@@ -91,6 +115,40 @@ class SeeSayMongoStorage:
         except Exception as e:
             logger.error(f"❌ Error adding user {user_id} ({user_name}): {e}")
             return False
+
+    def set_user_parent_phone(self, user_id, phone):
+        """Set or clear optional parent SMS phone on user document."""
+        normalized = self.normalize_parent_phone(phone)
+        try:
+            update_fields = {"last_update": datetime.now(), "parentPhoneUpdatedAt": datetime.now()}
+            if normalized:
+                update_fields["parentPhone"] = normalized
+            else:
+                update_fields["parentPhone"] = None
+            result = self.users_collection.update_one(
+                {"userId": user_id},
+                {"$set": update_fields},
+            )
+            if result.matched_count == 0:
+                logger.warning(f"⚠️ User ID {user_id} not found for parentPhone update.")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error setting parentPhone for user {user_id}: {e}")
+            return False
+
+    def get_user_parent_phone(self, user_id):
+        try:
+            doc = self.users_collection.find_one(
+                {"userId": user_id},
+                {"_id": 0, "parentPhone": 1},
+            )
+            if not doc:
+                return None
+            return doc.get("parentPhone") or None
+        except Exception as e:
+            logger.error(f"❌ Error getting parentPhone for user {user_id}: {e}")
+            return None
 
 
     def get_user_test_by_id(self, user_id, test_id):
@@ -131,7 +189,8 @@ class SeeSayMongoStorage:
                          full_array,correct, partly, wrong,
                          audio_file_base64,updated_transcription, timestamps,
                          expression_ai=None, test_id=None,
-                         audio_blob_path=None, client_info=None):
+                         audio_blob_path=None, client_info=None,
+                         results_access=None):
         """
         Adds a new exam record to the 'tests' array of a specific user.
         Time_took --> how long it took to finish
@@ -160,6 +219,9 @@ class SeeSayMongoStorage:
 
             if client_info and isinstance(client_info, dict):
                 new_test['clientInfo'] = client_info
+
+            if results_access and isinstance(results_access, dict):
+                new_test['resultsAccess'] = results_access
 
             ## Save
             result = self.users_collection.update_one(
@@ -200,6 +262,58 @@ class SeeSayMongoStorage:
         except Exception as e:
             logger.error(f"❌ Error updating expressionAI for user {user_id}, testId {test_id}: {e}")
             return False
+
+    def find_test_by_results_token(self, token):
+        """Return {userId, test} for matching resultsAccess.token, or None."""
+        try:
+            token_str = str(token).strip()
+            if not token_str:
+                return None
+            pipeline = [
+                {"$unwind": "$tests"},
+                {"$match": {"tests.resultsAccess.token": token_str}},
+                {
+                    "$project": {
+                        "_id": 0,
+                        "userId": 1,
+                        "test": "$tests",
+                    }
+                },
+                {"$limit": 1},
+            ]
+            rows = list(self.users_collection.aggregate(pipeline))
+            if not rows:
+                return None
+            return {"userId": rows[0].get("userId"), "test": rows[0].get("test")}
+        except Exception as e:
+            logger.error(f"❌ Error finding test by results token: {e}")
+            return None
+
+    def mark_results_sms_sent(self, user_id, test_id):
+        """Idempotent: set smsSentAt only if not already set."""
+        try:
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            result = self.users_collection.update_one(
+                {
+                    "userId": user_id,
+                    "tests.testId": str(test_id),
+                    "tests.resultsAccess.smsSentAt": None,
+                },
+                {"$set": {"tests.$.resultsAccess.smsSentAt": now}},
+            )
+            return result.modified_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error marking SMS sent for user {user_id} test {test_id}: {e}")
+            return False
+
+    def set_test_sms_last_error(self, user_id, test_id, error_message):
+        try:
+            self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": str(test_id)},
+                {"$set": {"tests.$.resultsAccess.smsLastError": str(error_message)[:500]}},
+            )
+        except Exception as e:
+            logger.error(f"❌ Error setting smsLastError: {e}")
 
     def get_test_expression_ai(self, user_id, test_id):
         """

@@ -13,7 +13,8 @@ import json
 import re
 import uuid
 import random
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 # ✅ Import your existing storage manager
@@ -33,15 +34,17 @@ from AI_Models_API import (
     summarize_expressive_language_impression_gemini,
 )
 import azure_blob
+import sms_notify
+
+# ------------------------------------------------------
+# Setup — load .env before reading any os.environ constants
+# ------------------------------------------------------
+load_dotenv()
 
 EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES = int(
     os.environ.get("EXPRESSION_AI_STALE_BUILDING_IMPRESSION_MINUTES", "10")
 )
-
-# ------------------------------------------------------
-# Setup
-# ------------------------------------------------------
-load_dotenv()
+RESULTS_TOKEN_TTL_DAYS = int(os.environ.get("RESULTS_TOKEN_TTL_DAYS", "7"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -435,6 +438,12 @@ app.add_middleware(
 class CreateUserRequest(BaseModel):
     userId: int
     userName: Optional[str] = None
+    parentPhone: Optional[str] = None
+
+
+class ParentPhoneRequest(BaseModel):
+    userId: int
+    parentPhone: Optional[str] = None
 
 
 class AddTestRequest(BaseModel):
@@ -463,17 +472,69 @@ class PrepareUploadRequest(BaseModel):
 def home():
     return {"message": "✅ Hello from See&Say FastAPI backend"}
 
+def _build_results_access():
+    expires = datetime.now(timezone.utc) + timedelta(days=RESULTS_TOKEN_TTL_DAYS)
+    return {
+        "token": secrets.token_urlsafe(32),
+        "expiresAt": expires.isoformat().replace("+00:00", "Z"),
+        "smsSentAt": None,
+        "smsLastError": None,
+    }
+
+
+def _parse_iso_utc(iso_str):
+    if not iso_str:
+        return None
+    try:
+        ts = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _results_token_expired(expires_at):
+    exp = _parse_iso_utc(expires_at)
+    if not exp:
+        return True
+    return datetime.now(timezone.utc) >= exp
+
+
+def _build_results_public_url(token):
+    base = (os.environ.get("MILI_PUBLIC_BASE_URL") or "").strip()
+    if not base:
+        base = "http://localhost:8000/frontend_demo/"
+    return f"{base.rstrip('/')}?t={token}"
+
+
 @app.post("/api/createUser")
 def create_user(user: CreateUserRequest):
     logger.warning(f"Received user creation: {user.dict()}")
     success = storage.add_user(
         user_id=user.userId,
-        user_name=user.userName
+        user_name=user.userName,
+        parent_phone=user.parentPhone,
     )
 
     if not success:
-        raise HTTPException(status_code=400, detail="User already exists or could not be added")
+        if user.parentPhone is not None:
+            updated = storage.set_user_parent_phone(user.userId, user.parentPhone)
+            if not updated:
+                raise HTTPException(status_code=404, detail="User not found")
+            return {"success": True, "existing": True, "updatedPhone": True}
+        return {"success": True, "existing": True}
     return {"success": True}
+
+
+@app.patch("/api/user/parentPhone")
+def patch_user_parent_phone(body: ParentPhoneRequest):
+    updated = storage.set_user_parent_phone(body.userId, body.parentPhone)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    phone = storage.get_user_parent_phone(body.userId)
+    return {"success": True, "parentPhone": phone}
 
 @app.post("/api/tests/prepareUpload")
 def prepare_upload(body: PrepareUploadRequest):
@@ -549,6 +610,8 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         per_question_rows=[],
     )
 
+    results_access = _build_results_access()
+
     success = storage.add_test_to_user(
         user_id=test.userId,
         age_years=test.ageYears,
@@ -564,6 +627,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         expression_ai=pending_expression_ai,
         test_id=test_id,
         client_info=test.clientInfo,
+        results_access=results_access,
     )
     if not success:
         raise HTTPException(status_code=404, detail="User not found or exam not added")
@@ -1027,6 +1091,31 @@ def _run_expression_ai_background(
             )
         if payload is not None:
             storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+            _maybe_send_results_sms(user_id, test_id, payload)
+
+
+def _maybe_send_results_sms(user_id, test_id, payload):
+    if not payload or payload.get("status") != "done":
+        return
+    phone = storage.get_user_parent_phone(user_id)
+    if not phone:
+        return
+    test_doc = storage.get_user_test_by_id(user_id, test_id)
+    if not test_doc:
+        return
+    access = test_doc.get("resultsAccess") or {}
+    token = access.get("token")
+    if not token:
+        return
+    if access.get("smsSentAt"):
+        return
+    if _results_token_expired(access.get("expiresAt")):
+        return
+    url = _build_results_public_url(token)
+    if sms_notify.send_results_ready_sms(phone, url):
+        storage.mark_results_sms_sent(user_id, test_id)
+    else:
+        storage.set_test_sms_last_error(user_id, test_id, "sms_send_failed")
 
 
 def _maybe_finalize_stale_building_impression(payload, user_id, test_id):
@@ -1063,6 +1152,40 @@ def _maybe_finalize_stale_building_impression(payload, user_id, test_id):
     )
     storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=failed)
     return failed
+
+
+@app.get("/api/results/by-token")
+def results_by_token(t: str):
+    token = str(t or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token is required")
+    found = storage.find_test_by_results_token(token)
+    if not found:
+        raise HTTPException(status_code=404, detail="Results not found")
+    user_id = found["userId"]
+    test_doc = found["test"] or {}
+    access = test_doc.get("resultsAccess") or {}
+    expires_at = access.get("expiresAt")
+    if _results_token_expired(expires_at):
+        raise HTTPException(status_code=410, detail="Results link has expired")
+    expression_ai = test_doc.get("expressionAI") or {}
+    test_id = test_doc.get("testId")
+    if test_id and expression_ai:
+        expression_ai = _maybe_finalize_stale_building_impression(
+            expression_ai, user_id, test_id
+        )
+    return {
+        "success": True,
+        "expiresAt": expires_at,
+        "expression_ai": expression_ai,
+        "summary": {
+            "correct": test_doc.get("correct"),
+            "partly": test_doc.get("partly"),
+            "wrong": test_doc.get("wrong"),
+            "ageYears": test_doc.get("ageYears"),
+            "ageMonths": test_doc.get("ageMonths"),
+        },
+    }
 
 
 @app.get("/api/expressionAiStatus")

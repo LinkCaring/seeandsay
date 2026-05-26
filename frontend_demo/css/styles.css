@@ -801,6 +801,38 @@ button {
   text-align: start;
 }
 
+.age-screen .start-phone-input {
+  direction: rtl;
+  text-align: right;
+}
+
+.age-screen .start-phone-input::placeholder {
+  text-align: right;
+}
+
+.age-screen .start-phone-input[dir="ltr"] {
+  direction: ltr;
+  text-align: left;
+}
+
+.age-screen .start-phone-input[dir="ltr"]::placeholder {
+  text-align: left;
+}
+
+.age-screen .start-phone-hint {
+  text-align: right;
+}
+
+.age-screen .start-phone-hint[dir="ltr"] {
+  text-align: left;
+}
+
+.onboarding-screen--s2 .age-screen .start-phone-input,
+.onboarding-screen--s2 .age-screen .start-phone-hint {
+  max-width: none;
+  width: 100%;
+}
+
 .age-screen .start-date-field {
   width: 100%;
   max-width: 320px;

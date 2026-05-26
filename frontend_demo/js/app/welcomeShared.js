@@ -7,7 +7,9 @@
 
   function tr(key, fallback) {
     if (window.I18N && typeof window.I18N.t === "function") {
-      return window.I18N.t(key);
+      var s = window.I18N.t(key);
+      if (s && s !== key) return s;
+      return fallback || s || key;
     }
     return fallback || key;
   }

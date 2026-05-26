@@ -100,6 +100,7 @@ On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **
 | Test module map | [`frontend_demo/docs/TEST_MODULE_MAP.md`](frontend_demo/docs/TEST_MODULE_MAP.md) |
 | **API** | [`backend/docs/BACKEND_MODULE_MAP.md`](backend/docs/BACKEND_MODULE_MAP.md) |
 | Backend layout & rules | [`backend/docs/BACKEND_STRUCTURE.md`](backend/docs/BACKEND_STRUCTURE.md) |
+| SMS + token results | [`backend/docs/SMS_RESULTS.md`](backend/docs/SMS_RESULTS.md) |
 | Recent engineering changes | [`changes/CHANGES_2026-05-21_22-05.md`](changes/CHANGES_2026-05-21_22-05.md) |
 
 ---

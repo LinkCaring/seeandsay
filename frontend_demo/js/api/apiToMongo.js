@@ -104,18 +104,22 @@ function resolveBackendUserId(storedUserId) {
 }
 
 // create user
-async function createUser(userId, userName) {
+async function createUser(userId, userName, parentPhone) {
   const url = getApiBaseUrl() + "/api/createUser";
   var apiUserId = resolveBackendUserId(userId);
+  var body = {
+    userId: apiUserId,
+    userName: userName,
+  };
+  if (parentPhone != null && String(parentPhone).trim() !== "") {
+    body.parentPhone = String(parentPhone).trim();
+  }
 
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: apiUserId,
-        userName: userName
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -512,6 +516,30 @@ async function recoverLatestTest(userId) {
     return await response.json();
   } catch (err) {
     console.error("❌ recoverLatestTest failed:", err);
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function getResultsByToken(token) {
+  var t = String(token || "").trim();
+  if (!t) return { success: false, status: 400 };
+  var url = getApiBaseUrl() + "/api/results/by-token?t=" + encodeURIComponent(t);
+  try {
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) {
+      var errBody = null;
+      try {
+        errBody = await response.json();
+      } catch (e) {}
+      return {
+        success: false,
+        status: response.status,
+        detail: errBody && errBody.detail ? errBody.detail : response.statusText,
+      };
+    }
+    return await response.json();
+  } catch (err) {
+    console.error("getResultsByToken failed:", err);
     return { success: false, error: err && err.message ? err.message : String(err) };
   }
 }

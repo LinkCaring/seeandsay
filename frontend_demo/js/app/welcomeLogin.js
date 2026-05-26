@@ -86,6 +86,7 @@
       mods.setPersistentValue("childDob", ctx.childDob);
       mods.setPersistentValue("recordingConsent", !!ctx.recordingConsent);
       mods.setPersistentValue("legalConfirmation", !!ctx.legalConfirmation);
+      mods.setPersistentValue("parentPhone", ctx.parentPhone ? String(ctx.parentPhone).trim() : "");
       mods.setPersistentValue("ageYears", String(derivedAge.years));
       mods.setPersistentValue("ageMonths", String(derivedAge.months));
       mods.setPersistentValue("ageInvalid", false);
@@ -112,7 +113,8 @@
 
       var internalUserId = ensureInternalUserId(mods);
       if (typeof createUser === "function") {
-        createUser(internalUserId, String(ctx.childName).trim() || "SomeUserName");
+        var phoneArg = ctx.parentPhone && String(ctx.parentPhone).trim() ? String(ctx.parentPhone).trim() : null;
+        createUser(internalUserId, String(ctx.childName).trim() || "SomeUserName", phoneArg);
       }
 
       ctx.setActiveScreen("screen1_video");
@@ -203,6 +205,21 @@
               },
             })
           ),
+          React.createElement("input", {
+            type: "tel",
+            inputMode: "tel",
+            autoComplete: "tel",
+            className: "start-phone-input",
+            dir: ctx.isEn ? "ltr" : "rtl",
+            placeholder: mods.tr(
+              "test.start.parentPhone",
+              ctx.isEn ? "Mobile phone — feedback SMS when done" : "טלפון נייד- לשליחת המשוב בסיום"
+            ),
+            value: ctx.parentPhone || "",
+            onChange: function (e) {
+              ctx.setParentPhone(e.target.value);
+            },
+          }),
           React.createElement(
             "label",
             { className: "start-consent-row" },

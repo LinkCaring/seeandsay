@@ -257,11 +257,14 @@ Client: [`js/api/apiToMongo.js`](js/api/apiToMongo.js). Server: [`../backend/ser
 
 | Step | Client function | Endpoint |
 |------|-----------------|----------|
-| After login | `createUser` | `POST /api/createUser` |
+| After login | `createUser` (optional `parentPhone`) | `POST /api/createUser` |
 | End of game (1) | `prepareAudioUpload` | `POST /api/tests/prepareUpload` |
 | End of game (2) | `putSessionAudioToBlob` | `PUT` Azure SAS URL |
 | End of game (3) | `updateUserTests` | `POST /api/addTestToUser` |
 | Summary screen | `getExpressionAiStatus` | `GET /api/expressionAiStatus` |
+| SMS results link | `getResultsByToken` | `GET /api/results/by-token?t=...` |
+
+**Optional SMS:** Parent phone at login (not required). When provided, server texts a `?t=` link when expression AI is `done` (7-day token). Open `frontend_demo/?t=...` on any device. See [`../backend/docs/SMS_RESULTS.md`](../backend/docs/SMS_RESULTS.md).
 
 **`testId`:** New game → `MiliTestSession.beginNewTestSessionIdentity()`. Resume → `ensurePendingTestId()` keeps the same id.
 

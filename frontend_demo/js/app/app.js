@@ -129,8 +129,18 @@ function hasInProgressTestState() {
   }
 }
 
+function getResultsTokenFromUrl() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    return (params.get("t") || params.get("results") || "").trim();
+  } catch (e) {
+    return "";
+  }
+}
+
 function App() {
-  const [page, setPage] = usePersistentState("page", "home");
+  var urlResultsToken = getResultsTokenFromUrl();
+  const [page, setPage] = usePersistentState("page", urlResultsToken ? "results" : "home");
   const [lang, setLang] = React.useState(function () {
     return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "he";
   });
@@ -164,6 +174,12 @@ function App() {
     document.documentElement.lang = lang;
     document.documentElement.dir = nextDir;
   }, [lang]);
+
+  React.useEffect(function openResultsFromUrlToken() {
+    if (getResultsTokenFromUrl()) {
+      setPage("results");
+    }
+  }, []);
 
   // Load CSV and start image loading as soon as the site opens
   React.useEffect(() => {
@@ -220,7 +236,12 @@ function App() {
   const isLandingPage = page === "home" || page === "help";
 
   let content;
-  if (!csvLoaded) {
+  if (page === "results") {
+    content = React.createElement(MiliResultsView, {
+      lang: lang,
+      t: t,
+    });
+  } else if (!csvLoaded) {
     content = React.createElement(
       "div",
       { className: "surface-card", style: { textAlign: "center" } },

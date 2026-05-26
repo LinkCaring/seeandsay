@@ -1094,7 +1094,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
     unlockTestSessionForQuestions();
     setAgeConfirmed(true);
-    createUser(internalUserId, String(childName).trim() || "SomeUserName");
+    var phoneForApi = null;
+    try {
+      var storedPhone = JSON.parse(localStorage.getItem("parentPhone") || "\"\"");
+      if (storedPhone && String(storedPhone).trim()) phoneForApi = String(storedPhone).trim();
+    } catch (e) {}
+    createUser(internalUserId, String(childName).trim() || "SomeUserName", phoneForApi);
   }
 
   const getMicrophonePermission = async function () {
