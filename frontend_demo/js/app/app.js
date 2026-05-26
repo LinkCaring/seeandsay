@@ -275,6 +275,7 @@ function App() {
   }
 
   var showTopNav = isLandingPage || (page === "test" && testPhase !== "questions" && testPhase !== "complete");
+  var isResultsPage = page === "results";
 
   return React.createElement(
     "div",
@@ -283,37 +284,39 @@ function App() {
       "data-page": page,
       "data-test-phase": page === "test" ? testPhase : undefined,
     },
-    React.createElement(
-      "header",
-      { className: "top-header" },
-      showTopNav
-        ? React.createElement(
-            window.AppNavbar,
-            page === "home"
-              ? {
-                  variant: "home",
-                  lang: lang,
-                  t: t,
-                  onReset: function () { setShowResetConfirm(true); },
-                  setLang: function (newLang) {
-                    var next = window.I18N.setLang(newLang);
-                    setLang(next);
-                  },
-                }
-              : {
-                  variant: "complete",
-                  lang: lang,
-                  t: t,
-                  onHome: function () { setPage("home"); },
-                  onReset: function () { setShowResetConfirm(true); },
-                  setLang: function (newLang) {
-                    var next = window.I18N.setLang(newLang);
-                    setLang(next);
-                  },
-                }
-          )
-        : null
-    ),
+    !isResultsPage
+      ? React.createElement(
+          "header",
+          { className: "top-header" },
+          showTopNav
+            ? React.createElement(
+                window.AppNavbar,
+                page === "home"
+                  ? {
+                      variant: "home",
+                      lang: lang,
+                      t: t,
+                      onReset: function () { setShowResetConfirm(true); },
+                      setLang: function (newLang) {
+                        var next = window.I18N.setLang(newLang);
+                        setLang(next);
+                      },
+                    }
+                  : {
+                      variant: "complete",
+                      lang: lang,
+                      t: t,
+                      onHome: function () { setPage("home"); },
+                      onReset: function () { setShowResetConfirm(true); },
+                      setLang: function (newLang) {
+                        var next = window.I18N.setLang(newLang);
+                        setLang(next);
+                      },
+                    }
+              )
+            : null
+        )
+      : null,
     React.createElement(
       "div",
       { className: isLandingPage ? "landing-wrapper" : "page-content" },

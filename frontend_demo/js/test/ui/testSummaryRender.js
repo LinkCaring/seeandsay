@@ -322,43 +322,13 @@
     };
 
     const downloadExpressionAiReportDoc = function () {
-      var pack = getExpressionAiReportRowModels();
-      if (!pack) return;
-      var testId = ctx.lastCompletedTestId || "unknown";
-      var rowsHtml = pack.rowModels.length
-        ? pack.rowModels.map(function (m) {
-            return "<tr>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.qn +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.parentStatus +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.parentScoreStr +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.aiScoreStr +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.reason +"</td>" +
-              "<td style='border:1px solid #bbb;padding:6px;'>"+ m.listen +"</td>" +
-              "</tr>";
-          }).join("")
-        : "<tr><td colspan='6' style='border:1px solid #bbb;padding:6px;'>No per-question AI rows.</td></tr>";
-      var html = "<html><head><meta charset='utf-8'><title>Expression AI Report</title></head><body style='font-family:Arial,sans-serif;padding:16px;'>" +
-        "<h2>Expression AI Feedback Report</h2>" +
-        "<p><strong>" + (ctx.lang === "en" ? "Parent vs AI match" : "התאמה הורה מול AI") + ":</strong> " + pack.gradeMatchedCount + " / " + pack.gradeComparedCount + "</p>" +
-        "<h3>Per-question rows</h3>" +
-        "<table style='border-collapse:collapse;width:100%;font-size:13px;'><thead><tr>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>Q#</th>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>" + (ctx.lang === "en" ? "Parent answer" : "תשובת הורה") + "</th>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>" + (ctx.lang === "en" ? "Parent score" : "ציון הורה") + "</th>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>AI score</th>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>Reason</th>" +
-        "<th style='border:1px solid #bbb;padding:6px;'>Listen</th>" +
-        "</tr></thead><tbody>" + rowsHtml + "</tbody></table>" +
-        "</body></html>";
-      var blob = new Blob(["\ufeff", html], { type: "application/msword" });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      a.href = url;
-      a.download = "expression_ai_feedback_" + testId + ".doc";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      if (!window.MiliExpressionAiReport || !window.MiliExpressionAiReport.downloadExpressionAiReportDoc) return;
+      window.MiliExpressionAiReport.downloadExpressionAiReportDoc({
+        lang: ctx.lang,
+        expressionAiResult: expressionAiResult,
+        parentExprByQ: parentExprByQ,
+        fileId: ctx.lastCompletedTestId || "unknown",
+      });
     };
 
     const renderPlsNarrativeReport = function (eli) {
@@ -739,59 +709,18 @@
             )
           )
         : null,
-      expressionAiResolved && hasExpressionQuestions && ctx.expressionAiResult
-        ? React.createElement(
-            "div",
-            {
-              style: {
-                marginTop: "18px",
-                width: "min(100%, 620px)",
-                marginLeft: "auto",
-                marginRight: "auto",
-                padding: "14px 14px 14px",
-                textAlign: "center",
-                background: "#f7f8fd",
-                border: "1px solid #d7defb",
-                borderRadius: "12px",
-                display: "grid",
-                gap: "10px"
-              }
-            },
-            React.createElement(
-              "div",
-              { style: { fontWeight: 800, fontSize: "17px", color: "#20364a" } },
-              ctx.lang === "en" ? "AI feedback is ready" : "משוב ה-AI מוכן"
-            ),
-            React.createElement(
-              "div",
-              { style: { fontSize: "14px", color: "#4b5d6f" } },
+      expressionAiResolved && hasExpressionQuestions && ctx.expressionAiResult && window.MiliExpressionAiReport
+        ? window.MiliExpressionAiReport.renderWordDownloadBlock({
+            lang: ctx.lang,
+            expressionAiResult: expressionAiResult,
+            parentExprByQ: parentExprByQ,
+            fileId: ctx.lastCompletedTestId || "unknown",
+            showReadyTitle: false,
+            hintText:
               ctx.lang === "en"
                 ? "The same report is shown in the summary above. You can also download a Word file to share."
-                : "אותו דוח מוצג למעלה בסיכום. אפשר גם להוריד קובץ Word לשיתוף."
-            ),
-            React.createElement(
-              "div",
-              { style: { display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" } },
-              React.createElement(
-                "button",
-                {
-                  type: "button",
-                  onClick: downloadExpressionAiReportDoc,
-                  style: {
-                    padding: "10px 14px",
-                    fontSize: "14px",
-                    backgroundColor: "#4a9a62",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    opacity: 0.96
-                  }
-                },
-                ctx.lang === "en" ? "Download Word" : "הורדת Word"
-              )
-            )
-          )
+                : "אותו דוח מוצג למעלה בסיכום. אפשר גם להוריד קובץ Word לשיתוף.",
+          })
         : null
       )
     );

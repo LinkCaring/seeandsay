@@ -1174,10 +1174,16 @@ def results_by_token(t: str):
         expression_ai = _maybe_finalize_stale_building_impression(
             expression_ai, user_id, test_id
         )
+    parent_expression_by_question = {}
+    full_array = test_doc.get("fullArray") or ""
+    for qn, result in _parse_expression_results_from_full_array(full_array):
+        parent_expression_by_question[str(qn)] = result
     return {
         "success": True,
         "expiresAt": expires_at,
+        "test_id": test_id,
         "expression_ai": expression_ai,
+        "parent_expression_by_question": parent_expression_by_question,
         "summary": {
             "correct": test_doc.get("correct"),
             "partly": test_doc.get("partly"),

@@ -35,16 +35,165 @@
         gradeComparedCount += 1;
         if (isMatch) gradeMatchedCount += 1;
       }
+      var matchLabel =
+        isMatch === null
+          ? "—"
+          : isMatch
+            ? lang === "en"
+              ? "Match"
+              : "תואם"
+            : lang === "en"
+              ? "Different"
+              : "שונה";
       return {
         qn: qn || "—",
         parentStatus: parentStatus,
         parentScoreStr: parentScore == null ? "—" : String(parentScore),
         aiScoreStr: String(r && r.ai_score != null ? r.ai_score : "—"),
+        matchLabel: matchLabel,
         reason: String((r && r.ai_reason_short) || "—"),
         listen: String((r && r.ai_speaker_observation) || "—"),
       };
     });
     return { rowModels: rowModels, gradeMatchedCount: gradeMatchedCount, gradeComparedCount: gradeComparedCount };
+  }
+
+  function downloadExpressionAiReportDoc(opts) {
+    var pack = getExpressionAiReportRowModels(opts);
+    if (!pack) return;
+    var lang = opts.lang || "he";
+    var fileId = opts.fileId || opts.testId || "results";
+    var rowsHtml = pack.rowModels.length
+      ? pack.rowModels
+          .map(function (m) {
+            return (
+              "<tr>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.qn +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.parentStatus +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.parentScoreStr +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.aiScoreStr +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.matchLabel +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.reason +
+              "</td>" +
+              "<td style='border:1px solid #bbb;padding:6px;'>" +
+              m.listen +
+              "</td>" +
+              "</tr>"
+            );
+          })
+          .join("")
+      : "<tr><td colspan='7' style='border:1px solid #bbb;padding:6px;'>No per-question AI rows.</td></tr>";
+    var html =
+      "<html><head><meta charset='utf-8'><title>Expression AI Report</title></head><body style='font-family:Arial,sans-serif;padding:16px;'>" +
+      "<h2>Expression AI Feedback Report</h2>" +
+      "<p><strong>" +
+      (lang === "en" ? "Parent vs AI match" : "התאמה הורה מול AI") +
+      ":</strong> " +
+      pack.gradeMatchedCount +
+      " / " +
+      pack.gradeComparedCount +
+      "</p>" +
+      "<h3>Per-question rows</h3>" +
+      "<table style='border-collapse:collapse;width:100%;font-size:13px;'><thead><tr>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>Q#</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>" +
+      (lang === "en" ? "Parent answer" : "תשובת הורה") +
+      "</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>" +
+      (lang === "en" ? "Parent score" : "ציון הורה") +
+      "</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>AI score</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>" +
+      (lang === "en" ? "Match" : "התאמה") +
+      "</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>Reason</th>" +
+      "<th style='border:1px solid #bbb;padding:6px;'>Listen</th>" +
+      "</tr></thead><tbody>" +
+      rowsHtml +
+      "</tbody></table>" +
+      "</body></html>";
+    var blob = new Blob(["\ufeff", html], { type: "application/msword" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "expression_ai_feedback_" + fileId + ".doc";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function renderWordDownloadBlock(opts) {
+    if (!opts || !opts.expressionAiResult) return null;
+    var lang = opts.lang || "he";
+    var hintText =
+      opts.hintText ||
+      (lang === "en"
+        ? "You can download a Word file to share."
+        : "אפשר להוריד קובץ Word לשיתוף.");
+    return React.createElement(
+      "div",
+      {
+        className: "session-expression-ai-report__download-wrap",
+        style: {
+          marginTop: "18px",
+          width: "min(100%, 620px)",
+          marginLeft: "auto",
+          marginRight: "auto",
+          padding: "14px",
+          textAlign: "center",
+          background: "#f7f8fd",
+          border: "1px solid #d7defb",
+          borderRadius: "12px",
+          display: "grid",
+          gap: "10px",
+        },
+      },
+      React.createElement(
+        "div",
+        { style: { fontWeight: 800, fontSize: "17px", color: "#20364a" } },
+        lang === "en" ? "AI feedback is ready" : "משוב ה-AI מוכן"
+      ),
+      React.createElement(
+        "div",
+        { style: { fontSize: "14px", color: "#4b5d6f" } },
+        hintText
+      ),
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" } },
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: function () {
+              downloadExpressionAiReportDoc(opts);
+            },
+            style: {
+              padding: "10px 14px",
+              fontSize: "14px",
+              backgroundColor: "#4a9a62",
+              color: "white",
+              border: "none",
+              borderRadius: "8px",
+              cursor: "pointer",
+            },
+          },
+          lang === "en" ? "Download Word" : "הורדת Word"
+        )
+      )
+    );
   }
 
   function renderExpressionAiInline(opts) {
@@ -358,5 +507,7 @@
     renderExpressionAiInline: renderExpressionAiInline,
     renderPlsNarrative: renderPlsNarrative,
     buildPlsNarrativeViewModel: buildPlsNarrativeViewModel,
+    downloadExpressionAiReportDoc: downloadExpressionAiReportDoc,
+    renderWordDownloadBlock: renderWordDownloadBlock,
   };
 })();

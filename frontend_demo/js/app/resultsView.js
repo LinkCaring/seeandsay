@@ -65,13 +65,19 @@ function MiliResultsView(props) {
   var aiFailed = aiStatus === "failed";
   var aiPending = !aiDone && !aiFailed;
 
+  var parentExprByQ =
+    load.data && load.data.parent_expression_by_question
+      ? load.data.parent_expression_by_question
+      : {};
   var reportOpts = {
     lang: lang,
     expressionAiResult: expressionAi,
     expressionAiResolved: aiDone || aiFailed,
     hasExpressionQuestions: true,
-    parentExprByQ: {},
+    parentExprByQ: parentExprByQ,
   };
+  var testIdForDownload =
+    load.data && load.data.test_id ? String(load.data.test_id) : "results";
 
   var plsBlock =
     window.MiliExpressionAiReport &&
@@ -194,6 +200,14 @@ function MiliResultsView(props) {
           : null
       ),
       plsBlock,
+      window.MiliExpressionAiReport && aiDone && expressionAi
+        ? window.MiliExpressionAiReport.renderWordDownloadBlock({
+            lang: lang,
+            expressionAiResult: expressionAi,
+            parentExprByQ: parentExprByQ,
+            fileId: testIdForDownload,
+          })
+        : null,
       load.data && load.data.expiresAt
         ? React.createElement(
             "p",
@@ -215,21 +229,7 @@ function MiliResultsView(props) {
 
   return React.createElement(
     "div",
-    { className: "app-container", "data-page": "results" },
-    React.createElement(
-      "header",
-      { className: "top-header" },
-      React.createElement(
-        "div",
-        { className: "top-header__inner" },
-        React.createElement("span", { className: "brand-title" }, "MILI"),
-        React.createElement(
-          "span",
-          { className: "app-version-label", style: { marginInlineStart: "8px", fontSize: "12px", opacity: 0.7 } },
-          lang === "en" ? "Results" : "תוצאות"
-        )
-      )
-    ),
+    { className: "app-container results-token-page", "data-page": "results" },
     mainContent
   );
 }
