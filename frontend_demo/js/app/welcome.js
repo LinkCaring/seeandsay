@@ -3,6 +3,10 @@
  */
 function Welcome({ lang, setPage, onRequestStartTest }) {
   var WM = window.MiliWelcomeModules || {};
+  var TM = window.MiliTestModules || {};
+  var AVATAR_INTRO_VIDEO = TM.AVATAR_INTRO_VIDEO || {};
+  var resolveAvatarIntroVideoSources = TM.resolveAvatarIntroVideoSources;
+  var switchAvatarIntroVideoToMp4Fallback = TM.switchAvatarIntroVideoToMp4Fallback;
   var isEn = lang === "en";
   var orderedScreens = ["screen1", "screen2_login", "screen1_video", "screen3"];
   var activeScreenState = React.useState("screen1");
@@ -55,6 +59,36 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
   var dobInputRef = React.useRef(null);
   var activeIndex = orderedScreens.indexOf(activeScreen);
 
+  var introVideoSources = React.useMemo(function () {
+    if (!AVATAR_INTRO_VIDEO.intro1 || typeof resolveAvatarIntroVideoSources !== "function") {
+      return { src: "resources/avatar/intro1.webm", isFallback: false };
+    }
+    return resolveAvatarIntroVideoSources(
+      AVATAR_INTRO_VIDEO.intro1.webm,
+      AVATAR_INTRO_VIDEO.intro1.mp4Fallback
+    );
+  }, []);
+
+  function skipIntroVideoToHowItWorks() {
+    introVideoAutoplayBlockedRef.current = false;
+    setActiveScreen("screen3");
+  }
+
+  function handleIntroVideoError() {
+    if (
+      !AVATAR_INTRO_VIDEO.intro1 ||
+      typeof switchAvatarIntroVideoToMp4Fallback !== "function"
+    ) {
+      skipIntroVideoToHowItWorks();
+      return;
+    }
+    switchAvatarIntroVideoToMp4Fallback(
+      introVideoRef.current,
+      AVATAR_INTRO_VIDEO.intro1.mp4Fallback,
+      skipIntroVideoToHowItWorks
+    );
+  }
+
   var welcomeCtx = {
     isEn: isEn,
     lang: lang,
@@ -66,6 +100,9 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     setTipsOpen: setTipsOpen,
     introVideoRef: introVideoRef,
     introVideoAutoplayBlockedRef: introVideoAutoplayBlockedRef,
+    introVideoSources: introVideoSources,
+    skipIntroVideoToHowItWorks: skipIntroVideoToHowItWorks,
+    handleIntroVideoError: handleIntroVideoError,
     childName: childName,
     setChildName: setChildName,
     childGender: childGender,

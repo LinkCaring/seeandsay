@@ -6,6 +6,10 @@
   var AVATAR_INTRO_WEBM_TRANSPARENCY_SUPPORT = null;
 
   var AVATAR_INTRO_VIDEO = {
+    intro1: {
+      webm: "resources/avatar/intro1.webm",
+      mp4Fallback: "resources/avatar/intro1_fallback.mp4",
+    },
     compr: {
       webm: "resources/avatar/compr_intro.webm",
       mp4Fallback: "resources/avatar/compr_intro_fallback.mp4",

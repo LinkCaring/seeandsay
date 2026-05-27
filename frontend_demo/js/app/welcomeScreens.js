@@ -122,24 +122,24 @@
   }
 
   function renderScreen1Video(ctx) {
+    var sources = ctx.introVideoSources || {
+      src: "resources/avatar/intro1.webm",
+      isFallback: false,
+    };
     return React.createElement(
       "section",
       { className: "onboarding-screen onboarding-screen--intro-video-only" },
       React.createElement("video", {
         ref: ctx.introVideoRef,
-        className: "onboarding-intro-video-only__video",
-        src: "resources/avatar/intro1.webm",
+        className:
+          "onboarding-intro-video-only__video" +
+          (sources.isFallback ? " test-avatar-intro__video--solid-bg" : ""),
+        src: sources.src,
         autoPlay: true,
         playsInline: true,
         preload: "auto",
-        onEnded: function () {
-          ctx.introVideoAutoplayBlockedRef.current = false;
-          ctx.setActiveScreen("screen3");
-        },
-        onError: function () {
-          ctx.introVideoAutoplayBlockedRef.current = false;
-          ctx.setActiveScreen("screen3");
-        },
+        onEnded: ctx.skipIntroVideoToHowItWorks,
+        onError: ctx.handleIntroVideoError,
       })
     );
   }

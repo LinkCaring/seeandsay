@@ -361,6 +361,11 @@
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.22));
 }
 
+/* MP4 fallback (opaque background baked in) — no floating drop shadow */
+.onboarding-intro-video-only__video.test-avatar-intro__video--solid-bg {
+  filter: none;
+}
+
 @media (orientation: portrait) {
   .onboarding-screen--s1 .onboarding-illustration-slot {
     min-height: clamp(140px, 30vh, 300px);
