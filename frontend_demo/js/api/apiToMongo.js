@@ -176,6 +176,7 @@ function collectClientInfo(demoUserId, testId, opts) {
     origin: "",
     visibilityState: "",
     mediaRecorderMime: null,
+    expressionAudioMode: "legacy",
   };
 
   try {
@@ -203,6 +204,10 @@ function collectClientInfo(demoUserId, testId, opts) {
       info.devicePixelRatio = window.devicePixelRatio || 1;
       info.origin = window.location && window.location.origin ? window.location.origin : "";
       info.visibilityState = document.visibilityState || "";
+      try {
+        var mode = JSON.parse(localStorage.getItem("expressionAudioMode") || "\"legacy\"");
+        info.expressionAudioMode = mode === "incremental" ? "incremental" : "legacy";
+      } catch (modeErr) {}
     }
     if (typeof SessionRecorder !== "undefined") {
       if (SessionRecorder.isRecordingInterrupted) {
@@ -346,6 +351,40 @@ async function prepareAudioUpload(userId, testId) {
   }
   var data = await response.json();
   return Object.assign({ success: true }, data);
+}
+
+async function prepareSegmentUpload(userId, testId, questionNumber) {
+  var apiUserId = resolveBackendUserId(userId);
+  var url = getApiBaseUrl() + "/api/tests/prepareSegmentUpload";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId: apiUserId, testId: testId, questionNumber: String(questionNumber) }),
+  });
+  if (!response.ok) {
+    var errText = "";
+    try { errText = await response.text(); } catch (e) { errText = String(e); }
+    return { success: false, status: response.status, error: errText || "prepareSegmentUpload failed" };
+  }
+  var data = await response.json();
+  return Object.assign({ success: true }, data);
+}
+
+async function registerExpressionSegment(userId, payload) {
+  var apiUserId = resolveBackendUserId(userId);
+  var url = getApiBaseUrl() + "/api/tests/expressionSegment";
+  var body = Object.assign({}, payload || {}, { userId: apiUserId });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    var errText = "";
+    try { errText = await response.text(); } catch (e) { errText = String(e); }
+    return { success: false, status: response.status, error: errText || "expressionSegment failed" };
+  }
+  return Object.assign({ success: true }, await response.json());
 }
 
 async function putSessionAudioToBlob(uploadUrl, audioBlob) {

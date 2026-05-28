@@ -219,10 +219,6 @@
 
     const hasExpressionQuestions = exprStats.total > 0;
     var expressionAiStatus = ctx.expressionAiResult && expressionAiResult.status;
-    const expressionAiResolved =
-      !hasExpressionQuestions ||
-      (ctx.expressionAiResult &&
-        (expressionAiStatus === "done" || expressionAiStatus === "failed"));
     const testUploadInProgress =
       ctx.sessionCompleted &&
       (ctx.testUploadState === "uploading" ||
@@ -254,6 +250,21 @@
     const expressionAiPhase = expressionAiProgress && expressionAiProgress.phase
       ? String(expressionAiProgress.phase)
       : "pending";
+    const expressionImpressionStatus =
+      ctx.expressionAiResult &&
+      expressionAiResult.expressive_language_impression &&
+      expressionAiResult.expressive_language_impression.status
+        ? String(expressionAiResult.expressive_language_impression.status)
+        : "pending";
+    const expressionImpressionTerminal =
+      expressionImpressionStatus === "done" ||
+      expressionImpressionStatus === "failed" ||
+      expressionImpressionStatus === "skipped";
+    const expressionAiFullyComplete =
+      expressionAiStatus === "failed" ||
+      (expressionAiStatus === "done" &&
+        expressionAiProcessed >= expressionAiTotal &&
+        expressionImpressionTerminal);
     function expressionPhaseLabel(phaseKey) {
       if (ctx.lang === "en") {
         if (phaseKey === "queued") return "Feedback generation will start shortly";
@@ -280,8 +291,8 @@
       if (phaseKey === "failed") return "נכשל";
       return "ממתין";
     }
-    const ageMatchedForDisplay =
-      !hasExpressionQuestions || expressionAiResolved ? ageMatchedStats : ageMatchedCompStats;
+    const expressionAiResolved = !hasExpressionQuestions || expressionAiFullyComplete;
+    const ageMatchedForDisplay = expressionAiResolved ? ageMatchedStats : ageMatchedCompStats;
 
     const parentExprByQ = {};
     ctx.questionResults.forEach(function (item) {

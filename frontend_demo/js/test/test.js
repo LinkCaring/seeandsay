@@ -52,6 +52,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const expressionEvalEnableTimerRef = React.useRef(null);
   const expressionEvalArmedQuestionRef = React.useRef(null);
   const expressionAnswerEndTimerRef = React.useRef(null);
+  const expressionSegmentRecorderRef = React.useRef(null);
+  const expressionSegmentQueueRef = React.useRef(null);
   var exprTimerCtxRef = React.useRef({});
   var exprTimersRef = React.useRef(null);
   function ensureExprTimers() {
@@ -376,6 +378,45 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   function beginExpressionAnswerRecordingCapture() {
     expressionAnswerCaptureActiveRef.current = true;
     syncExpressionAnswerRecordingCapture();
+    if (getExpressionAudioMode() === "incremental" && expressionSegmentRecorderRef.current) {
+      var q = questions[getSafeCurrentQuestionIndex()];
+      if (q && q.query_type === "הבעה") {
+        expressionSegmentRecorderRef.current.startSegment(q.query_number).catch(function () {});
+      }
+    }
+  }
+
+  function getExpressionAudioMode() {
+    try {
+      var mode = JSON.parse(localStorage.getItem("expressionAudioMode") || "\"legacy\"");
+      return mode === "incremental" ? "incremental" : "legacy";
+    } catch (e) {
+      return "legacy";
+    }
+  }
+
+  async function enqueueExpressionSegmentUpload(question, headlightResult) {
+    if (!question || question.query_type !== "הבעה") return;
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (!expressionSegmentRecorderRef.current || !expressionSegmentQueueRef.current) return;
+    var testId = ensurePendingTestId();
+    var blob = await expressionSegmentRecorderRef.current.stopSegment(question.query_number);
+    if (!blob) {
+      console.warn("[incremental] missing segment blob for q" + String(question.query_number || ""));
+      return;
+    }
+    expressionSegmentQueueRef.current.enqueue({
+      userId: idDigits,
+      testId: testId,
+      questionNumber: String(question.query_number || ""),
+      headlightResult: headlightResult,
+      segmentBlob: blob,
+      childGender: childGender,
+      ageYears: ageYears,
+      ageMonths: ageMonths,
+    });
+    console.log("[incremental] queued segment upload q" + String(question.query_number || ""));
+    expressionSegmentRecorderRef.current.clearLastBlob();
   }
 
   // AFK timer states
@@ -515,6 +556,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const questionAudioAutoplayPendingRef = React.useRef(false);
   /** Active question `Audio` instance for synchronous pause/stop (state updates lag behind timers). */
   const questionAudioRef = React.useRef(null);
+  const questionAudioCacheRef = React.useRef({});
   const tryAgainAudioRef = React.useRef(null);
   const firstQuestionRetryTimerRef = React.useRef(null);
   const firstQuestionRetryAttemptRef = React.useRef(0);
@@ -637,6 +679,25 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       if (firstQuestionRetryTimerRef.current) {
         clearTimeout(firstQuestionRetryTimerRef.current);
         firstQuestionRetryTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  React.useEffect(function initIncrementalExpressionPipeline() {
+    if (!window.MiliTestModules) return;
+    if (window.MiliTestModules.createExpressionSegmentRecorder) {
+      expressionSegmentRecorderRef.current = window.MiliTestModules.createExpressionSegmentRecorder();
+    }
+    if (window.MiliTestModules.createExpressionSegmentUploadQueue) {
+      expressionSegmentQueueRef.current = window.MiliTestModules.createExpressionSegmentUploadQueue({
+        prepareSegmentUpload: prepareSegmentUpload,
+        registerExpressionSegment: registerExpressionSegment,
+        putSessionAudioToBlob: putSessionAudioToBlob,
+      });
+    }
+    return function () {
+      if (expressionSegmentRecorderRef.current && expressionSegmentRecorderRef.current.cleanup) {
+        expressionSegmentRecorderRef.current.cleanup();
       }
     };
   }, []);
@@ -2451,11 +2512,35 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     }
   }, [idDigits, lastCompletedTestId, lang]);
 
+  function isExpressionAiTerminalForAnsweredQuestions(aiPayload) {
+    if (!aiPayload) return false;
+    var answeredExpressionCount = questionResults.filter(function (r) {
+      return r.questionType === "expression";
+    }).length;
+    var progress = aiPayload.meta && aiPayload.meta.progress ? aiPayload.meta.progress : null;
+    var processed = progress && typeof progress.processed_questions === "number"
+      ? progress.processed_questions
+      : 0;
+    var total = progress && typeof progress.total_questions === "number"
+      ? progress.total_questions
+      : answeredExpressionCount;
+    var impressionStatus = aiPayload.expressive_language_impression && aiPayload.expressive_language_impression.status
+      ? String(aiPayload.expressive_language_impression.status)
+      : "pending";
+    var impressionTerminal =
+      impressionStatus === "done" || impressionStatus === "failed" || impressionStatus === "skipped";
+    if (String(aiPayload.status || "") === "failed") return true;
+    return (
+      String(aiPayload.status || "") === "done" &&
+      processed >= Math.max(answeredExpressionCount, total) &&
+      impressionTerminal
+    );
+  }
+
   React.useEffect(function pollExpressionAiWhilePending() {
     if (!sessionCompleted) return;
     if (!lastCompletedTestId) return;
-    var status = expressionAiResult && expressionAiResult.status;
-    if (status === "done" || status === "failed") return;
+    if (isExpressionAiTerminalForAnsweredQuestions(expressionAiResult)) return;
 
     if (expressionAiPollStartedRef.current == null) {
       expressionAiPollStartedRef.current = Date.now();
@@ -2467,7 +2552,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return function () {
       clearInterval(timer);
     };
-  }, [sessionCompleted, lastCompletedTestId, expressionAiResult, refreshExpressionAiStatus]);
+  }, [sessionCompleted, lastCompletedTestId, expressionAiResult, refreshExpressionAiStatus, questionResults]);
 
   React.useEffect(function resetPlsReportCategoryOnNewTest() {
     setPlsReportCategory("semantics");
@@ -2780,6 +2865,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     getQuestionAudioFolderByGender: getQuestionAudioFolderByGender,
     markExpressionTimestampAndArm: markExpressionTimestampAndArm,
     setQuestionAudio: setQuestionAudio,
+    questionAudioCacheRef: questionAudioCacheRef,
+    ensurePendingTestId: ensurePendingTestId,
+    lang: lang,
+    devMode: devMode,
     micCheckPassed: micCheckPassed,
     expIntroVideoComplete: expIntroVideoComplete,
     setIsTwoRow: setIsTwoRow,
@@ -2821,6 +2910,22 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     formatQuestionResultsArray: formatQuestionResultsArray,
     expressionPhaseRecordingStartedRef: expressionPhaseRecordingStartedRef,
     setSessionCompleted: setSessionCompleted,
+    enqueueExpressionSegmentUpload: enqueueExpressionSegmentUpload,
+    getExpressionAudioMode: getExpressionAudioMode,
+    getPendingExpressionSegmentUploads: function () {
+      return expressionSegmentQueueRef.current && expressionSegmentQueueRef.current.pendingCount
+        ? expressionSegmentQueueRef.current.pendingCount()
+        : 0;
+    },
+    getExpressionSegmentUploadStats: function () {
+      return expressionSegmentQueueRef.current && expressionSegmentQueueRef.current.stats
+        ? expressionSegmentQueueRef.current.stats()
+        : { pending: 0, completed: 0, failed: 0 };
+    },
+    waitForExpressionSegmentQueueIdle: async function (timeoutMs) {
+      if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
+      await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
+    },
     retryRecordingUploadRef: retryRecordingUploadRef,
     sessionRecordingStarted: sessionRecordingStarted,
     permission: permission,
@@ -2866,6 +2971,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     adjustCountsForResult: adjustCountsForResult,
     startThreeInRowCelebration: startThreeInRowCelebration,
     requestCompleteSessionOrConfirm: requestCompleteSessionOrConfirm,
+    enqueueExpressionSegmentUpload: enqueueExpressionSegmentUpload,
+    getExpressionAudioMode: getExpressionAudioMode,
     openIncompleteSummaryConfirm: openIncompleteSummaryConfirm,
     tryGateExpressionMicCheckBeforeNavigatingTo: tryGateExpressionMicCheckBeforeNavigatingTo,
     tryDeferExpressionIntroBeforeNavigatingTo: tryDeferExpressionIntroBeforeNavigatingTo,

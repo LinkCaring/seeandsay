@@ -47,6 +47,11 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
   });
   var parentPhone = parentPhoneState[0];
   var setParentPhone = parentPhoneState[1];
+  var expressionAudioModeState = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem("expressionAudioMode") || "\"legacy\""); } catch (e) { return "legacy"; }
+  });
+  var expressionAudioMode = expressionAudioModeState[0];
+  var setExpressionAudioMode = expressionAudioModeState[1];
   var micPermissionErrorState = React.useState("");
   var micPermissionError = micPermissionErrorState[0];
   var setMicPermissionError = micPermissionErrorState[1];
@@ -115,6 +120,8 @@ function Welcome({ lang, setPage, onRequestStartTest }) {
     setLegalConfirmation: setLegalConfirmation,
     parentPhone: parentPhone,
     setParentPhone: setParentPhone,
+    expressionAudioMode: expressionAudioMode,
+    setExpressionAudioMode: setExpressionAudioMode,
     micPermissionError: micPermissionError,
     setMicPermissionError: setMicPermissionError,
     loginSubmitting: loginSubmitting,

@@ -87,6 +87,10 @@
       mods.setPersistentValue("recordingConsent", !!ctx.recordingConsent);
       mods.setPersistentValue("legalConfirmation", !!ctx.legalConfirmation);
       mods.setPersistentValue("parentPhone", ctx.parentPhone ? String(ctx.parentPhone).trim() : "");
+      mods.setPersistentValue(
+        "expressionAudioMode",
+        ctx.expressionAudioMode === "incremental" ? "incremental" : "legacy"
+      );
       mods.setPersistentValue("ageYears", String(derivedAge.years));
       mods.setPersistentValue("ageMonths", String(derivedAge.months));
       mods.setPersistentValue("ageInvalid", false);
@@ -220,6 +224,34 @@
               ctx.setParentPhone(e.target.value);
             },
           }),
+          React.createElement(
+            "label",
+            { className: "start-consent-row", style: { alignItems: "center", gap: "8px" } },
+            React.createElement(
+              "span",
+              { style: { color: "#1c3b53", minWidth: "140px" } },
+              mods.tr("test.start.expressionAudioMode", ctx.isEn ? "Recording mode" : "מצב הקלטה")
+            ),
+            React.createElement(
+              "select",
+              {
+                value: ctx.expressionAudioMode || "legacy",
+                onChange: function (e) {
+                  ctx.setExpressionAudioMode(e.target.value === "incremental" ? "incremental" : "legacy");
+                },
+              },
+              React.createElement(
+                "option",
+                { value: "legacy" },
+                mods.tr("test.start.expressionAudioMode.legacy", ctx.isEn ? "Legacy (full test upload)" : "רגיל (העלאה מלאה בסוף)")
+              ),
+              React.createElement(
+                "option",
+                { value: "incremental" },
+                mods.tr("test.start.expressionAudioMode.incremental", ctx.isEn ? "Incremental (per expression question)" : "אינקרמנטלי (לפי שאלת הבעה)")
+              )
+            )
+          ),
           React.createElement(
             "label",
             { className: "start-consent-row" },

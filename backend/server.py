@@ -456,7 +456,7 @@ class AddTestRequest(BaseModel):
     wrong: Optional[int] = None
     audioFile64: Optional[str] = None
     audioBlobPath: Optional[str] = None
-    timestamps: str
+    timestamps: Optional[str] = ""
     childGender: Optional[str] = None
     testId: Optional[str] = None
     clientInfo: Optional[Dict[str, Any]] = None
@@ -465,6 +465,23 @@ class AddTestRequest(BaseModel):
 class PrepareUploadRequest(BaseModel):
     userId: int
     testId: str
+
+
+class PrepareSegmentUploadRequest(BaseModel):
+    userId: int
+    testId: str
+    questionNumber: str
+
+
+class ExpressionSegmentRequest(BaseModel):
+    userId: int
+    testId: str
+    questionNumber: str
+    blobPath: str
+    headlightResult: Optional[str] = None
+    childGender: Optional[str] = None
+    ageYears: Optional[int] = None
+    ageMonths: Optional[int] = None
 
 
 # Routes
@@ -552,6 +569,64 @@ def prepare_upload(body: PrepareUploadRequest):
     }
 
 
+@app.post("/api/tests/prepareSegmentUpload")
+def prepare_segment_upload(body: PrepareSegmentUploadRequest):
+    if not azure_blob.is_configured():
+        raise HTTPException(status_code=503, detail="Azure Blob storage is not configured")
+    test_id = str(body.testId).strip()
+    qn = str(body.questionNumber).strip()
+    if not test_id or not qn:
+        raise HTTPException(status_code=400, detail="testId and questionNumber are required")
+    blob_path = azure_blob.expression_segment_blob_path(body.userId, test_id, qn)
+    return {
+        "success": True,
+        "testId": test_id,
+        "questionNumber": qn,
+        "blobPath": blob_path,
+        "uploadUrl": azure_blob.build_upload_url(blob_path),
+    }
+
+
+@app.post("/api/tests/expressionSegment")
+def expression_segment(body: ExpressionSegmentRequest, background_tasks: BackgroundTasks):
+    if not azure_blob.is_configured():
+        raise HTTPException(status_code=503, detail="Azure Blob storage is not configured")
+    test_id = str(body.testId).strip()
+    qn = str(body.questionNumber).strip()
+    if not test_id or not qn:
+        raise HTTPException(status_code=400, detail="testId and questionNumber are required")
+    ok, _size = azure_blob.verify_blob_exists(body.blobPath)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Segment audio not found in Azure yet")
+
+    pending_expression_ai = _build_pending_expression_ai_payload(
+        test_id=test_id,
+        started_at=datetime.utcnow().isoformat() + "Z",
+        expression_question_count=0,
+        phase="scoring_questions",
+        processed_questions=0,
+        per_question_rows=[],
+    )
+    storage.ensure_test_shell(body.userId, test_id, expression_ai=pending_expression_ai)
+    segment = {
+        "questionNumber": qn,
+        "blobPath": body.blobPath,
+        "uploadedAt": datetime.utcnow().isoformat() + "Z",
+        "headlightResult": body.headlightResult,
+    }
+    storage.upsert_expression_segment(body.userId, test_id, segment)
+    background_tasks.add_task(
+        _run_expression_segment_background,
+        body.userId,
+        test_id,
+        qn,
+        body.blobPath,
+        body.headlightResult,
+        body.childGender,
+    )
+    return {"success": True, "testId": test_id, "questionNumber": qn}
+
+
 @app.post("/api/addTestToUser")
 def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     logger.warning(f"Received user test: {test.userId}")
@@ -572,7 +647,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
     test_id = str(test.testId).strip() if test.testId else str(uuid.uuid4())
 
     existing = storage.get_user_test_by_id(test.userId, test_id)
-    if existing:
+    if existing and not existing.get("isDraftShell"):
         existing_ai = existing.get("expressionAI") or {}
         return {
             "success": True,
@@ -584,6 +659,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
 
     audio_blob_path = (test.audioBlobPath or "").strip() or None
     audio_file64 = test.audioFile64
+    expression_mode = ((test.clientInfo or {}).get("expressionAudioMode") or "legacy").strip().lower()
 
     if audio_blob_path:
         if not azure_blob.is_configured():
@@ -596,7 +672,7 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
             )
         logger.info("Verified audio blob for test %s (size=%s)", test_id, size)
         audio_file64 = None
-    elif not audio_file64:
+    elif not audio_file64 and expression_mode != "incremental":
         raise HTTPException(status_code=400, detail="audioBlobPath or audioFile64 is required")
 
     expression_items = _parse_expression_results_from_full_array(test.full_array)
@@ -609,48 +685,112 @@ def add_test(test: AddTestRequest, background_tasks: BackgroundTasks):
         processed_questions=0,
         per_question_rows=[],
     )
+    response_expression_ai = pending_expression_ai
 
     results_access = _build_results_access()
 
-    success = storage.add_test_to_user(
-        user_id=test.userId,
-        age_years=test.ageYears,
-        age_months=test.ageMonths,
-        full_array=test.full_array,
-        correct=test.correct,
-        partly=test.partly,
-        wrong=test.wrong,
-        audio_file_base64=audio_file64,
-        audio_blob_path=audio_blob_path,
-        updated_transcription=updated_transcription["updated_transcription"],
-        timestamps=test.timestamps,
-        expression_ai=pending_expression_ai,
-        test_id=test_id,
-        client_info=test.clientInfo,
-        results_access=results_access,
-    )
+    if existing and existing.get("isDraftShell"):
+        existing_expression_ai = (existing.get("expressionAI") or {}) if isinstance(existing, dict) else {}
+        preserve_expression_ai = pending_expression_ai
+        if expression_mode == "incremental" and existing_expression_ai.get("per_question"):
+            preserve_expression_ai = existing_expression_ai
+        success = storage.finalize_test_shell(
+            user_id=test.userId,
+            test_id=test_id,
+            fields={
+                "dateFinished": datetime.now(),
+                "ageYears": test.ageYears,
+                "ageMonths": test.ageMonths,
+                "fullArray": test.full_array,
+                "correct": test.correct,
+                "partly": test.partly,
+                "wrong": test.wrong,
+                "transcription": updated_transcription["updated_transcription"],
+                "timestamps": test.timestamps,
+                "audioBlobPath": audio_blob_path,
+                "audioFile64": audio_file64 if not audio_blob_path else None,
+                "clientInfo": test.clientInfo or {},
+                "resultsAccess": results_access,
+                "expressionAI": preserve_expression_ai,
+            },
+        )
+        response_expression_ai = preserve_expression_ai
+    else:
+        success = storage.add_test_to_user(
+            user_id=test.userId,
+            age_years=test.ageYears,
+            age_months=test.ageMonths,
+            full_array=test.full_array,
+            correct=test.correct,
+            partly=test.partly,
+            wrong=test.wrong,
+            audio_file_base64=audio_file64,
+            audio_blob_path=audio_blob_path,
+            updated_transcription=updated_transcription["updated_transcription"],
+            timestamps=test.timestamps,
+            expression_ai=pending_expression_ai,
+            test_id=test_id,
+            client_info=test.clientInfo,
+            results_access=results_access,
+        )
+        response_expression_ai = pending_expression_ai
     if not success:
         raise HTTPException(status_code=404, detail="User not found or exam not added")
 
-    background_tasks.add_task(
-        _run_expression_ai_background,
-        test.userId,
-        test_id,
-        test.full_array,
-        test.timestamps,
-        audio_file64,
-        test.childGender,
-        test.ageYears,
-        test.ageMonths,
-        started_at,
-        audio_blob_path,
-    )
+    if expression_mode == "incremental":
+        segments = storage.get_test_expression_segments(test.userId, test_id)
+        rows = (storage.get_test_expression_ai(test.userId, test_id) or {}).get("per_question") or []
+        payload = {
+            "status": "pending",
+            "test_id": test_id,
+            "started_at": started_at,
+            "per_question": rows,
+            "summary": _aggregate_expression_ai(rows),
+            "meta": {
+                "expression_question_count": len(_parse_expression_results_from_full_array(test.full_array)),
+                "parent_ai_comparison": {"status": "pending", "rows": []},
+                "progress": {
+                    "phase": "building_impression",
+                    "processed_questions": len(rows),
+                    "total_questions": len(_parse_expression_results_from_full_array(test.full_array)),
+                    "last_updated_at": datetime.utcnow().isoformat() + "Z",
+                },
+                "uploaded_segments": len(segments),
+            },
+            "expressive_language_impression": {"status": "pending"},
+        }
+        storage.update_test_expression_ai(user_id=test.userId, test_id=test_id, expression_ai=payload)
+        response_expression_ai = payload
+        background_tasks.add_task(
+            _finalize_incremental_expression_ai_background,
+            test.userId,
+            test_id,
+            test.full_array,
+            test.childGender,
+            test.ageYears,
+            test.ageMonths,
+            started_at,
+        )
+    else:
+        background_tasks.add_task(
+            _run_expression_ai_background,
+            test.userId,
+            test_id,
+            test.full_array,
+            test.timestamps,
+            audio_file64,
+            test.childGender,
+            test.ageYears,
+            test.ageMonths,
+            started_at,
+            audio_blob_path,
+        )
 
     return {
         "success": True,
         "test_id": test_id,
         "transcription": updated_transcription["updated_transcription"],
-        "expression_ai": pending_expression_ai,
+        "expression_ai": response_expression_ai,
     }
 
 
@@ -961,6 +1101,268 @@ def _compute_expression_ai_payload(
         },
         "expressive_language_impression": expressive_language_impression,
     }
+
+
+def _score_single_expression_from_blob(
+    question_number,
+    headlight_result,
+    blob_path,
+    child_gender,
+):
+    rubric = EXPRESSION_RUBRICS.get(str(question_number))
+    if not rubric:
+        return {
+            "question_number": int(question_number),
+            "headlight_result": headlight_result,
+            "ai_score": 1,
+            "ai_confidence": 0.0,
+            "ai_reason_short": "missing_csv_rubric",
+            "ai_flags": ["needs_manual_review"],
+            "ai_speaker_observation": None,
+            "timestamp_start_sec": 0,
+            "timestamp_end_sec": GEMINI_MAX_SEGMENT_SECONDS,
+        }
+    try:
+        audio_bytes = azure_blob.download_blob_bytes(blob_path)
+    except Exception:
+        return {
+            "question_number": int(question_number),
+            "headlight_result": headlight_result,
+            "ai_score": 1,
+            "ai_confidence": 0.0,
+            "ai_reason_short": "audio_decode_failed",
+            "ai_flags": ["audio_decode_failed", "needs_manual_review"],
+            "ai_speaker_observation": None,
+            "timestamp_start_sec": 0,
+            "timestamp_end_sec": GEMINI_MAX_SEGMENT_SECONDS,
+        }
+    question_text = _question_text_for_gender(rubric, child_gender)
+    ai = score_expression_with_gemini_bytes(
+        audio_bytes=audio_bytes,
+        question_prompt=question_text,
+        expected_full=rubric.get("expected_full") or "",
+        expected_partial=rubric.get("expected_partial") or "",
+        expected_wrong=rubric.get("expected_wrong") or "",
+    ) or {
+        "score": 1,
+        "confidence": 0.0,
+        "reason_short": "gemini_unavailable",
+        "flags": ["needs_manual_review"],
+        "speaker_observation": "manual_review_fallback",
+    }
+    return {
+        "question_number": int(question_number),
+        "headlight_result": headlight_result,
+        "ai_score": ai.get("score"),
+        "ai_confidence": ai.get("confidence"),
+        "ai_reason_short": ai.get("reason_short"),
+        "ai_flags": ai.get("flags"),
+        "ai_speaker_observation": ai.get("speaker_observation"),
+        "timestamp_start_sec": 0,
+        "timestamp_end_sec": GEMINI_MAX_SEGMENT_SECONDS,
+    }
+
+
+def _run_expression_segment_background(
+    user_id,
+    test_id,
+    question_number,
+    blob_path,
+    headlight_result,
+    child_gender,
+):
+    try:
+        row = _score_single_expression_from_blob(
+            question_number=question_number,
+            headlight_result=headlight_result or "wrong",
+            blob_path=blob_path,
+            child_gender=child_gender,
+        )
+        current = storage.get_test_expression_ai(user_id=user_id, test_id=test_id) or {}
+        rows = current.get("per_question") or []
+        q_key = str(question_number)
+        next_rows = [r for r in rows if str(r.get("question_number")) != q_key] + [row]
+        total = max(len(_parse_expression_results_from_full_array((storage.get_user_test_by_id(user_id, test_id) or {}).get("fullArray") or "")), len(next_rows))
+        phase = "building_impression" if len(next_rows) >= total else "scoring_questions"
+        pending = _build_pending_expression_ai_payload(
+            test_id=test_id,
+            started_at=current.get("started_at") or datetime.utcnow().isoformat() + "Z",
+            expression_question_count=total,
+            phase=phase,
+            processed_questions=len(next_rows),
+            per_question_rows=next_rows,
+        )
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=pending)
+    except Exception as e:
+        logger.error("Segment scoring failed for test %s q%s: %s", test_id, question_number, e)
+
+
+def _finalize_incremental_expression_ai_background(
+    user_id,
+    test_id,
+    full_array,
+    child_gender,
+    age_years,
+    age_months,
+    started_at,
+):
+    """Finalize incremental mode by building impression over scored segment rows."""
+    try:
+        expression_items = _parse_expression_results_from_full_array(full_array)
+        total_expression_items = len(expression_items)
+        latest = storage.get_user_test_by_id(user_id, test_id) or {}
+        rows = (latest.get("expressionAI") or {}).get("per_question") or []
+        segments = latest.get("expressionSegments") or []
+
+        by_q = {}
+        for seg in segments:
+            q = str(seg.get("questionNumber") or "")
+            if q:
+                by_q[q] = seg
+
+        existing_by_q = {}
+        for row in rows:
+            rq = str(row.get("question_number") or "")
+            if rq:
+                existing_by_q[rq] = row
+
+        # Backfill missing scored rows from already uploaded segments.
+        for qn, headlight_result in expression_items:
+            q_key = str(qn)
+            if q_key in existing_by_q:
+                continue
+            seg = by_q.get(q_key) or {}
+            blob_path = (seg.get("blobPath") or "").strip()
+            if not blob_path:
+                continue
+            try:
+                extra_row = _score_single_expression_from_blob(
+                    question_number=q_key,
+                    headlight_result=seg.get("headlightResult") or headlight_result or "wrong",
+                    blob_path=blob_path,
+                    child_gender=child_gender,
+                )
+                rows.append(extra_row)
+                existing_by_q[q_key] = extra_row
+            except Exception as score_err:
+                logger.error("Incremental backfill score failed for test %s q%s: %s", test_id, q_key, score_err)
+
+        impression_pool = []
+        for row in rows:
+            qn = str(row.get("question_number") or "")
+            if not qn:
+                continue
+            seg = by_q.get(qn) or {}
+            blob_path = (seg.get("blobPath") or "").strip()
+            if not blob_path:
+                continue
+            try:
+                clip_bytes = azure_blob.download_blob_bytes(blob_path)
+            except Exception:
+                continue
+            rubric = EXPRESSION_RUBRICS.get(qn) or {}
+            question_text = _question_text_for_gender(rubric, child_gender)
+            goal_bits = [
+                (rubric.get("category_pls") or "").strip(),
+                (rubric.get("sub_category_pls") or "").strip(),
+                (rubric.get("test_goal") or "").strip(),
+            ]
+            linguistic_goal_line = " · ".join(g for g in goal_bits if g)
+            hint_lines = []
+            if (rubric.get("comments") or "").strip():
+                hint_lines.append((rubric.get("comments") or "").strip())
+            if (rubric.get("facilitator_hint") or "").strip():
+                hint_lines.append((rubric.get("facilitator_hint") or "").strip())
+            impression_pool.append({
+                "question_number": int(qn),
+                "headlight_result": row.get("headlight_result"),
+                "audio_bytes": clip_bytes,
+                "question_text": question_text,
+                "context_hint": "\n".join(hint_lines),
+                "linguistic_goal_line": linguistic_goal_line,
+                "pls_semantics_area": (rubric.get("category_pls") or "").strip(),
+                "pls_category": (rubric.get("sub_category_pls") or "").strip(),
+            })
+
+        ay = int(age_years) if age_years is not None else 0
+        am = int(age_months) if age_months is not None else 0
+        child_age_label_he = f"{ay} שנים ו-{am} חודשים"
+        expressive_language_impression = {
+            "status": "skipped",
+            "reason": "no_eligible_samples",
+            "sample_count_used": 0,
+            "data_quality": "limited",
+            "limitations_he": "לא נאספו דגימות הבעה עם קטע שמע תקין.",
+        }
+        if impression_pool:
+            k = min(EXPRESSION_IMPRESSION_SAMPLE_CAP, len(impression_pool))
+            chosen = random.sample(impression_pool, k=k) if k else []
+            entries = []
+            for c in chosen:
+                entries.append({
+                    "question_number": c["question_number"],
+                    "headlight_result": c["headlight_result"],
+                    "question_text": c["question_text"],
+                    "context_hint": c.get("context_hint") or "",
+                    "linguistic_goal_line": c.get("linguistic_goal_line") or "",
+                    "pls_semantics_area": c.get("pls_semantics_area") or "",
+                    "pls_category": c.get("pls_category") or "",
+                    "audio_bytes": c["audio_bytes"],
+                })
+            comprehension_context_he = _build_comprehension_impression_context_he(
+                full_array, child_gender
+            )
+            try:
+                imp = summarize_expressive_language_impression_gemini(
+                    entries,
+                    child_age_label_he,
+                    max_output_tokens=GEMINI_IMPRESSION_MAX_OUTPUT_TOKENS,
+                    comprehension_context_he=comprehension_context_he or None,
+                )
+            except Exception as imp_err:
+                logger.error("Incremental impression build failed for test %s: %s", test_id, imp_err)
+                imp = None
+            if imp:
+                expressive_language_impression = {
+                    "status": "done",
+                    **imp,
+                    "samples_submitted": len(entries),
+                }
+            else:
+                expressive_language_impression = {
+                    "status": "failed",
+                    "reason": "model_unavailable_or_invalid_json",
+                    "sample_count_used": 0,
+                    "data_quality": "limited",
+                    "limitations_he": "לא ניתן היה להפיק התרשמות אוטומטית (שירות המודל או פלט לא תקין).",
+                }
+
+        payload = {
+            "status": "done",
+            "test_id": test_id,
+            "started_at": started_at,
+            "completed_at": datetime.utcnow().isoformat() + "Z",
+            "per_question": rows,
+            "summary": _aggregate_expression_ai(rows),
+            "meta": {
+                "expression_question_count": total_expression_items,
+                "parent_ai_comparison": {
+                    "status": "done",
+                    **_build_parent_ai_comparison(expression_items, rows),
+                },
+                "progress": {
+                    "phase": "done",
+                    "processed_questions": len(rows),
+                    "total_questions": total_expression_items,
+                    "last_updated_at": datetime.utcnow().isoformat() + "Z",
+                },
+                "uploaded_segments": len(segments),
+            },
+            "expressive_language_impression": expressive_language_impression,
+        }
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+    except Exception as e:
+        logger.error("Incremental finalize failed for test %s: %s", test_id, e)
 
 
 def _build_failed_expression_ai_payload(test_id, started_at, total_expression_items, error_message, per_question_rows):

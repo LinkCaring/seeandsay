@@ -184,13 +184,61 @@ class SeeSayMongoStorage:
             logger.error(f"❌ Error getting latest test for user {user_id}: {e}")
             return None
 
+    def ensure_test_shell(self, user_id, test_id, expression_ai=None):
+        """Create lightweight draft test shell if not exists."""
+        try:
+            existing = self.get_user_test_by_id(user_id, test_id)
+            if existing:
+                return True
+            draft = {
+                "testId": str(test_id),
+                "dateFinished": datetime.now(),
+                "isDraftShell": True,
+                "ageYears": 0,
+                "ageMonths": 0,
+                "fullArray": "{}",
+                "correct": 0,
+                "partly": 0,
+                "wrong": 0,
+                "transcription": "None",
+                "timestamps": "",
+                "audioFile64": None,
+                "audioBlobPath": None,
+                "expressionAI": expression_ai or {},
+                "expressionSegments": [],
+            }
+            result = self.users_collection.update_one(
+                {"userId": user_id},
+                {"$push": {"tests": draft}},
+            )
+            return result.matched_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error ensuring test shell for user {user_id}: {e}")
+            return False
+
+    def finalize_test_shell(self, user_id, test_id, fields):
+        """Merge final metadata into existing draft shell."""
+        try:
+            set_fields = {}
+            for k, v in (fields or {}).items():
+                set_fields[f"tests.$.{k}"] = v
+            set_fields["tests.$.isDraftShell"] = False
+            result = self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": str(test_id)},
+                {"$set": set_fields},
+            )
+            return result.matched_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error finalizing test shell for user {user_id} test {test_id}: {e}")
+            return False
+
     def add_test_to_user(self,
                          user_id,age_years,age_months,
                          full_array,correct, partly, wrong,
                          audio_file_base64,updated_transcription, timestamps,
                          expression_ai=None, test_id=None,
                          audio_blob_path=None, client_info=None,
-                         results_access=None):
+                         results_access=None, expression_segments=None):
         """
         Adds a new exam record to the 'tests' array of a specific user.
         Time_took --> how long it took to finish
@@ -222,6 +270,8 @@ class SeeSayMongoStorage:
 
             if results_access and isinstance(results_access, dict):
                 new_test['resultsAccess'] = results_access
+            if isinstance(expression_segments, list):
+                new_test["expressionSegments"] = expression_segments
 
             ## Save
             result = self.users_collection.update_one(
@@ -245,6 +295,36 @@ class SeeSayMongoStorage:
         except Exception as e:
             logger.error(f"❌ Error adding test for user {user_id}: {e}")
             return False
+
+    def upsert_expression_segment(self, user_id, test_id, segment):
+        """Idempotent by questionNumber on tests.$.expressionSegments array."""
+        try:
+            qn = str(segment.get("questionNumber") or "").strip()
+            if not qn:
+                return False
+            self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": str(test_id)},
+                {"$pull": {"tests.$.expressionSegments": {"questionNumber": qn}}},
+            )
+            result = self.users_collection.update_one(
+                {"userId": user_id, "tests.testId": str(test_id)},
+                {"$push": {"tests.$.expressionSegments": segment}},
+            )
+            return result.matched_count == 1
+        except Exception as e:
+            logger.error(f"❌ Error upserting expression segment: {e}")
+            return False
+
+    def get_test_expression_segments(self, user_id, test_id):
+        try:
+            test = self.get_user_test_by_id(user_id, test_id)
+            if not test:
+                return []
+            rows = test.get("expressionSegments") or []
+            return rows if isinstance(rows, list) else []
+        except Exception as e:
+            logger.error(f"❌ Error getting expression segments: {e}")
+            return []
 
     def update_test_expression_ai(self, user_id, test_id, expression_ai):
         """

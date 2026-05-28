@@ -395,9 +395,9 @@
       const currentQuestion = ctx.questions[currentIdx];
 
       let updatedQuestionResults = ctx.questionResults;
+      let resultString = "";
 
       if (currentQuestion) {
-        let resultString = "";
         let expressionCakeCategory = null;
         if (result === "success") {
           resultString = "correct";
@@ -519,13 +519,27 @@
         }
       }
 
+      function enqueueExpressionUploadAfterAdvance() {
+        if (typeof ctx.getExpressionAudioMode !== "function") return;
+        if (ctx.getExpressionAudioMode() !== "incremental") return;
+        if (!currentQuestion || currentQuestion.query_type !== "הבעה") return;
+        if (typeof ctx.enqueueExpressionSegmentUpload !== "function") return;
+        setTimeout(function () {
+          ctx.enqueueExpressionSegmentUpload(currentQuestion, resultString).catch(function () {});
+        }, 0);
+      }
+
       if (shouldRunThreeInRowCelebration) {
-        ctx.startThreeInRowCelebration(advanceAfterResult);
+        ctx.startThreeInRowCelebration(function () {
+          advanceAfterResult();
+          enqueueExpressionUploadAfterAdvance();
+        });
         return;
       }
 
       // All non-celebration paths continue immediately.
       advanceAfterResult();
+      enqueueExpressionUploadAfterAdvance();
     }
 
     return {
