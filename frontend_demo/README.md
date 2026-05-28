@@ -1,6 +1,6 @@
 # MILI — Web demo (`frontend_demo/`)
 
-**MILI** (מיל"י) is the browser game parents and children use: onboarding, age-tailored questions, session audio recording, and a results screen with optional AI feedback.
+**MILI** (מיל"י) is the browser game parents and children use: onboarding, age-tailored questions, selectable recording strategy (`legacy` / `incremental`), and a results screen with optional AI feedback.
 
 This folder is the **deployable frontend**. There is no build step — the browser loads scripts listed in [`index.html`](index.html). The git repo is still named `seeandsay`. JavaScript globals use the **`Mili*`** prefix (`MiliTestModules`, `MiliTestSession`, …). **`localStorage` / `sessionStorage` keys** still use the `seeandsay*` prefix so existing saved progress keeps working.
 
@@ -65,15 +65,15 @@ index.html
     → app.js mounts App()
          │
          ├─ page === "home"  →  Welcome (onboarding)
-         │       screen1 (intro)
-         │       → screen2_login (child profile, consents, mic) → createUser API
+        │       screen1 (intro)
+        │       → screen2_login (child profile, consents, mic, recording mode) → createUser API
          │       → screen1_video (avatar intro)
          │       → screen3 (how it works) → setPage("test")
          │
          └─ page === "test"   →  Test (game)
                  → optional: age invalid / mic gate / compr & exp intro videos
                  → question loop (comprehension + expression)
-                 → session complete → upload audio + results → summary UI
+                 → session complete → mode-specific upload/finalize + summary UI
                  → user can go home; progress may resume from localStorage
 ```
 
@@ -241,13 +241,23 @@ For line-level module ownership and QA checklist, see [`docs/TEST_MODULE_MAP.md`
 
 ## Session recording
 
+At login, the parent chooses expression recording mode:
+
+- **`legacy`**: one continuous recorder for the session, with per-question timestamps.
+- **`incremental`**: each expression answer creates a short segment; upload and scoring run in the background during the test.
+
 | Layer | What it does |
 |-------|----------------|
 | `record_session/*` | Implementation (capture, timestamps, encode) |
 | `recording.js` | Facade → **`SessionRecorder`** global |
-| `test.js` + modules | `startContinuousRecording`, `markQuestionStart` / `markQuestionEnd`, pause with navbar |
+| `js/record_session/expressionSegmentRecorder.js` | Incremental segment capture (one segment per expression question) |
+| `js/test/expression/expressionSegmentUploadQueue.js` | Incremental async queue: encode + upload + register segment |
+| `test.js` + modules | Starts mode-specific recording flow, marks timestamps in legacy, and enqueues segment uploads in incremental |
 
-On finish, `testSessionFinish.js` waits for the MP3 blob, uploads to Azure via SAS from the backend, then sends scores and timestamp text with `updateUserTests`.
+On finish, `testSessionFinish.js` branches by mode:
+
+- **`legacy`**: waits for session MP3, uploads via SAS, then calls `updateUserTests` with scores + timestamp text.
+- **`incremental`**: drains pending segment uploads, skips full-session blob upload, then calls `updateUserTests` for metadata-only finalize.
 
 ---
 
@@ -258,6 +268,9 @@ Client: [`js/api/apiToMongo.js`](js/api/apiToMongo.js). Server: [`../backend/ser
 | Step | Client function | Endpoint |
 |------|-----------------|----------|
 | After login | `createUser` (optional `parentPhone`) | `POST /api/createUser` |
+| During test (incremental) | `prepareSegmentUpload` | `POST /api/tests/prepareSegmentUpload` |
+| During test (incremental) | `putSessionAudioToBlob` (segment PUT) | `PUT` Azure SAS URL |
+| During test (incremental) | `registerExpressionSegment` | `POST /api/tests/expressionSegment` |
 | End of game (1) | `prepareAudioUpload` | `POST /api/tests/prepareUpload` |
 | End of game (2) | `putSessionAudioToBlob` | `PUT` Azure SAS URL |
 | End of game (3) | `updateUserTests` | `POST /api/addTestToUser` |
@@ -270,7 +283,10 @@ Client: [`js/api/apiToMongo.js`](js/api/apiToMongo.js). Server: [`../backend/ser
 
 **Demo note:** `USE_TEMP_RANDOM_BACKEND_USER_ID` maps demo string ids to a random integer per tab until the API accepts string `userId`s.
 
-Transcription and expression scoring run on the server after upload; this folder only polls status for the summary UI.
+Expression scoring runs on the server in both modes:
+
+- **`legacy`**: mainly after finish, using slices from the uploaded session audio.
+- **`incremental`**: continuously during test from uploaded expression segments, then impression finalize after finish.
 
 ---
 

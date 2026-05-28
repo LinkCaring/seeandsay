@@ -1,6 +1,6 @@
 # MILI (See&Say)
 
-**MILI** (מיל"י) is a browser-based language game for children: onboarding, age-tailored comprehension and expression questions, one continuous session recording, and a results screen with optional AI feedback on expressive answers.
+**MILI** (מיל"י) is a browser-based language game for children: onboarding, age-tailored comprehension and expression questions, selectable expression recording strategy (`legacy` or `incremental`), and a results screen with optional AI feedback on expressive answers.
 
 This repository holds the **web demo** (`frontend_demo/`) and the **API** (`backend/`). The git repo is still named `seeandsay`; production API host is `seeandsay-backend.onrender.com`. User-facing branding is **MILI**; storage keys and infra names were kept for compatibility.
 
@@ -31,6 +31,7 @@ flowchart LR
   subgraph browser [Browser — frontend_demo]
     UI[MILI UI]
     REC[SessionRecorder]
+    SEG[Expression segment recorder + queue]
     API_JS[apiToMongo.js]
   end
   subgraph api [backend — FastAPI]
@@ -42,9 +43,11 @@ flowchart LR
   CSV[query_database.csv]
 
   UI --> REC
+  UI --> SEG
   UI --> API_JS
   API_JS -->|REST /api/*| SRV
-  REC -->|PUT session.mp3| BLOB
+  REC -->|PUT session.mp3 (legacy)| BLOB
+  SEG -->|PUT qN segment (incremental)| BLOB
   SRV --> DB
   SRV --> BLOB
   SRV --> GEM
@@ -52,9 +55,14 @@ flowchart LR
 ```
 
 1. **Onboarding** — child profile, consents, mic check → `POST /api/createUser`.
-2. **Test** — questions from CSV; continuous recording with per-question timestamps.
-3. **Finish** — `prepareUpload` → upload MP3 to Azure → `addTestToUser` with scores and timestamps.
-4. **Background** — server runs expression AI (Gemini) on audio segments.
+2. **Choose mode at login** — `legacy` (full-session upload at finish) or `incremental` (per-expression uploads during the test).
+3. **Test**
+   - `legacy`: continuous recording with per-question timestamps.
+   - `incremental`: each expression question creates a short segment and queues background upload/scoring.
+4. **Finish**
+   - `legacy`: `prepareUpload` → upload `session.mp3` → `addTestToUser` with timestamps.
+   - `incremental`: wait for pending segment uploads, then `addTestToUser` metadata-only finalize (no full session blob).
+5. **Background** — server runs expression AI (Gemini) either from full-session slices (`legacy`) or from uploaded per-question segments (`incremental`), then builds impression.
 5. **Summary** — client polls `GET /api/expressionAiStatus` for scores and Hebrew impression text.
 
 ---
@@ -86,8 +94,9 @@ On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **
 
 ### 3. Smoke check
 
-- Login → start test → finish session → summary shows AI status progressing.
-- Network tab: `createUser`, `prepareUpload`, blob PUT, `addTestToUser`, `expressionAiStatus` return 200.
+- Login → select recording mode (`legacy` or `incremental`) → start test → finish session.
+- Legacy network flow: `createUser`, `prepareUpload`, blob PUT (`session.mp3`), `addTestToUser`, `expressionAiStatus`.
+- Incremental network flow: `createUser`, repeated `prepareSegmentUpload` + segment blob PUT + `expressionSegment`, then `addTestToUser`, `expressionAiStatus`.
 
 ---
 
