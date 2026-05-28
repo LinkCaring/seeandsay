@@ -55,6 +55,11 @@ const SessionRecorder = (function () {
     localStorage.removeItem("sessionRecordingFinalMeta");
     localStorage.removeItem("sessionRecordingChunks");
     encode.clearFinalRecording();
+    // If a stale waiter exists, avoid surfacing an unhandled rejection during
+    // non-finish cleanup paths (e.g. preparing expression phase recording).
+    if (state.finalBlobReadyPromise && typeof state.finalBlobReadyPromise.catch === "function") {
+      state.finalBlobReadyPromise.catch(function () {});
+    }
     encode.settleFinalBlobReadyFailure(new Error("Session recording cleanup"));
     capture.clearRecordingInterrupted();
     if (!preserveTs) {

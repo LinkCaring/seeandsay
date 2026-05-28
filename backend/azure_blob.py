@@ -34,6 +34,11 @@ def session_blob_path(user_id: int | str, test_id: str) -> str:
     return f"tests/{user_id}/{test_id}/session.mp3"
 
 
+def expression_segment_blob_path(user_id: int | str, test_id: str, question_number: str | int) -> str:
+    qn = str(question_number).strip()
+    return f"tests/{user_id}/{test_id}/expression/q{qn}.mp3"
+
+
 def build_upload_url(blob_path: str) -> str:
     account = _account()
     container = _container()

@@ -6,6 +6,9 @@
   function createSessionFinish(getCtx) {
     function completeSession(updatedQuestionResults) {
       var ctx = getCtx();
+      function isIncrementalMode() {
+        return typeof ctx.getExpressionAudioMode === "function" && ctx.getExpressionAudioMode() === "incremental";
+      }
       // If test is paused, unpause it first
       if (ctx.isPaused) {
         ctx.setIsPaused(false);
@@ -148,6 +151,45 @@
       async function runRecordingFinishPipeline() {
         var pipelineCtx = getCtx();
         var fullArray = pipelineCtx.formatQuestionResultsArray(resultsForFinish);
+        if (isIncrementalMode()) {
+          if (typeof pipelineCtx.waitForExpressionSegmentQueueIdle === "function") {
+            try {
+              pipelineCtx.setTestUploadState("saving_metadata");
+              seedLocalExpressionUploadPhase("scoring_questions");
+              await pipelineCtx.waitForExpressionSegmentQueueIdle(30000);
+            } catch (idleErr) {}
+          }
+          var segStats =
+            typeof pipelineCtx.getExpressionSegmentUploadStats === "function"
+              ? pipelineCtx.getExpressionSegmentUploadStats()
+              : { pending: 0, completed: 0, failed: 0 };
+          var hasUploadedSegments = (segStats && segStats.completed > 0);
+          if (!hasUploadedSegments) {
+            console.warn(
+              "[incremental] no uploaded segments before finish; falling back to legacy full-audio upload"
+            );
+          } else {
+          pipelineCtx.setTestUploadState("saving_metadata");
+          pipelineCtx.expressionPhaseRecordingStartedRef.current = false;
+          pipelineCtx.setSessionCompleted(true);
+          var incrementalResult = await pipelineCtx.updateUserTests(
+            pipelineCtx.idDigits,
+            pipelineCtx.ageYears,
+            pipelineCtx.ageMonths,
+            fullArray,
+            pipelineCtx.correctAnswers,
+            pipelineCtx.partialAnswers,
+            pipelineCtx.wrongAnswers,
+            null,
+            null,
+            pipelineCtx.childGender,
+            null,
+            pipelineCtx.ensurePendingTestId()
+          );
+          handleUploadResult(incrementalResult);
+          return;
+          }
+        }
         pipelineCtx.setTestUploadState("preparing_recording");
 
         if (typeof SessionRecorder !== "undefined" && SessionRecorder.stopContinuousRecording) {
