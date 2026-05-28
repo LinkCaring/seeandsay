@@ -152,11 +152,18 @@
         var pipelineCtx = getCtx();
         var fullArray = pipelineCtx.formatQuestionResultsArray(resultsForFinish);
         if (isIncrementalMode()) {
+          var scoreBuckets = null;
+          if (typeof pipelineCtx.reconcileSessionScoreCounters === "function") {
+            scoreBuckets = pipelineCtx.reconcileSessionScoreCounters(resultsForFinish);
+          }
+          if (typeof pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload === "function") {
+            pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload();
+          }
           if (typeof pipelineCtx.waitForExpressionSegmentQueueIdle === "function") {
             try {
               pipelineCtx.setTestUploadState("saving_metadata");
               seedLocalExpressionUploadPhase("scoring_questions");
-              await pipelineCtx.waitForExpressionSegmentQueueIdle(30000);
+              await pipelineCtx.waitForExpressionSegmentQueueIdle(60000);
             } catch (idleErr) {}
           }
           var segStats =
@@ -177,9 +184,9 @@
             pipelineCtx.ageYears,
             pipelineCtx.ageMonths,
             fullArray,
-            pipelineCtx.correctAnswers,
-            pipelineCtx.partialAnswers,
-            pipelineCtx.wrongAnswers,
+            scoreBuckets ? scoreBuckets.correct : pipelineCtx.correctAnswers,
+            scoreBuckets ? scoreBuckets.partly : pipelineCtx.partialAnswers,
+            scoreBuckets ? scoreBuckets.wrong : pipelineCtx.wrongAnswers,
             null,
             null,
             pipelineCtx.childGender,

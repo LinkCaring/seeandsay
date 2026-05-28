@@ -519,27 +519,63 @@
         }
       }
 
-      function enqueueExpressionUploadAfterAdvance() {
+      function willTriggerSessionFinishAfterAdvance() {
+        if (ctx.consecutiveExprFailRef.current >= 2) return true;
+        if (ctx.consecutiveCompFailRef.current >= 2) {
+          var firstExprIdx = ctx.findFirstExpressionQuestionIndex();
+          if (firstExprIdx >= 0 && currentIdx < firstExprIdx) return false;
+        }
+        if (currentIdx >= ctx.questions.length - 1) return true;
+        if (currentIdx < ctx.questions.length - 1) return false;
+        var shouldFinishAtLastQuestion = false;
+        if (ctx.questionType === "E") {
+          var exprTotalAtEnd = ctx.countQuestionsByType("expression");
+          var exprAnsweredAtEnd = ctx.countAnsweredByType(updatedQuestionResults, "expression");
+          shouldFinishAtLastQuestion = exprTotalAtEnd === 0 || exprAnsweredAtEnd >= exprTotalAtEnd;
+        } else {
+          var answeredCount = ctx.dedupeQuestionResultsKeepLastAttempt(updatedQuestionResults).length;
+          shouldFinishAtLastQuestion = answeredCount >= ctx.questions.length;
+        }
+        return shouldFinishAtLastQuestion;
+      }
+
+      async function enqueueExpressionSegmentBeforeAdvance() {
         if (typeof ctx.getExpressionAudioMode !== "function") return;
         if (ctx.getExpressionAudioMode() !== "incremental") return;
         if (!currentQuestion || currentQuestion.query_type !== "הבעה") return;
+        if (!resultString) return;
         if (typeof ctx.enqueueExpressionSegmentUpload !== "function") return;
-        setTimeout(function () {
-          ctx.enqueueExpressionSegmentUpload(currentQuestion, resultString).catch(function () {});
-        }, 0);
+        if (typeof ctx.beginExpressionEvalFreezeForIncrementalUpload === "function") {
+          ctx.beginExpressionEvalFreezeForIncrementalUpload();
+        }
+        try {
+          await ctx.enqueueExpressionSegmentUpload(currentQuestion, resultString);
+          if (
+            willTriggerSessionFinishAfterAdvance() &&
+            typeof ctx.waitForExpressionSegmentQueueIdle === "function"
+          ) {
+            await ctx.waitForExpressionSegmentQueueIdle(60000);
+          }
+        } catch (enqueueErr) {
+          console.error("[incremental] segment enqueue before advance failed:", enqueueErr);
+        }
       }
 
-      if (shouldRunThreeInRowCelebration) {
-        ctx.startThreeInRowCelebration(function () {
-          advanceAfterResult();
-          enqueueExpressionUploadAfterAdvance();
+      function runAdvanceAfterExpressionUpload() {
+        advanceAfterResult();
+      }
+
+      enqueueExpressionSegmentBeforeAdvance()
+        .catch(function (enqueueErr) {
+          console.error("[incremental] segment pipeline before advance failed:", enqueueErr);
+        })
+        .finally(function () {
+          if (shouldRunThreeInRowCelebration) {
+            ctx.startThreeInRowCelebration(runAdvanceAfterExpressionUpload);
+            return;
+          }
+          runAdvanceAfterExpressionUpload();
         });
-        return;
-      }
-
-      // All non-celebration paths continue immediately.
-      advanceAfterResult();
-      enqueueExpressionUploadAfterAdvance();
     }
 
     return {

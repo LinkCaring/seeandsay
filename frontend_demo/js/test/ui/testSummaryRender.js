@@ -226,14 +226,6 @@
         ctx.testUploadState === "saving_metadata" ||
         ctx.testUploadState === "preparing_recording");
     const testUploadFailed = ctx.sessionCompleted && ctx.testUploadState === "failed";
-    const expressionFeedbackPending =
-      hasExpressionQuestions &&
-      !testUploadFailed &&
-      (testUploadInProgress ||
-        (ctx.lastCompletedTestId &&
-          (!ctx.expressionAiResult ||
-            expressionAiStatus === "pending" ||
-            ctx.expressionAiLoading)));
     const expressionAiFailed =
       hasExpressionQuestions &&
       ctx.lastCompletedTestId &&
@@ -265,12 +257,22 @@
       (expressionAiStatus === "done" &&
         expressionAiProcessed >= expressionAiTotal &&
         expressionImpressionTerminal);
+    const expressionAiStillProcessing =
+      hasExpressionQuestions &&
+      ctx.lastCompletedTestId &&
+      expressionAiStatus !== "failed" &&
+      !expressionAiFullyComplete;
+    const expressionFeedbackPending =
+      hasExpressionQuestions &&
+      !testUploadFailed &&
+      (testUploadInProgress || expressionAiStillProcessing || ctx.expressionAiLoading);
     function expressionPhaseLabel(phaseKey) {
       if (ctx.lang === "en") {
         if (phaseKey === "queued") return "Feedback generation will start shortly";
         if (phaseKey === "processing_started") return "Started";
         if (phaseKey === "preparing_audio") return "Processing audio";
         if (phaseKey === "scoring_questions") return "Scoring questions";
+        if (phaseKey === "retrying_missing") return "Retrying missing questions";
         if (phaseKey === "uploading_audio") return "Uploading recording to cloud";
         if (phaseKey === "saving_metadata") return "Saving test results";
         if (phaseKey === "awaiting_audio") return "Waiting for recording in cloud";
@@ -286,6 +288,7 @@
       if (phaseKey === "processing_started") return "התחיל עיבוד";
       if (phaseKey === "preparing_audio") return "מעבד שמע";
       if (phaseKey === "scoring_questions") return "מחשב ציונים";
+      if (phaseKey === "retrying_missing") return "משלים שאלות חסרות";
       if (phaseKey === "building_impression") return "מכין סיכום";
       if (phaseKey === "done") return "הושלם";
       if (phaseKey === "failed") return "נכשל";
@@ -492,6 +495,7 @@
         ? React.createElement("div", { className: "session-immediate-summary__balance" }, strongerLabel)
         : null
     ),
+      expressionAiResolved &&
       hasExpressionQuestions &&
       ctx.expressionAiResult &&
       expressionAiResult.expressive_language_impression &&

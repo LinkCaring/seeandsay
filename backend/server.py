@@ -14,6 +14,7 @@ import re
 import uuid
 import random
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
@@ -55,6 +56,8 @@ database_name = os.environ.get("DATABASE_NAME")
 storage = SeeSayMongoStorage(mongodb_url, database_name)
 GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT", "350"))
 GEMINI_MAX_SEGMENT_SECONDS = int(os.environ.get("GEMINI_MAX_SEGMENT_SECONDS", "20"))
+INCREMENTAL_SCORE_RETRY_ATTEMPTS = int(os.environ.get("INCREMENTAL_SCORE_RETRY_ATTEMPTS", "5"))
+INCREMENTAL_SCORE_RETRY_DELAY_SEC = float(os.environ.get("INCREMENTAL_SCORE_RETRY_DELAY_SEC", "2.0"))
 GEMINI_IMPRESSION_DAILY_LIMIT = int(
     os.environ.get("GEMINI_IMPRESSION_DAILY_LIMIT", os.environ.get("GEMINI_DAILY_LIMIT", "350"))
 )
@@ -1197,6 +1200,138 @@ def _run_expression_segment_background(
         logger.error("Segment scoring failed for test %s q%s: %s", test_id, question_number, e)
 
 
+def _build_processing_failed_expression_row(question_number, headlight_result):
+    """Fallback per-question row when upload/scoring cannot complete after retries."""
+    return {
+        "question_number": int(question_number),
+        "headlight_result": headlight_result or "wrong",
+        "ai_score": 1,
+        "ai_confidence": 0.0,
+        "ai_reason_short": "processing_failed",
+        "ai_flags": ["processing_failed", "needs_manual_review"],
+        "ai_speaker_observation": (
+            "לא הושלם עיבוד אוטומטי לשאלה זו (העלאת קטע או ניקוד נכשלו לאחר ניסיונות חוזרים)."
+        ),
+        "timestamp_start_sec": 0,
+        "timestamp_end_sec": GEMINI_MAX_SEGMENT_SECONDS,
+    }
+
+
+def _try_score_expression_row_from_segment(question_number, headlight_result, blob_path, child_gender):
+    try:
+        return _score_single_expression_from_blob(
+            question_number=question_number,
+            headlight_result=headlight_result or "wrong",
+            blob_path=blob_path,
+            child_gender=child_gender,
+        )
+    except Exception as e:
+        logger.error("Score attempt failed for q%s: %s", question_number, e)
+        return None
+
+
+def _ensure_incremental_expression_rows_complete(
+    user_id,
+    test_id,
+    full_array,
+    child_gender,
+    started_at,
+    initial_rows,
+    segments_by_q,
+):
+    """
+    Retry scoring for every expression question in full_array before impression.
+    Missing rows after retries get ai_score=1 processing_failed fallback.
+    """
+    expression_items = _parse_expression_results_from_full_array(full_array)
+    total_expression_items = len(expression_items)
+    if total_expression_items == 0:
+        return [], segments_by_q, total_expression_items
+
+    rows_by_q = {}
+    for row in initial_rows or []:
+        qn = str(row.get("question_number") or "")
+        if qn:
+            rows_by_q[qn] = row
+
+    expected_keys = [str(qn) for qn, _hr in expression_items]
+    headlight_by_q = {str(qn): hr for qn, hr in expression_items}
+
+    for attempt in range(INCREMENTAL_SCORE_RETRY_ATTEMPTS):
+        missing = [q for q in expected_keys if q not in rows_by_q]
+        if not missing:
+            break
+
+        pending = _build_pending_expression_ai_payload(
+            test_id=test_id,
+            started_at=started_at,
+            expression_question_count=total_expression_items,
+            phase="retrying_missing",
+            processed_questions=len(rows_by_q),
+            per_question_rows=list(rows_by_q.values()),
+        )
+        storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=pending)
+
+        for q_key in missing:
+            seg = segments_by_q.get(q_key) or {}
+            blob_path = (seg.get("blobPath") or "").strip()
+            if not blob_path:
+                continue
+            scored = _try_score_expression_row_from_segment(
+                q_key,
+                seg.get("headlightResult") or headlight_by_q.get(q_key),
+                blob_path,
+                child_gender,
+            )
+            if scored:
+                rows_by_q[q_key] = scored
+
+        if not [q for q in expected_keys if q not in rows_by_q]:
+            break
+
+        if attempt < INCREMENTAL_SCORE_RETRY_ATTEMPTS - 1:
+            time.sleep(INCREMENTAL_SCORE_RETRY_DELAY_SEC)
+            latest = storage.get_user_test_by_id(user_id, test_id) or {}
+            for seg in latest.get("expressionSegments") or []:
+                q = str(seg.get("questionNumber") or "")
+                if q:
+                    segments_by_q[q] = seg
+            for row in (latest.get("expressionAI") or {}).get("per_question") or []:
+                rq = str(row.get("question_number") or "")
+                if rq and rq not in rows_by_q:
+                    rows_by_q[rq] = row
+
+    for q_key in expected_keys:
+        if q_key in rows_by_q:
+            continue
+        rows_by_q[q_key] = _build_processing_failed_expression_row(
+            q_key, headlight_by_q.get(q_key) or "wrong"
+        )
+        logger.warning(
+            "Incremental test %s q%s: using processing_failed fallback row",
+            test_id,
+            q_key,
+        )
+
+    building_pending = _build_pending_expression_ai_payload(
+        test_id=test_id,
+        started_at=started_at,
+        expression_question_count=total_expression_items,
+        phase="building_impression",
+        processed_questions=len(rows_by_q),
+        per_question_rows=list(rows_by_q.values()),
+    )
+    storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=building_pending)
+
+    ordered_rows = []
+    for qn, _hr in expression_items:
+        q_key = str(qn)
+        if q_key in rows_by_q:
+            ordered_rows.append(rows_by_q[q_key])
+
+    return ordered_rows, segments_by_q, total_expression_items
+
+
 def _finalize_incremental_expression_ai_background(
     user_id,
     test_id,
@@ -1211,7 +1346,7 @@ def _finalize_incremental_expression_ai_background(
         expression_items = _parse_expression_results_from_full_array(full_array)
         total_expression_items = len(expression_items)
         latest = storage.get_user_test_by_id(user_id, test_id) or {}
-        rows = (latest.get("expressionAI") or {}).get("per_question") or []
+        initial_rows = (latest.get("expressionAI") or {}).get("per_question") or []
         segments = latest.get("expressionSegments") or []
 
         by_q = {}
@@ -1220,32 +1355,15 @@ def _finalize_incremental_expression_ai_background(
             if q:
                 by_q[q] = seg
 
-        existing_by_q = {}
-        for row in rows:
-            rq = str(row.get("question_number") or "")
-            if rq:
-                existing_by_q[rq] = row
-
-        # Backfill missing scored rows from already uploaded segments.
-        for qn, headlight_result in expression_items:
-            q_key = str(qn)
-            if q_key in existing_by_q:
-                continue
-            seg = by_q.get(q_key) or {}
-            blob_path = (seg.get("blobPath") or "").strip()
-            if not blob_path:
-                continue
-            try:
-                extra_row = _score_single_expression_from_blob(
-                    question_number=q_key,
-                    headlight_result=seg.get("headlightResult") or headlight_result or "wrong",
-                    blob_path=blob_path,
-                    child_gender=child_gender,
-                )
-                rows.append(extra_row)
-                existing_by_q[q_key] = extra_row
-            except Exception as score_err:
-                logger.error("Incremental backfill score failed for test %s q%s: %s", test_id, q_key, score_err)
+        rows, by_q, total_expression_items = _ensure_incremental_expression_rows_complete(
+            user_id=user_id,
+            test_id=test_id,
+            full_array=full_array,
+            child_gender=child_gender,
+            started_at=started_at,
+            initial_rows=initial_rows,
+            segments_by_q=by_q,
+        )
 
         impression_pool = []
         for row in rows:
@@ -1352,7 +1470,7 @@ def _finalize_incremental_expression_ai_background(
                 },
                 "progress": {
                     "phase": "done",
-                    "processed_questions": len(rows),
+                    "processed_questions": total_expression_items,
                     "total_questions": total_expression_items,
                     "last_updated_at": datetime.utcnow().isoformat() + "Z",
                 },
@@ -1361,6 +1479,7 @@ def _finalize_incremental_expression_ai_background(
             "expressive_language_impression": expressive_language_impression,
         }
         storage.update_test_expression_ai(user_id=user_id, test_id=test_id, expression_ai=payload)
+        _maybe_send_results_sms(user_id, test_id, payload)
     except Exception as e:
         logger.error("Incremental finalize failed for test %s: %s", test_id, e)
 

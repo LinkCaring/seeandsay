@@ -49,6 +49,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const [expressionEvalArmed, setExpressionEvalArmed] = React.useState(false);
   const expressionEvalDeadlineRef = React.useRef(null);
   const expressionEvalPausedRemainingRef = React.useRef(EXPRESSION_EVAL_DELAY_MS);
+  /** Holds 20s eval timer while incremental segment upload / queue drain runs after traffic submit. */
+  const expressionEvalFrozenForIncrementalUploadRef = React.useRef(false);
   const expressionEvalEnableTimerRef = React.useRef(null);
   const expressionEvalArmedQuestionRef = React.useRef(null);
   const expressionAnswerEndTimerRef = React.useRef(null);
@@ -83,6 +85,14 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   function resumeExpressionEvalCountdown() {
     var api = ensureExprTimers();
     if (api) api.resumeExpressionEvalCountdown();
+  }
+  function beginExpressionEvalFreezeForIncrementalUpload() {
+    expressionEvalFrozenForIncrementalUploadRef.current = true;
+    markCurrentQuestionEndTimestamp();
+    freezeExpressionEvalCountdown();
+  }
+  function clearExpressionEvalFreezeForIncrementalUpload() {
+    expressionEvalFrozenForIncrementalUploadRef.current = false;
   }
   function clearExpressionAnswerEndTimer() {
     var api = ensureExprTimers();
@@ -506,6 +516,15 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return { correct: c, partly: p, wrong: w };
   }
 
+  function reconcileSessionScoreCountersFromResults(results) {
+    var deduped = dedupeQuestionResultsKeepLastAttempt(results || []);
+    var buckets = countBucketsFromResults(deduped);
+    setCorrectAnswers(buckets.correct);
+    setPartialAnswers(buckets.partly);
+    setWrongAnswers(buckets.wrong);
+    return buckets;
+  }
+
   function questionResultsHasDuplicateQuestionNumbers(rows) {
     const seen = new Set();
     for (let i = 0; i < rows.length; i++) {
@@ -805,6 +824,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   React.useEffect(function pauseAwareExpressionTimer() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
+    if (expressionEvalFrozenForIncrementalUploadRef.current) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (incompleteSummaryConfirmOpen) {
       freezeExpressionEvalCountdown();
       return;
@@ -821,6 +844,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   /** Freeze expression traffic countdown while streak clapping overlay is up. */
   React.useEffect(function pauseExpressionEvalDuringClappingAvatar() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (expressionEvalFrozenForIncrementalUploadRef.current) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (showClappingAvatar) {
       freezeExpressionEvalCountdown();
       return;
@@ -844,6 +871,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   /** Freeze countdown while Finish / incomplete-summary gate is open. */
   React.useEffect(function pauseExpressionEvalDuringFinishFlow() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (expressionEvalFrozenForIncrementalUploadRef.current) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (incompleteSummaryConfirmOpen) {
       freezeExpressionEvalCountdown();
       return;
@@ -897,6 +928,16 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     showClappingAvatar,
     incompleteSummaryConfirmOpen,
   ]);
+
+  React.useEffect(function clearIncrementalUploadEvalFreezeOnQuestionChange() {
+    clearExpressionEvalFreezeForIncrementalUpload();
+  }, [currentIndex]);
+
+  React.useEffect(function clearIncrementalUploadEvalFreezeOnSessionComplete() {
+    if (sessionCompleted) {
+      clearExpressionEvalFreezeForIncrementalUpload();
+    }
+  }, [sessionCompleted]);
 
   React.useEffect(function armExpressionTimerWhenQuestionAudioUnavailable() {
     if (sessionCompleted || questionType !== "E" || expressionEvalArmed) return;
@@ -2926,6 +2967,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
       await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
     },
+    reconcileSessionScoreCounters: reconcileSessionScoreCountersFromResults,
+    beginExpressionEvalFreezeForIncrementalUpload: beginExpressionEvalFreezeForIncrementalUpload,
     retryRecordingUploadRef: retryRecordingUploadRef,
     sessionRecordingStarted: sessionRecordingStarted,
     permission: permission,
@@ -2973,6 +3016,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     requestCompleteSessionOrConfirm: requestCompleteSessionOrConfirm,
     enqueueExpressionSegmentUpload: enqueueExpressionSegmentUpload,
     getExpressionAudioMode: getExpressionAudioMode,
+    waitForExpressionSegmentQueueIdle: async function (timeoutMs) {
+      if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
+      await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
+    },
+    beginExpressionEvalFreezeForIncrementalUpload: beginExpressionEvalFreezeForIncrementalUpload,
     openIncompleteSummaryConfirm: openIncompleteSummaryConfirm,
     tryGateExpressionMicCheckBeforeNavigatingTo: tryGateExpressionMicCheckBeforeNavigatingTo,
     tryDeferExpressionIntroBeforeNavigatingTo: tryDeferExpressionIntroBeforeNavigatingTo,
