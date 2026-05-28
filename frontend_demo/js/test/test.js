@@ -899,15 +899,20 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (
       sessionCompleted ||
       questionType !== "E" ||
+      !expressionEvalArmed ||
       evaluationEnabled ||
       isPaused ||
       showClappingAvatar ||
       incompleteSummaryConfirmOpen ||
+      expressionEvalFrozenForIncrementalUploadRef.current ||
       !expressionEvalDeadlineRef.current
     ) {
       return;
     }
     const intervalId = setInterval(function () {
+      if (expressionEvalFrozenForIncrementalUploadRef.current) {
+        return;
+      }
       if (!expressionEvalDeadlineRef.current) {
         setExpressionEvalMsLeft(0);
         return;
@@ -923,6 +928,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     currentIndex,
     questionType,
     sessionCompleted,
+    expressionEvalArmed,
     evaluationEnabled,
     isPaused,
     showClappingAvatar,
