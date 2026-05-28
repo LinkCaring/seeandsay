@@ -178,6 +178,9 @@
           } else {
           pipelineCtx.setTestUploadState("saving_metadata");
           pipelineCtx.expressionPhaseRecordingStartedRef.current = false;
+          if (typeof pipelineCtx.releaseIncrementalCaptureResources === "function") {
+            pipelineCtx.releaseIncrementalCaptureResources();
+          }
           pipelineCtx.setSessionCompleted(true);
           var incrementalResult = await pipelineCtx.updateUserTests(
             pipelineCtx.idDigits,

@@ -76,6 +76,7 @@ const SessionRecorder = (function () {
 
   return {
     startContinuousRecording: capture.startContinuousRecording,
+    releaseCaptureStream: capture.releaseCaptureStream,
     stopContinuousRecording: capture.stopContinuousRecording,
     pauseRecording: capture.pauseRecording,
     pauseRecordingIfActive: capture.pauseRecordingIfActive,

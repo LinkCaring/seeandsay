@@ -41,6 +41,13 @@
     var completed = 0;
     var failed = 0;
     var idleWaiters = [];
+    var currentJob = null;
+    var completedQuestions = {};
+    var failedQuestions = {};
+
+    function qKey(questionNumber) {
+      return String(questionNumber || "").trim();
+    }
 
     function flushIdleWaiters() {
       if (pendingCount() !== 0) return;
@@ -51,11 +58,44 @@
       });
     }
 
+    function isUploadInFlight(questionNumber) {
+      var key = qKey(questionNumber);
+      if (!key || !running || !currentJob) return false;
+      return qKey(currentJob.questionNumber) === key;
+    }
+
+    function hasCompletedUpload(questionNumber) {
+      return !!completedQuestions[qKey(questionNumber)];
+    }
+
+    function getQuestionUploadState(questionNumber) {
+      var key = qKey(questionNumber);
+      if (!key) return "none";
+      if (completedQuestions[key]) return "completed";
+      if (isUploadInFlight(key)) return "in_flight";
+      for (var i = 0; i < queue.length; i++) {
+        if (qKey(queue[i].questionNumber) === key) return "pending";
+      }
+      if (failedQuestions[key]) return "failed";
+      return "none";
+    }
+
+    function cancelPendingForQuestion(questionNumber) {
+      var key = qKey(questionNumber);
+      if (!key) return 0;
+      var before = queue.length;
+      queue = queue.filter(function (job) {
+        return qKey(job.questionNumber) !== key;
+      });
+      return before - queue.length;
+    }
+
     async function runNext() {
       if (running) return;
       running = true;
       while (queue.length) {
         var job = queue.shift();
+        currentJob = job;
         try {
           var mp3Blob = await convertBlobToMp3(job.segmentBlob);
           var prep = await deps.prepareSegmentUpload(job.userId, job.testId, job.questionNumber);
@@ -72,17 +112,25 @@
             ageMonths: job.ageMonths,
           });
           completed += 1;
+          completedQuestions[qKey(job.questionNumber)] = true;
+          delete failedQuestions[qKey(job.questionNumber)];
           console.log("[segmentQueue] uploaded q" + job.questionNumber + " (completed=" + completed + ")");
         } catch (err) {
           failed += 1;
+          failedQuestions[qKey(job.questionNumber)] = true;
           console.error("[segmentQueue] upload failed", err);
         }
+        currentJob = null;
       }
       running = false;
       flushIdleWaiters();
     }
 
     function enqueue(job) {
+      var key = qKey(job && job.questionNumber);
+      if (key) {
+        delete failedQuestions[key];
+      }
       queue.push(job);
       setTimeout(runNext, 0);
     }
@@ -121,11 +169,36 @@
       });
     }
 
+    function waitForQuestionIdle(questionNumber, timeoutMs) {
+      var waitMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 25000;
+      return new Promise(function (resolve) {
+        var start = Date.now();
+        function tick() {
+          var state = getQuestionUploadState(questionNumber);
+          if (state !== "pending" && state !== "in_flight") {
+            resolve(state);
+            return;
+          }
+          if (Date.now() - start >= waitMs) {
+            resolve(state);
+            return;
+          }
+          setTimeout(tick, 200);
+        }
+        tick();
+      });
+    }
+
     return {
       enqueue: enqueue,
       pendingCount: pendingCount,
       stats: stats,
       waitForIdle: waitForIdle,
+      cancelPendingForQuestion: cancelPendingForQuestion,
+      isUploadInFlight: isUploadInFlight,
+      hasCompletedUpload: hasCompletedUpload,
+      getQuestionUploadState: getQuestionUploadState,
+      waitForQuestionIdle: waitForQuestionIdle,
     };
   }
 

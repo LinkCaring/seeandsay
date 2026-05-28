@@ -287,6 +287,36 @@
       }
     }
 
+    /** Stop mic tracks without final MP3 encode (incremental finish only). */
+    function releaseCaptureStream() {
+      clearMaxDurationCheckTimer();
+      accrueActiveRecordingTime();
+      if (state.mediaRecorder) {
+        state.mediaRecorder.onstop = null;
+        try {
+          if (state.mediaRecorder.state !== "inactive") {
+            state.mediaRecorder.stop();
+          }
+        } catch (e) {}
+        state.mediaRecorder = null;
+      }
+      state.audioChunks = [];
+      state.isRecording = false;
+      state.isPaused = false;
+      try {
+        localStorage.removeItem("sessionRecordingActive");
+        localStorage.removeItem("recordingPaused");
+      } catch (e) {}
+      if (state.stream) {
+        state.stream.getTracks().forEach(function (track) {
+          track.stop();
+        });
+        state.stream = null;
+      }
+      console.log("Released session capture stream (no final encode)");
+      return true;
+    }
+
     function stopContinuousRecording() {
       clearMaxDurationCheckTimer();
       accrueActiveRecordingTime();
@@ -418,6 +448,7 @@
       getMaxSessionRecordingMs: getMaxSessionRecordingMs,
       isAtMaxSessionDuration: isAtMaxSessionDuration,
       startContinuousRecording: startContinuousRecording,
+      releaseCaptureStream: releaseCaptureStream,
       stopContinuousRecording: stopContinuousRecording,
       pauseRecording: pauseRecording,
       pauseRecordingIfActive: pauseRecordingIfActive,

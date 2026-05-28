@@ -187,6 +187,149 @@
       );
     }
 
+    function renderIncrementalSegmentInterruptModal() {
+      var ctx = getCtx();
+      if (!ctx.incrementalSegmentInterrupt) return null;
+      if (typeof ctx.getExpressionAudioMode === "function" && ctx.getExpressionAudioMode() !== "incremental") {
+        return null;
+      }
+      if (ctx.sessionCompleted) return null;
+      var qn = ctx.incrementalSegmentInterrupt.questionNumber;
+      var uploadState =
+        typeof ctx.getIncrementalSegmentUploadState === "function"
+          ? ctx.getIncrementalSegmentUploadState(qn)
+          : "none";
+      var title = ctx.tr("test.incremental.interrupted.title");
+      var body;
+      var canRestartWhenMicReady = false;
+      if (uploadState === "completed") {
+        body = ctx.tr("test.incremental.interrupted.alreadySent");
+      } else if (uploadState === "in_flight") {
+        body = ctx.tr("test.incremental.interrupted.uploadInFlight");
+        canRestartWhenMicReady = true;
+      } else {
+        body = ctx.tr("test.incremental.interrupted.body");
+        canRestartWhenMicReady = true;
+      }
+      var micReady = !!ctx.incrementalRestartMicReady;
+      var showRestart = canRestartWhenMicReady && micReady;
+      var showDismiss = uploadState === "completed";
+      var micHint =
+        canRestartWhenMicReady && !micReady
+          ? ctx.tr("test.incremental.interrupted.micDisabled")
+          : null;
+      var restartRequiredHint =
+        canRestartWhenMicReady && micReady
+          ? ctx.tr("test.incremental.interrupted.restartRequired")
+          : null;
+      return React.createElement(
+        "div",
+        {
+          className: "incremental-segment-interrupt-screen",
+          role: "dialog",
+          "aria-modal": "true",
+          style: {
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 100000,
+            background: "#f4f7f9",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            boxSizing: "border-box",
+          },
+        },
+        React.createElement(
+          "div",
+          {
+            className: "traffic-popup",
+            style: { maxWidth: "min(92vw, 480px)", width: "100%", margin: 0 },
+            onClick: function (e) {
+              e.stopPropagation();
+            },
+          },
+          React.createElement("h2", { className: "traffic-popup__title" }, title),
+          React.createElement(
+            "p",
+            { style: { margin: "0 0 16px", fontSize: 15, lineHeight: 1.45, color: "#304348", textAlign: "center" } },
+            body
+          ),
+          micHint
+            ? React.createElement(
+                "p",
+                {
+                  style: {
+                    margin: "0 0 16px",
+                    fontSize: 14,
+                    lineHeight: 1.45,
+                    color: "#e65100",
+                    textAlign: "center",
+                  },
+                },
+                micHint
+              )
+            : null,
+          restartRequiredHint
+            ? React.createElement(
+                "p",
+                {
+                  style: {
+                    margin: "0 0 16px",
+                    fontSize: 14,
+                    lineHeight: 1.45,
+                    color: "#304348",
+                    textAlign: "center",
+                  },
+                },
+                restartRequiredHint
+              )
+            : null,
+          React.createElement(
+            "div",
+            { style: { display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" } },
+            showRestart
+              ? React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "continue-button",
+                    onClick: function () {
+                      ctx.restartCurrentIncrementalExpressionQuestion();
+                    },
+                    style: { minWidth: 160 },
+                  },
+                  ctx.tr("test.incremental.interrupted.restart")
+                )
+              : null,
+            showDismiss
+              ? React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: ctx.dismissIncrementalSegmentInterruptModal,
+                    style: {
+                      minWidth: 120,
+                      padding: "10px 16px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(48,67,72,0.2)",
+                      background: "#f4f7f9",
+                      color: "#304348",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    },
+                  },
+                  ctx.tr("test.incremental.interrupted.dismiss")
+                )
+              : null
+          )
+        )
+      );
+    }
+
     function renderRecordingInterruptedBanner() {
       var ctx = getCtx();
       if (!ctx.recordingInterruptedBannerOpen) return null;
@@ -519,6 +662,7 @@
       renderExpressionRefreshRecoveryModal: renderExpressionRefreshRecoveryModal,
       renderPausedOverlay: renderPausedOverlay,
       renderRecordingInterruptedBanner: renderRecordingInterruptedBanner,
+      renderIncrementalSegmentInterruptModal: renderIncrementalSegmentInterruptModal,
       renderAfkWarningOverlay: renderAfkWarningOverlay,
       renderTrafficPopup: renderTrafficPopup,
       renderIncompleteSummaryConfirm: renderIncompleteSummaryConfirm,

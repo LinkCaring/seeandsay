@@ -213,6 +213,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   // Continuous recording state (persistent so it survives refresh)
   const [sessionRecordingStarted, setSessionRecordingStarted] = usePersistentState("sessionRecordingStarted", false);
   const [recordingInterruptedBannerOpen, setRecordingInterruptedBannerOpen] = React.useState(false);
+  /** Incremental-only: hard segment capture failure (call / OS mic revoke). */
+  const [incrementalSegmentInterrupt, setIncrementalSegmentInterrupt] = React.useState(null);
+  /** True when getUserMedia succeeds while incremental interrupt modal is open (restart gate). */
+  const [incrementalRestartMicReady, setIncrementalRestartMicReady] = React.useState(false);
+  /** Bumps when interrupt poll sees upload-state change (re-render modal). */
+  const [incrementalInterruptUploadState, setIncrementalInterruptUploadState] = React.useState("none");
   const expressionPhaseRecordingStartedRef = React.useRef(false);
   /** True only during expression answer capture: after prompt audio ends until end-mark / score / navigation / finish. */
   const expressionAnswerCaptureActiveRef = React.useRef(false);
@@ -391,9 +397,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (getExpressionAudioMode() === "incremental" && expressionSegmentRecorderRef.current) {
       var q = questions[getSafeCurrentQuestionIndex()];
       if (q && q.query_type === "הבעה") {
-        expressionSegmentRecorderRef.current.startSegment(q.query_number).catch(function () {});
+        return expressionSegmentRecorderRef.current.startSegment(q.query_number);
       }
     }
+    return Promise.resolve();
   }
 
   function getExpressionAudioMode() {
@@ -427,6 +434,121 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     });
     console.log("[incremental] queued segment upload q" + String(question.query_number || ""));
     expressionSegmentRecorderRef.current.clearLastBlob();
+  }
+
+  function releaseIncrementalCaptureResources() {
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (expressionSegmentRecorderRef.current && expressionSegmentRecorderRef.current.cleanup) {
+      expressionSegmentRecorderRef.current.cleanup();
+    }
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.releaseCaptureStream) {
+      SessionRecorder.releaseCaptureStream();
+    }
+  }
+
+  function reportIncrementalSegmentInterrupt(payload) {
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (questionTypeRef.current !== "E") return;
+    if (sessionCompletedRef.current) return;
+    if (isPausedRef.current) return;
+    if (showClappingAvatarRef.current) return;
+    if (expressionEvalFrozenForIncrementalUploadRef.current) return;
+    var idx = getSafeCurrentQuestionIndex();
+    var q = questions[idx];
+    if (!q || q.query_type !== "הבעה") return;
+    var qn = String(q.query_number || "");
+    if (payload && payload.questionNumber && String(payload.questionNumber) !== qn) return;
+    var force = !!(payload && payload.force);
+    var rec = expressionSegmentRecorderRef.current;
+    var health =
+      rec && typeof rec.checkHealth === "function" ? rec.checkHealth() : { ok: false };
+    if (!force && health.ok) return;
+    freezeExpressionEvalCountdown();
+    setIncrementalSegmentInterrupt({
+      questionNumber: qn,
+      reason: (payload && payload.reason) || health.reason || "unknown",
+    });
+  }
+
+  function isIncrementalExpressionInterruptBlocking() {
+    return (
+      !!incrementalSegmentInterrupt &&
+      getExpressionAudioMode() === "incremental" &&
+      questionType === "E" &&
+      !sessionCompleted
+    );
+  }
+
+  var reportIncrementalSegmentInterruptRef = React.useRef(reportIncrementalSegmentInterrupt);
+  reportIncrementalSegmentInterruptRef.current = reportIncrementalSegmentInterrupt;
+
+  function dismissIncrementalSegmentInterruptModal() {
+    if (!incrementalSegmentInterrupt) return;
+    var qn = incrementalSegmentInterrupt.questionNumber;
+    var queue = expressionSegmentQueueRef.current;
+    var uploadState =
+      queue && queue.getQuestionUploadState
+        ? queue.getQuestionUploadState(qn)
+        : "none";
+    if (uploadState !== "completed") return;
+    setIncrementalSegmentInterrupt(null);
+    setIncrementalRestartMicReady(false);
+  }
+
+  async function probeExpressionMicAvailable() {
+    if (!permission || microphoneSkipped) return false;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(function (track) {
+          track.stop();
+        });
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function restartCurrentIncrementalExpressionQuestion() {
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (questionType !== "E" || sessionCompleted) return;
+    if (!(await probeExpressionMicAvailable())) return;
+    var interrupt = incrementalSegmentInterrupt;
+    var qn = interrupt && interrupt.questionNumber;
+    if (!qn) return;
+    var queue = expressionSegmentQueueRef.current;
+    if (queue && queue.getQuestionUploadState(qn) === "completed") return;
+    if (queue && queue.getQuestionUploadState(qn) === "in_flight") {
+      await queue.waitForQuestionIdle(qn, 30000);
+      if (queue.getQuestionUploadState(qn) === "completed") return;
+    }
+    if (queue && queue.cancelPendingForQuestion) {
+      queue.cancelPendingForQuestion(qn);
+    }
+    var rows = dedupeQuestionResultsKeepLastAttempt(questionResults);
+    var target = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].questionNumber) === qn) {
+        target = rows[i];
+        break;
+      }
+    }
+    if (target && target.result) {
+      adjustCountsForResult(target.result, -1);
+    }
+    setQuestionResults(rows.filter(function (r) {
+      return String(r.questionNumber) !== qn;
+    }));
+    expressionAnswerCaptureActiveRef.current = false;
+    if (expressionSegmentRecorderRef.current && expressionSegmentRecorderRef.current.cleanup) {
+      expressionSegmentRecorderRef.current.cleanup();
+    }
+    resetExpressionUiForNewCapture();
+    clearExpressionEvalFreezeForIncrementalUpload();
+    setIncrementalSegmentInterrupt(null);
+    loadQuestion(getSafeCurrentQuestionIndex());
   }
 
   // AFK timer states
@@ -706,6 +828,13 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (!window.MiliTestModules) return;
     if (window.MiliTestModules.createExpressionSegmentRecorder) {
       expressionSegmentRecorderRef.current = window.MiliTestModules.createExpressionSegmentRecorder();
+      if (expressionSegmentRecorderRef.current.setOnInterrupted) {
+        expressionSegmentRecorderRef.current.setOnInterrupted(function (payload) {
+          if (reportIncrementalSegmentInterruptRef.current) {
+            reportIncrementalSegmentInterruptRef.current(payload);
+          }
+        });
+      }
     }
     if (window.MiliTestModules.createExpressionSegmentUploadQueue) {
       expressionSegmentQueueRef.current = window.MiliTestModules.createExpressionSegmentUploadQueue({
@@ -720,6 +849,56 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       }
     };
   }, []);
+
+  React.useEffect(function incrementalSegmentHealthPoll() {
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (!expressionEvalArmed) return;
+    var timerId = setInterval(function () {
+      if (questionTypeRef.current !== "E") return;
+      if (sessionCompletedRef.current || isPausedRef.current || showClappingAvatarRef.current) return;
+      if (expressionEvalFrozenForIncrementalUploadRef.current) return;
+      var rec = expressionSegmentRecorderRef.current;
+      if (!rec || !rec.isExpectingActiveCapture || !rec.isExpectingActiveCapture()) return;
+      var health = rec.checkHealth();
+      if (!health.ok && reportIncrementalSegmentInterruptRef.current) {
+        reportIncrementalSegmentInterruptRef.current({ reason: health.reason });
+      }
+    }, 2000);
+    return function () {
+      clearInterval(timerId);
+    };
+  }, [expressionEvalArmed, sessionCompleted, isPaused, showClappingAvatar]);
+
+  React.useEffect(function pollMicForIncrementalInterruptRestart() {
+    if (!incrementalSegmentInterrupt) {
+      setIncrementalRestartMicReady(false);
+      setIncrementalInterruptUploadState("none");
+      return;
+    }
+    if (getExpressionAudioMode() !== "incremental") return;
+    var cancelled = false;
+    var qn = incrementalSegmentInterrupt.questionNumber;
+    function pollInterruptRecovery() {
+      probeExpressionMicAvailable().then(function (ok) {
+        if (!cancelled) setIncrementalRestartMicReady(!!ok);
+      });
+      var queue = expressionSegmentQueueRef.current;
+      if (queue && queue.getQuestionUploadState && qn) {
+        var st = queue.getQuestionUploadState(qn);
+        if (!cancelled) {
+          setIncrementalInterruptUploadState(function (prev) {
+            return prev === st ? prev : st;
+          });
+        }
+      }
+    }
+    pollInterruptRecovery();
+    var timerId = setInterval(pollInterruptRecovery, 1500);
+    return function () {
+      cancelled = true;
+      clearInterval(timerId);
+    };
+  }, [incrementalSegmentInterrupt, permission, microphoneSkipped]);
 
   // Report current test phase to App so it can show top navbar on age/mic screens
   React.useEffect(function () {
@@ -767,7 +946,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   }
 
   /** Mark answer window start after prompt audio ends; recording must already be running. */
-  function markExpressionTimestampAndArm(q) {
+  async function markExpressionTimestampAndArm(q) {
     if (!q || q.query_type !== "הבעה") return;
     var qNum = String(q.query_number || "");
     if (!qNum) return;
@@ -775,12 +954,49 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
     clearExpressionAnswerEndTimer();
 
+    if (
+      getExpressionAudioMode() === "incremental" &&
+      permission &&
+      !microphoneSkipped
+    ) {
+      if (!(await probeExpressionMicAvailable())) {
+        reportIncrementalSegmentInterrupt({
+          questionNumber: qNum,
+          reason: "mic_unavailable_at_arm",
+          force: true,
+        });
+        return;
+      }
+    }
+
     if (permission && voiceIdentifierConfirmed && SessionRecorder && SessionRecorder.markQuestionStart) {
       SessionRecorder.markQuestionStart(q.query_number);
     }
     expressionEvalArmedQuestionRef.current = qNum;
     setExpressionEvalArmed(true);
-    beginExpressionAnswerRecordingCapture();
+    try {
+      await beginExpressionAnswerRecordingCapture();
+      if (getExpressionAudioMode() === "incremental") {
+        var rec = expressionSegmentRecorderRef.current;
+        var health =
+          rec && typeof rec.checkHealth === "function" ? rec.checkHealth() : { ok: true };
+        if (!health.ok) {
+          reportIncrementalSegmentInterrupt({
+            questionNumber: qNum,
+            reason: health.reason || "segment_unhealthy_at_arm",
+            force: true,
+          });
+        }
+      }
+    } catch (e) {
+      if (getExpressionAudioMode() === "incremental") {
+        reportIncrementalSegmentInterrupt({
+          questionNumber: qNum,
+          reason: "segment_start_failed",
+          force: true,
+        });
+      }
+    }
   }
 
   // Expression evaluation timer - opens traffic evaluation after 20 seconds.
@@ -824,6 +1040,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   React.useEffect(function pauseAwareExpressionTimer() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled) return;
+    if (incrementalSegmentInterrupt) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (expressionEvalFrozenForIncrementalUploadRef.current) {
       freezeExpressionEvalCountdown();
       return;
@@ -839,11 +1059,15 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (!expressionEvalDeadlineRef.current) {
       resumeExpressionEvalCountdown();
     }
-  }, [isPaused, sessionCompleted, questionType, evaluationEnabled, incompleteSummaryConfirmOpen]);
+  }, [isPaused, sessionCompleted, questionType, evaluationEnabled, incompleteSummaryConfirmOpen, incrementalSegmentInterrupt]);
 
   /** Freeze expression traffic countdown while streak clapping overlay is up. */
   React.useEffect(function pauseExpressionEvalDuringClappingAvatar() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (incrementalSegmentInterrupt) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (expressionEvalFrozenForIncrementalUploadRef.current) {
       freezeExpressionEvalCountdown();
       return;
@@ -866,11 +1090,16 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     evaluationEnabled,
     expressionEvalArmed,
     incompleteSummaryConfirmOpen,
+    incrementalSegmentInterrupt,
   ]);
 
   /** Freeze countdown while Finish / incomplete-summary gate is open. */
   React.useEffect(function pauseExpressionEvalDuringFinishFlow() {
     if (sessionCompleted || questionType !== "E" || evaluationEnabled || !expressionEvalArmed) return;
+    if (incrementalSegmentInterrupt) {
+      freezeExpressionEvalCountdown();
+      return;
+    }
     if (expressionEvalFrozenForIncrementalUploadRef.current) {
       freezeExpressionEvalCountdown();
       return;
@@ -893,6 +1122,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     questionType,
     evaluationEnabled,
     expressionEvalArmed,
+    incrementalSegmentInterrupt,
   ]);
 
   React.useEffect(function tickExpressionEvalCountdown() {
@@ -904,6 +1134,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       isPaused ||
       showClappingAvatar ||
       incompleteSummaryConfirmOpen ||
+      incrementalSegmentInterrupt ||
       expressionEvalFrozenForIncrementalUploadRef.current ||
       !expressionEvalDeadlineRef.current
     ) {
@@ -933,6 +1164,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     isPaused,
     showClappingAvatar,
     incompleteSummaryConfirmOpen,
+    incrementalSegmentInterrupt,
   ]);
 
   React.useEffect(function clearIncrementalUploadEvalFreezeOnQuestionChange() {
@@ -2011,6 +2243,12 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   function checkExpressionRecordingHealth() {
     if (!sessionRecordingStartedRef.current || sessionCompletedRef.current) return;
+    if (
+      getExpressionAudioMode() === "incremental" &&
+      incrementalSegmentInterrupt
+    ) {
+      return;
+    }
     if (typeof SessionRecorder === "undefined" || !SessionRecorder.checkRecordingHealth) return;
     var health = SessionRecorder.checkRecordingHealth();
     if (health && health.ok === false) {
@@ -2030,6 +2268,13 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       return;
     }
     SessionRecorder.setOnRecordingInterrupted(function () {
+      if (
+        getExpressionAudioMode() === "incremental" &&
+        questionTypeRef.current === "E" &&
+        !sessionCompletedRef.current
+      ) {
+        return;
+      }
       setRecordingInterruptedBannerOpen(true);
     });
     return function () {
@@ -2068,6 +2313,18 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
       }
 
       if (document.visibilityState === "visible") {
+        if (
+          getExpressionAudioMode() === "incremental" &&
+          questionTypeRef.current === "E" &&
+          !sessionCompletedRef.current &&
+          expressionSegmentRecorderRef.current &&
+          typeof expressionSegmentRecorderRef.current.checkHealth === "function"
+        ) {
+          var segHealth = expressionSegmentRecorderRef.current.checkHealth();
+          if (!segHealth.ok && reportIncrementalSegmentInterruptRef.current) {
+            reportIncrementalSegmentInterruptRef.current({ reason: segHealth.reason });
+          }
+        }
         if (sessionRecordingStartedRef.current && !sessionCompletedRef.current) {
           checkExpressionRecordingHealthRef.current();
         }
@@ -2776,6 +3033,11 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     return api ? api.renderRecordingInterruptedBanner() : null;
   }
 
+  function renderIncrementalSegmentInterruptModal() {
+    var api = ensureTestOverlays();
+    return api ? api.renderIncrementalSegmentInterruptModal() : null;
+  }
+
   function renderPausedOverlay() {
     var api = ensureTestOverlays();
     return api ? api.renderPausedOverlay() : null;
@@ -2832,6 +3094,18 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     recordingInterruptedBannerOpen: recordingInterruptedBannerOpen,
     sessionCompleted: sessionCompleted,
     dismissRecordingInterruptedBanner: dismissRecordingInterruptedBanner,
+    getExpressionAudioMode: getExpressionAudioMode,
+    incrementalSegmentInterrupt: incrementalSegmentInterrupt,
+    incrementalRestartMicReady: incrementalRestartMicReady,
+    incrementalInterruptUploadState: incrementalInterruptUploadState,
+    getIncrementalSegmentUploadState: function (questionNumber) {
+      if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.getQuestionUploadState) {
+        return "none";
+      }
+      return expressionSegmentQueueRef.current.getQuestionUploadState(questionNumber);
+    },
+    dismissIncrementalSegmentInterruptModal: dismissIncrementalSegmentInterruptModal,
+    restartCurrentIncrementalExpressionQuestion: restartCurrentIncrementalExpressionQuestion,
   };
 
   summaryRenderCtxRef.current = {
@@ -2975,6 +3249,7 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     },
     reconcileSessionScoreCounters: reconcileSessionScoreCountersFromResults,
     beginExpressionEvalFreezeForIncrementalUpload: beginExpressionEvalFreezeForIncrementalUpload,
+    releaseIncrementalCaptureResources: releaseIncrementalCaptureResources,
     retryRecordingUploadRef: retryRecordingUploadRef,
     sessionRecordingStarted: sessionRecordingStarted,
     permission: permission,
@@ -3269,16 +3544,21 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     {
       className: "app-container"
     },
-    renderConfettiOverlay(),
-    renderClappingAvatarOverlay(),
-    renderExpressionRefreshRecoveryModal(),
-    renderRecordingInterruptedBanner(),
-    renderPausedOverlay(),
-    renderAfkWarningOverlay(),
-    renderTestNavbar(),
-    renderTrafficPopup(),
-    renderIncompleteSummaryConfirm(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderConfettiOverlay(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderClappingAvatarOverlay(),
+    isIncrementalExpressionInterruptBlocking()
+      ? null
+      : renderExpressionRefreshRecoveryModal(),
+    isIncrementalExpressionInterruptBlocking()
+      ? null
+      : renderRecordingInterruptedBanner(),
+    renderIncrementalSegmentInterruptModal(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderPausedOverlay(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderAfkWarningOverlay(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderTestNavbar(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderTrafficPopup(),
+    isIncrementalExpressionInterruptBlocking() ? null : renderIncompleteSummaryConfirm(),
 
-    renderQuestionSection()
+    isIncrementalExpressionInterruptBlocking() ? null : renderQuestionSection()
   );
 }
