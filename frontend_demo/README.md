@@ -66,20 +66,25 @@ index.html
          │
          ├─ page === "home"  →  Welcome (onboarding)
         │       screen1 (intro)
-        │       → screen2_login (child profile, consents, mic, recording mode) → createUser API
+        │       → screen2_login (child profile, consents, mic, recording mode legacy|incremental) → createUser API
          │       → screen1_video (avatar intro)
          │       → screen3 (how it works) → setPage("test")
          │
-         └─ page === "test"   →  Test (game)
-                 → optional: age invalid / mic gate / compr & exp intro videos
-                 → question loop (comprehension + expression)
-                 → session complete → mode-specific upload/finalize + summary UI
-                 → user can go home; progress may resume from localStorage
+         ├─ page === "test"   →  Test (game)
+         │       → optional: age invalid / mic gate / compr & exp intro videos
+         │       → question loop (comprehension + expression)
+         │       → session complete → mode-specific upload/finalize + summary UI
+         │       → user can go home; progress may resume from localStorage
+         │
+         └─ page === "results"  →  MiliResultsView (only when URL has ?t= or ?results=)
+                 → GET /api/results/by-token; no test navbar; alternate with home URL freely
 ```
 
-**Persistence:** Most game state lives in `localStorage` via `usePersistentState` in `app.js` and `test.js`. API identity keys (`seeandsayTempBackendUserId`, `seeandsayPendingTestId`, `seeandsayPendingBlobUploaded`) also use `localStorage` via `MiliTestSession` (legacy `sessionStorage` values migrate on read).
+**Persistence:** Game progress (`currentIndex`, `questionResults`, mic flags, `sessionCompleted`, …) lives in `localStorage` via `usePersistentState` in `test.js` (and related keys). The shell route key `page` (`home` | `test` | `results`) is persisted separately via `useAppPageState()` in `app.js`: **`results` is never restored without a token in the URL**, so a normal game open after visiting an SMS link does not show “התוצאות לא נמצאו”. API identity keys (`seeandsayTempBackendUserId`, `seeandsayPendingTestId`, `seeandsayPendingBlobUploaded`) also use `localStorage` via `MiliTestSession` (legacy `sessionStorage` values migrate on read).
 
-**Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores.
+**Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores. Mid-test resume keys are **not** cleared when fixing results routing.
+
+**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.4**.
 
 ---
 
@@ -134,6 +139,7 @@ flowchart LR
 |------|-----|------------|
 | `app.js` | `welcome.js` | Renders when `page === "home"`; passes `setPage`, `onRequestStartTest` |
 | `app.js` | `test.js` | Renders when `page === "test"`; passes `allQuestions` from CSV |
+| `app.js` | `resultsView.js` | Renders when `page === "results"` and URL has `?t=` / `?results=` |
 | `app.js` | `apiToMongo.js` | Indirect via Welcome login and Test finish |
 | `welcomeLogin.js` | Backend | `createUser()` after profile + mic OK |
 | `test.js` | `MiliTestModules.*` | Lazy `createX(getCtx)` factories; ctx refs filled each render |
@@ -185,7 +191,8 @@ Paths are relative to **`frontend_demo/`** (where `index.html` lives). Asset URL
 
 | File | Role |
 |------|------|
-| `app.js` | Root `App()`: CSV load, `page` routing, `MiliTestRun`, mounts Welcome / Test |
+| `app.js` | Root `App()`: CSV load, `useAppPageState()` routing, `MiliTestRun`, mounts Welcome / Test / `MiliResultsView` |
+| `resultsView.js` | Token results page (`?t=`): `getResultsByToken`, expression AI + PLS narrative |
 | `welcome.js` | Onboarding orchestrator (nav, screen order, video autoplay) |
 | `welcomeScreens.js` | Intro, intro video, “how it works”, start game button |
 | `welcomeLogin.js` | Login form, validation, mic permission, `createUser` |
@@ -196,8 +203,9 @@ Paths are relative to **`frontend_demo/`** (where `index.html` lives). Asset URL
 | File | Role |
 |------|------|
 | `recordingTimestamps.js` | Question marks, pause-aware clock, export text |
-| `recordingCapture.js` | `MediaRecorder`, pause/resume, 12:30 session cap |
+| `recordingCapture.js` | `MediaRecorder`, pause/resume, 12:30 session cap, `releaseCaptureStream()` (incremental finish, no final MP3) |
 | `recordingEncode.js` | MP3 encode (lamejs), final blob for upload |
+| `expressionSegmentRecorder.js` | Incremental per-question segment capture, health monitor, interrupt callback |
 
 Loaded **before** root `recording.js`, which exposes the unified API the game uses.
 
@@ -210,7 +218,8 @@ Loaded **before** root `recording.js`, which exposes the unified API the game us
 | `flow/` | Timers, mic intro, start screens, load question / index |
 | `scoring/` | Comprehension tap scoring and advance rules |
 | `ui/` | Pause/AFK, overlays, question layout, session-complete screen |
-| `finish/` | End session, upload pipeline, expression AI polling |
+| `expression/` | `expressionSegmentUploadQueue.js` — per-question upload state, cancel/wait helpers |
+| `finish/` | End session, upload pipeline, expression AI polling, incremental queue drain + score reconcile |
 
 ---
 
@@ -257,7 +266,24 @@ At login, the parent chooses expression recording mode:
 On finish, `testSessionFinish.js` branches by mode:
 
 - **`legacy`**: waits for session MP3, uploads via SAS, then calls `updateUserTests` with scores + timestamp text.
-- **`incremental`**: drains pending segment uploads, skips full-session blob upload, then calls `updateUserTests` for metadata-only finalize.
+- **`incremental`**: `testScoring.js` enqueues the last segment before advance/finish; drains pending uploads (60s on finish), freezes the 20s expression countdown during drain, skips full-session blob upload, calls `updateUserTests` for metadata-only finalize, then `releaseIncrementalCaptureResources()` on success. Score counters are reconciled from deduped `questionResults` at finish.
+
+### Incremental segment interrupt (mic / call)
+
+Only when `expressionAudioMode === "incremental"` and on an expression question:
+
+| Trigger | UX |
+|---------|-----|
+| Track ended / recorder inactive while answer capture is expected | Full-screen interrupt (`testOverlays.js`); legacy `recordingInterruptedBanner` suppressed on expression incremental |
+| Mic off during prompt or between questions | No modal during prompt; at **timer arm** (`markExpressionTimestampAndArm`), mic probe → same interrupt/restart flow if mic still unavailable |
+| After interrupt | 20s countdown frozen; navbar and question UI hidden; re-record gated on live `getUserMedia`; mandatory re-record until segment is registered on server (Continue only when upload `completed`) |
+| Restart | `restartCurrentIncrementalExpressionQuestion` — cancel pending queue jobs for that question; blocked after server register; waits on `in_flight` upload |
+
+Queue helpers: `getQuestionUploadState`, `cancelPendingForQuestion`, `waitForQuestionIdle`. Segment blobs are bound to their originating question number (no cross-question reuse).
+
+### Token results page (`?t=` / `?results=`)
+
+`MiliResultsView` loads public results via `GET /api/results/by-token`. Errors: missing/invalid token → “התוצאות לא נמצאו”; expired → “פג תוקף הקישור”. Opening the main app URL without a token always routes to welcome/home even if the user previously opened an SMS link (`getInitialAppPage` / `reconcileResultsPageRouting` in `app.js`).
 
 ---
 
@@ -277,7 +303,7 @@ Client: [`js/api/apiToMongo.js`](js/api/apiToMongo.js). Server: [`../backend/ser
 | Summary screen | `getExpressionAiStatus` | `GET /api/expressionAiStatus` |
 | SMS results link | `getResultsByToken` | `GET /api/results/by-token?t=...` |
 
-**Optional SMS:** Parent phone at login (not required). When provided, server texts a `?t=` link when expression AI is `done` (7-day token). Open `frontend_demo/?t=...` on any device. See [`../backend/docs/SMS_RESULTS.md`](../backend/docs/SMS_RESULTS.md).
+**Optional SMS:** Parent phone at login (not required). When provided, server texts a `?t=` link when expression AI is `done` (7-day token). Open `frontend_demo/?t=...` on any device; switching between that link and the normal home URL does not clear in-progress test data. See [`../backend/docs/SMS_RESULTS.md`](../backend/docs/SMS_RESULTS.md).
 
 **`testId`:** New game → `MiliTestSession.beginNewTestSessionIdentity()`. Resume → `ensurePendingTestId()` keeps the same id.
 
@@ -286,7 +312,9 @@ Client: [`js/api/apiToMongo.js`](js/api/apiToMongo.js). Server: [`../backend/ser
 Expression scoring runs on the server in both modes:
 
 - **`legacy`**: mainly after finish, using slices from the uploaded session audio.
-- **`incremental`**: continuously during test from uploaded expression segments, then impression finalize after finish.
+- **`incremental`**: continuously during test from uploaded expression segments; finalize waits for all expression rows (server retries + fallbacks), then impression; summary polls until `done` with `processed >= total`.
+
+**Changelog (28 May 2026):** [`../changes/CHANGES_2026-05-28_28.md`](../changes/CHANGES_2026-05-28_28.md) — full numbered list (login mode, segment APIs, interrupt recovery, results routing fix, version 5.4).
 
 ---
 

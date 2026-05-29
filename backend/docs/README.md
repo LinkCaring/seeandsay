@@ -18,10 +18,21 @@ The frontend sends `clientInfo.expressionAudioMode` from login (`legacy` or `inc
 
 - **`incremental`**
   - Expression questions upload short per-question audio segments during the test.
-  - Segment flow uses `POST /api/tests/prepareSegmentUpload` + blob PUT + `POST /api/tests/expressionSegment`.
-  - Finish still calls `POST /api/addTestToUser` but does metadata-only finalize (no full session blob required), then impression is finalized after all segment rows are scored.
+  - Segment flow uses `POST /api/tests/prepareSegmentUpload` + blob PUT + `POST /api/tests/expressionSegment` (idempotent per-question upsert in Mongo).
+  - Draft shell tests can be created early; segments merge on finalize.
+  - Finish still calls `POST /api/addTestToUser` but does **metadata-only** finalize (no full session blob required).
+  - Before impression build, `_ensure_incremental_expression_rows_complete` waits for all expression rows (`retrying_missing` phase), with configurable retries and `processing_failed` fallback (`ai_score` 1) when scoring cannot complete.
+  - Progress reports full `total_questions` only after all rows exist; results SMS sends on incremental finalize completion when a parent phone is on file.
+  - Public results: `GET /api/results/by-token?t=...` (410 when expired).
 
-See [BACKEND_MODULE_MAP.md](BACKEND_MODULE_MAP.md) for route-level details and `server.py` ownership.
+**Optional env (incremental scoring):**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `INCREMENTAL_SCORE_RETRY_ATTEMPTS` | `5` | Retries while expression rows are missing at finalize |
+| `INCREMENTAL_SCORE_RETRY_DELAY_SEC` | `2` | Delay between retries |
+
+See [BACKEND_MODULE_MAP.md](BACKEND_MODULE_MAP.md) for route-level details and `server.py` ownership. Frontend interrupt/recovery and results routing: [`../../changes/CHANGES_2026-05-28_28.md`](../../changes/CHANGES_2026-05-28_28.md).
 
 **Run locally:** from `backend/`, activate venv, set `.env`, then:
 

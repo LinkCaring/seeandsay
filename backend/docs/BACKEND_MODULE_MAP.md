@@ -24,8 +24,8 @@ flowchart TB
   AZ[Azure Blob session.mp3]
   MONGO[(MongoDB SeeSayDB)]
 
-  API -->|POST createUser prepareUpload addTestToUser| S
-  API -->|GET expressionAiStatus testStatus recoverLatest| S
+  API -->|POST createUser prepareUpload prepareSegmentUpload expressionSegment addTestToUser| S
+  API -->|GET expressionAiStatus testStatus recoverLatest results/by-token| S
   API -->|PUT SAS URL| AZ
   S --> AB
   S --> DB
@@ -37,11 +37,14 @@ flowchart TB
   S -->|BackgroundTasks| AI
 ```
 
-1. **Login** — `POST /api/createUser` → `MongoDB.add_user`
-2. **Finish session** — `POST /api/tests/prepareUpload` → SAS URL; browser **PUT** MP3 to Azure; `POST /api/addTestToUser` → save test + queue expression AI
-3. **Background** — `_run_expression_ai_background` → Gemini per-question scores + Hebrew impression
-4. **Summary poll** — `GET /api/expressionAiStatus?userId&testId`
-5. **Recover** — `GET /api/testStatus`, `GET /api/tests/recoverLatest` when upload/metadata failed
+1. **Login** — `POST /api/createUser` → `MongoDB.add_user` (optional `parentPhone`; `clientInfo.expressionAudioMode` from frontend).
+2. **During test (incremental)** — `POST /api/tests/prepareSegmentUpload` → SAS; **PUT** segment blob; `POST /api/tests/expressionSegment` → `MongoDB.upsert_expression_segment` (per question).
+3. **Finish (legacy)** — `POST /api/tests/prepareUpload` → SAS; browser **PUT** `session.mp3`; `POST /api/addTestToUser` → save test + queue expression AI from full session.
+4. **Finish (incremental)** — client drains segment queue, then `POST /api/addTestToUser` metadata-only; `_ensure_incremental_expression_rows_complete` (retries, `processing_failed` fallback) before impression; optional results SMS when `done`.
+5. **Background** — `_run_expression_ai_background` → Gemini per-question scores + Hebrew impression.
+6. **Summary poll** — `GET /api/expressionAiStatus?userId&testId`
+7. **Public results** — `GET /api/results/by-token?t=...` → `MongoDB.find_test_by_results_token` (410 when expired).
+8. **Recover** — `GET /api/testStatus`, `GET /api/tests/recoverLatest` when upload/metadata failed.
 
 ---
 
@@ -51,8 +54,12 @@ flowchart TB
 |--------|------|---------|----------|
 | GET | `/` | `home` | Deploy health (optional) |
 | POST | `/api/createUser` | `create_user` | `createUser` |
-| POST | `/api/tests/prepareUpload` | `prepare_upload` | `prepareAudioUpload` |
+| PATCH | `/api/user/parentPhone` | `patch_user_parent_phone` | (optional) |
+| POST | `/api/tests/prepareUpload` | `prepare_upload` | `prepareAudioUpload` (legacy) |
+| POST | `/api/tests/prepareSegmentUpload` | `prepare_segment_upload` | `prepareSegmentUpload` (incremental) |
+| POST | `/api/tests/expressionSegment` | `expression_segment` | `registerExpressionSegment` (incremental) |
 | POST | `/api/addTestToUser` | `add_test` | `updateUserTests` |
+| GET | `/api/results/by-token` | `results_by_token` | `getResultsByToken` |
 | GET | `/api/expressionAiStatus` | `expression_ai_status` | `getExpressionAiStatus` |
 | GET | `/api/testStatus` | `test_status` | `getTestStatus` |
 | GET | `/api/tests/recoverLatest` | `recover_latest_test` | `recoverLatestTest` |
@@ -94,6 +101,9 @@ Azure upload is **not** a FastAPI route — `putSessionAudioToBlob` PUTs to the 
 | 430–458 | Pydantic: `CreateUserRequest`, `AddTestRequest`, `PrepareUploadRequest` |
 | 460–1095 | HTTP route handlers |
 | 587–1060 | `_compute_expression_ai_payload`, background task, stale impression finalize |
+| ~1233+ | `_ensure_incremental_expression_rows_complete` (finalize retries, `processing_failed` fallback) |
+
+**Incremental env:** `INCREMENTAL_SCORE_RETRY_ATTEMPTS` (default 5), `INCREMENTAL_SCORE_RETRY_DELAY_SEC` (default 2). See [`README.md`](README.md) and [`../../changes/CHANGES_2026-05-28_28.md`](../../changes/CHANGES_2026-05-28_28.md).
 
 ---
 
@@ -107,6 +117,8 @@ Azure upload is **not** a FastAPI route — `putSessionAudioToBlob` PUTs to the 
 | `add_test_to_user` | `add_test` |
 | `update_test_expression_ai` | Expression AI background |
 | `get_test_expression_ai` | `expression_ai_status`, stale checks |
+| `upsert_expression_segment` | `expression_segment` (incremental per-question audio) |
+| `find_test_by_results_token` | `results_by_token` (SMS public link) |
 | `check_and_increment_daily_quota` | Gemini limits in pipeline |
 
 ---

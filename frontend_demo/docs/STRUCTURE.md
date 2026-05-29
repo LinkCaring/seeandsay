@@ -15,18 +15,19 @@ frontend_demo/
   docs/                      # TEST_MODULE_MAP, STRUCTURE, DEAD_CODE_REPORT
 
   js/
-    app/                     # Shell + welcome flow
+    app/                     # Shell + welcome flow + resultsView.js (token ?t=)
     api/                     # apiToMongo.js
     core/                    # i18n, ImageLoader
     components/              # navbar, help
-    record_session/          # Continuous session recorder (timestamps, capture, encode)
+    record_session/          # Session recorder + expressionSegmentRecorder.js (incremental)
     test/
-      test.js                # Test() orchestrator (~3k lines)
+      test.js                # Test() orchestrator (~3.5k lines)
       utils/                 # Pure helpers
       flow/                  # Timers, mic, intros, question load
       scoring/               # Comprehension scoring
-      ui/                    # Pause/AFK, overlays, question + summary render
-      finish/                # Session complete, expression AI poll
+      expression/            # expressionSegmentUploadQueue.js (incremental)
+      ui/                    # Pause/AFK, overlays (incl. incremental interrupt), summary
+      finish/                # Session complete, expression AI poll, incremental drain
 ```
 
 ## Global namespaces

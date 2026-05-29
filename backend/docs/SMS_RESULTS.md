@@ -25,7 +25,9 @@ If SMS credentials are missing, AI still completes; sends are skipped (logged).
 
 - Login: optional phone field.
 - Summary: SMS notice when phone was saved.
-- Results: `?t={token}` opens `MiliResultsView` without session storage.
+- Results: `?t={token}` or `?results={token}` opens `MiliResultsView` without session storage.
+- **Routing (May 2026):** The shell only stays on the results page while the URL includes a token. Opening the normal game URL without `?t=` routes to welcome/home even if `localStorage.page` was previously `"results"` — this avoids showing “התוצאות לא נמצאו” on a normal app open. Mid-test resume keys (`currentIndex`, `questionResults`, …) are **not** cleared; users can alternate SMS link and home freely.
+- **Errors on the results URL:** missing/invalid token → “התוצאות לא נמצאו”; expired token → “פג תוקף הקישור” (HTTP 410).
 
 ## Phase 4 (your step)
 

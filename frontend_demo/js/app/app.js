@@ -138,9 +138,46 @@ function getResultsTokenFromUrl() {
   }
 }
 
+/** App route only — never restore persisted "results" without ?t= / ?results= in the URL. */
+function getInitialAppPage() {
+  if (getResultsTokenFromUrl()) return "results";
+  try {
+    var saved = localStorage.getItem("page");
+    if (saved !== null) {
+      var p = JSON.parse(saved);
+      if (p === "results" || p === "help") return "home";
+      if (p === "home" || p === "test") return p;
+    }
+  } catch (e) {}
+  return "home";
+}
+
+function stripResultsTokenFromUrl() {
+  try {
+    var u = new URL(window.location.href);
+    if (!u.searchParams.has("t") && !u.searchParams.has("results")) return;
+    u.searchParams.delete("t");
+    u.searchParams.delete("results");
+    var next = u.pathname + (u.search || "") + (u.hash || "");
+    window.history.replaceState({}, "", next);
+  } catch (e) {}
+}
+
+/** Route key only — uses getInitialAppPage() so stale "results" without URL token does not stick. */
+function useAppPageState() {
+  const [page, setPage] = React.useState(getInitialAppPage);
+  React.useEffect(function persistAppPage() {
+    try {
+      localStorage.setItem("page", JSON.stringify(page));
+    } catch (e) {
+      console.warn("Failed to save state for page", e);
+    }
+  }, [page]);
+  return [page, setPage];
+}
+
 function App() {
-  var urlResultsToken = getResultsTokenFromUrl();
-  const [page, setPage] = usePersistentState("page", urlResultsToken ? "results" : "home");
+  const [page, setPage] = useAppPageState();
   const [lang, setLang] = React.useState(function () {
     return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "he";
   });
@@ -175,9 +212,15 @@ function App() {
     document.documentElement.dir = nextDir;
   }, [lang]);
 
-  React.useEffect(function openResultsFromUrlToken() {
-    if (getResultsTokenFromUrl()) {
+  React.useEffect(function reconcileResultsPageRouting() {
+    var token = getResultsTokenFromUrl();
+    if (token) {
       setPage("results");
+      return;
+    }
+    if (page === "results") {
+      setPage("home");
+      stripResultsTokenFromUrl();
     }
   }, []);
 

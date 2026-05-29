@@ -61,9 +61,10 @@ flowchart LR
    - `incremental`: each expression question creates a short segment and queues background upload/scoring.
 4. **Finish**
    - `legacy`: `prepareUpload` → upload `session.mp3` → `addTestToUser` with timestamps.
-   - `incremental`: wait for pending segment uploads, then `addTestToUser` metadata-only finalize (no full session blob).
-5. **Background** — server runs expression AI (Gemini) either from full-session slices (`legacy`) or from uploaded per-question segments (`incremental`), then builds impression.
-5. **Summary** — client polls `GET /api/expressionAiStatus` for scores and Hebrew impression text.
+   - `incremental`: enqueue last segment before advance/finish, drain upload queue (up to 60s), then `addTestToUser` metadata-only finalize (no full session blob); release mic on success; reconcile score counters from deduped results.
+5. **Background** — server runs expression AI (Gemini) from full-session slices (`legacy`) or per-question segments (`incremental`). Incremental finalize waits for all expression rows (retries + `processing_failed` fallback), then builds impression; optional SMS when AI is `done`.
+6. **Summary** — client polls `GET /api/expressionAiStatus`; summary UI completes only on terminal `done` with full progress (or explicit fallbacks).
+7. **SMS results link** — `?t=` / `?results=` opens token results (`MiliResultsView`) without login. Normal app open without a token always lands on welcome/home (stale `localStorage.page === "results"` does not block the game; test resume keys are unchanged).
 
 ---
 
@@ -110,7 +111,7 @@ On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **
 | **API** | [`backend/docs/BACKEND_MODULE_MAP.md`](backend/docs/BACKEND_MODULE_MAP.md) |
 | Backend layout & rules | [`backend/docs/BACKEND_STRUCTURE.md`](backend/docs/BACKEND_STRUCTURE.md) |
 | SMS + token results | [`backend/docs/SMS_RESULTS.md`](backend/docs/SMS_RESULTS.md) |
-| Recent engineering changes | [`changes/CHANGES_2026-05-21_22-05.md`](changes/CHANGES_2026-05-21_22-05.md) |
+| Recent engineering changes | [`changes/CHANGES_2026-05-28_28.md`](changes/CHANGES_2026-05-28_28.md) (incremental pipeline, interrupt recovery, results routing) |
 
 ---
 
@@ -119,7 +120,7 @@ On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **
 | Path | Purpose |
 |------|---------|
 | `index.html` | Script load order (treat as public API) |
-| `js/app/` | Shell, welcome flow, routing |
+| `js/app/` | Shell, welcome flow, routing (`home` / `test` / token `results`), `resultsView.js` |
 | `js/test/` | Game orchestrator (`test.js`) + modules (`utils/`, `flow/`, `scoring/`, `ui/`, `finish/`) |
 | `js/api/` | HTTP client to backend |
 | `js/record_session/` | Continuous recorder (loaded via `recording.js`) |
@@ -161,6 +162,21 @@ Rubrics are read from **`frontend_demo/resources/query_database.csv`** at startu
 | Frontend | Static host or GitHub Pages — publish **`frontend_demo/`** contents |
 | Backend | Render — `uvicorn server:app`, env vars from `.env` template |
 | Secrets | Never commit `backend/.env` |
+
+---
+
+## Incremental expression (May 2026 highlights)
+
+Client footer / `MILI_APP_VERSION`: **5.4**. Login persists `expressionAudioMode` (`legacy` | `incremental`).
+
+| Area | Behavior |
+|------|----------|
+| During test | Per-question segment recorder + upload queue; 20s countdown freezes during segment upload drain and on segment interrupt |
+| Mic / call loss | Incremental-only full-screen interrupt + per-question re-record (blocked after server register); mic probe at timer arm if mic was off during prompt; legacy `recordingInterruptedBanner` unchanged for legacy mode |
+| Finish | Queue idle before metadata finalize; `releaseCaptureStream` on incremental success; session score counters reconciled at finish |
+| Results URL | `?t=` shows SMS results; opening the game without a token does not stick on “results not found” |
+
+Details and QA notes: [`changes/CHANGES_2026-05-28_28.md`](changes/CHANGES_2026-05-28_28.md).
 
 ---
 
