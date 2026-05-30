@@ -79,7 +79,7 @@ Run after each phase:
 7. Upload retry after failure (optional).
 8. Dev Ctrl+Q jump (if dev code touched).
 9. Early Finish dialog (incomplete test): opens via `pauseTest()` (same as navbar pause); recording + expression 20s freeze; no `markQuestionEnd` while dialog open (`MiliTestFinishDialog`); navbar pause hidden; Stay calls `resumeTest()`; finish anyway uses `completeSession` only (no resume).
-10. **Incremental** — login mode `incremental`; segment uploads during test; last question enqueue-before-finish; countdown freezes during upload drain; finish metadata-only + mic release; summary waits for `expressionAiStatus` `done` with full progress.
+10. **Incremental** — login mode `incremental`; segment uploads during test (3 client retries, Q-keyed blobs); last question enqueue-before-finish; finish retry burst 30s + queue drain 60s; countdown freezes during upload drain; finish metadata-only + mic release; summary waits for `expressionAiStatus` `done` with full progress (no 30s UI cap).
 11. **Incremental interrupt** — revoke mic during answer window → full-screen interrupt + re-record; mic off during prompt → interrupt at timer arm (no modal during prompt); restart blocked after segment registered; Android call with live track → no false interrupt when applicable.
 12. **Results routing** — open `?t=` valid token → results; open app without token after prior results visit → welcome/home (not “התוצאות לא נמצאו”); mid-test resume keys intact when alternating SMS link and home.
 

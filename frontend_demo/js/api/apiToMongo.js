@@ -139,13 +139,13 @@ async function createUser(userId, userName, parentPhone) {
 var PENDING_TEST_ID_KEY = "seeandsayPendingTestId";
 var PENDING_BLOB_UPLOADED_KEY = "seeandsayPendingBlobUploaded";
 /** Keep in sync with `app-version-label` in js/app/app.js */
-var MILI_APP_VERSION = "5.5";
+var MILI_APP_VERSION = "5.6";
 
 /**
  * Debug metadata sent with each finished test (device, browser, upload state).
  * @param {string|number} demoUserId - UI/local idDigits passed to API layer
  * @param {string} [testId] - pending test id at finish
- * @param {{ blobUploadOk?: boolean }} [opts]
+ * @param {{ blobUploadOk?: boolean, segmentUpload?: object }} [opts]
  */
 function collectClientInfo(demoUserId, testId, opts) {
   opts = opts || {};
@@ -219,6 +219,10 @@ function collectClientInfo(demoUserId, testId, opts) {
     }
   } catch (collectErr) {
     info.collectError = collectErr && collectErr.message ? collectErr.message : String(collectErr);
+  }
+
+  if (opts.segmentUpload && typeof opts.segmentUpload === "object") {
+    info.segmentUpload = opts.segmentUpload;
   }
 
   return info;
@@ -438,10 +442,13 @@ async function updateUserTests(
   timestampText,
   childGender,
   audioBlobPath,
-  testId
+  testId,
+  finalizeOpts
 ) {
   const url = getApiBaseUrl() + "/api/addTestToUser";
   var apiUserId = resolveBackendUserId(userId);
+  var collectOpts =
+    finalizeOpts && typeof finalizeOpts === "object" && !Array.isArray(finalizeOpts) ? finalizeOpts : {};
 
   try {
     console.log("📤 Uploading test data to MongoDB...");
@@ -459,7 +466,7 @@ async function updateUserTests(
     }
     console.log("   Timestamps:", timestampText ? "Present" : "None");
 
-    var clientInfo = collectClientInfo(userId, testId);
+    var clientInfo = collectClientInfo(userId, testId, collectOpts);
     console.log(
       "   clientInfo:",
       clientInfo.appVersion,

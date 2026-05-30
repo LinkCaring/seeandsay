@@ -1,7 +1,12 @@
 /**
  * Non-blocking sequential upload queue for expression segments.
+ * Retains blobs per question until register succeeds; retries failed uploads.
  */
 (function () {
+  var MAX_ATTEMPTS = 3;
+  var RETRY_DELAYS_MS = [1000, 2000];
+  var FINISH_RETRY_BURST_MS = 30000;
+
   function convertBlobToMp3(blob) {
     if (!blob) return Promise.resolve(null);
     return new Promise(function (resolve) {
@@ -39,14 +44,37 @@
     var queue = [];
     var running = false;
     var completed = 0;
-    var failed = 0;
+    var exhaustedCount = 0;
     var idleWaiters = [];
     var currentJob = null;
     var completedQuestions = {};
     var failedQuestions = {};
+    var pendingUploads = {};
+    var retryTimerCount = 0;
+    var trackedQuestionKeys = {};
 
     function qKey(questionNumber) {
       return String(questionNumber || "").trim();
+    }
+
+    function trackQuestionKey(key) {
+      if (key) trackedQuestionKeys[key] = true;
+    }
+
+    function isQuestionInQueue(key) {
+      for (var i = 0; i < queue.length; i++) {
+        if (qKey(queue[i].questionNumber) === key) return true;
+      }
+      return false;
+    }
+
+    function pendingCount() {
+      var retrying = 0;
+      Object.keys(pendingUploads).forEach(function (key) {
+        var entry = pendingUploads[key];
+        if (entry && entry.status === "retrying") retrying += 1;
+      });
+      return queue.length + (running ? 1 : 0) + retryTimerCount + retrying;
     }
 
     function flushIdleWaiters() {
@@ -73,11 +101,27 @@
       if (!key) return "none";
       if (completedQuestions[key]) return "completed";
       if (isUploadInFlight(key)) return "in_flight";
-      for (var i = 0; i < queue.length; i++) {
-        if (qKey(queue[i].questionNumber) === key) return "pending";
-      }
-      if (failedQuestions[key]) return "failed";
+      var entry = pendingUploads[key];
+      if (entry && entry.status === "retrying") return "retrying";
+      if (isQuestionInQueue(key)) return "pending";
+      if (entry && entry.status === "exhausted") return "exhausted";
+      if (failedQuestions[key]) return "exhausted";
+      if (entry && entry.segmentBlob) return "pending";
       return "none";
+    }
+
+    function buildByQuestionMap() {
+      var byQuestion = {};
+      Object.keys(trackedQuestionKeys).forEach(function (key) {
+        byQuestion[key] = getQuestionUploadState(key);
+      });
+      Object.keys(pendingUploads).forEach(function (key) {
+        if (!byQuestion[key]) byQuestion[key] = getQuestionUploadState(key);
+      });
+      Object.keys(completedQuestions).forEach(function (key) {
+        byQuestion[key] = "completed";
+      });
+      return byQuestion;
     }
 
     function cancelPendingForQuestion(questionNumber) {
@@ -87,7 +131,56 @@
       queue = queue.filter(function (job) {
         return qKey(job.questionNumber) !== key;
       });
+      delete pendingUploads[key];
+      delete failedQuestions[key];
+      delete completedQuestions[key];
+      delete trackedQuestionKeys[key];
       return before - queue.length;
+    }
+
+    function pushQueueEntry(questionNumber) {
+      var key = qKey(questionNumber);
+      if (!key || isQuestionInQueue(key)) return;
+      queue.push({ questionNumber: key });
+      setTimeout(runNext, 0);
+    }
+
+    function scheduleRetry(questionNumber) {
+      var key = qKey(questionNumber);
+      var entry = pendingUploads[key];
+      if (!entry || entry.attemptCount >= MAX_ATTEMPTS) return;
+      if (isQuestionInQueue(key) || isUploadInFlight(key)) return;
+      var delayIdx = Math.min(Math.max(entry.attemptCount - 1, 0), RETRY_DELAYS_MS.length - 1);
+      var delayMs = RETRY_DELAYS_MS[delayIdx] || RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      entry.status = "retrying";
+      retryTimerCount += 1;
+      setTimeout(function () {
+        retryTimerCount = Math.max(0, retryTimerCount - 1);
+        var current = pendingUploads[key];
+        if (!current || completedQuestions[key]) {
+          flushIdleWaiters();
+          return;
+        }
+        if (current.attemptCount >= MAX_ATTEMPTS) {
+          flushIdleWaiters();
+          return;
+        }
+        current.status = "pending";
+        pushQueueEntry(key);
+        flushIdleWaiters();
+      }, delayMs);
+    }
+
+    function markExhausted(key, err) {
+      var entry = pendingUploads[key];
+      if (entry && entry.status === "exhausted") return;
+      if (entry) {
+        entry.status = "exhausted";
+        entry.lastError = err && err.message ? err.message : String(err || "upload failed");
+      }
+      failedQuestions[key] = true;
+      exhaustedCount += 1;
+      console.error("[segmentQueue] upload exhausted q" + key, err);
     }
 
     async function runNext() {
@@ -95,30 +188,51 @@
       running = true;
       while (queue.length) {
         var job = queue.shift();
-        currentJob = job;
+        var key = qKey(job && job.questionNumber);
+        if (!key) {
+          currentJob = null;
+          continue;
+        }
+        var entry = pendingUploads[key];
+        if (!entry || !entry.segmentBlob) {
+          currentJob = null;
+          continue;
+        }
+        currentJob = { questionNumber: key };
+        entry.status = "in_flight";
         try {
-          var mp3Blob = await convertBlobToMp3(job.segmentBlob);
-          var prep = await deps.prepareSegmentUpload(job.userId, job.testId, job.questionNumber);
+          var mp3Blob = await convertBlobToMp3(entry.segmentBlob);
+          var prep = await deps.prepareSegmentUpload(entry.userId, entry.testId, key);
           if (!prep || prep.success === false) throw new Error((prep && prep.error) || "prepare failed");
           var put = await deps.putSessionAudioToBlob(prep.uploadUrl, mp3Blob);
           if (!put || put.success === false) throw new Error((put && put.error) || "put failed");
-          await deps.registerExpressionSegment(job.userId, {
-            testId: job.testId,
-            questionNumber: String(job.questionNumber),
+          await deps.registerExpressionSegment(entry.userId, {
+            testId: entry.testId,
+            questionNumber: key,
             blobPath: prep.blobPath,
-            headlightResult: job.headlightResult || null,
-            childGender: job.childGender || null,
-            ageYears: job.ageYears,
-            ageMonths: job.ageMonths,
+            headlightResult: entry.headlightResult || null,
+            childGender: entry.childGender || null,
+            ageYears: entry.ageYears,
+            ageMonths: entry.ageMonths,
           });
           completed += 1;
-          completedQuestions[qKey(job.questionNumber)] = true;
-          delete failedQuestions[qKey(job.questionNumber)];
-          console.log("[segmentQueue] uploaded q" + job.questionNumber + " (completed=" + completed + ")");
+          completedQuestions[key] = true;
+          delete failedQuestions[key];
+          delete pendingUploads[key];
+          console.log("[segmentQueue] uploaded q" + key + " (completed=" + completed + ")");
         } catch (err) {
-          failed += 1;
-          failedQuestions[qKey(job.questionNumber)] = true;
-          console.error("[segmentQueue] upload failed", err);
+          entry.attemptCount = (entry.attemptCount || 0) + 1;
+          entry.lastError = err && err.message ? err.message : String(err || "upload failed");
+          if (entry.attemptCount < MAX_ATTEMPTS) {
+            entry.status = "pending";
+            console.warn(
+              "[segmentQueue] upload failed q" + key + " attempt " + entry.attemptCount + "/" + MAX_ATTEMPTS,
+              err
+            );
+            scheduleRetry(key);
+          } else {
+            markExhausted(key, err);
+          }
         }
         currentJob = null;
       }
@@ -126,24 +240,49 @@
       flushIdleWaiters();
     }
 
-    function enqueue(job) {
+    function storePendingFromJob(job) {
       var key = qKey(job && job.questionNumber);
-      if (key) {
-        delete failedQuestions[key];
-      }
-      queue.push(job);
-      setTimeout(runNext, 0);
+      if (!key || !job || !job.segmentBlob) return null;
+      trackQuestionKey(key);
+      pendingUploads[key] = {
+        segmentBlob: job.segmentBlob,
+        userId: job.userId,
+        testId: job.testId,
+        headlightResult: job.headlightResult,
+        childGender: job.childGender,
+        ageYears: job.ageYears,
+        ageMonths: job.ageMonths,
+        attemptCount: 0,
+        lastError: null,
+        status: "pending",
+      };
+      delete failedQuestions[key];
+      return key;
     }
 
-    function pendingCount() {
-      return queue.length + (running ? 1 : 0);
+    function enqueue(job) {
+      var key = storePendingFromJob(job);
+      if (!key) return;
+      pushQueueEntry(key);
     }
 
     function stats() {
       return {
         pending: pendingCount(),
         completed: completed,
-        failed: failed,
+        failed: exhaustedCount,
+        exhausted: exhaustedCount,
+        byQuestion: buildByQuestionMap(),
+      };
+    }
+
+    function getSegmentUploadClientInfo() {
+      var s = stats();
+      return {
+        completed: s.completed,
+        exhausted: s.exhausted,
+        pending: s.pending,
+        byQuestion: s.byQuestion,
       };
     }
 
@@ -169,13 +308,29 @@
       });
     }
 
+    function runFinishRetryBurst(timeoutMs) {
+      var burstMs =
+        typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : FINISH_RETRY_BURST_MS;
+      Object.keys(pendingUploads).forEach(function (key) {
+        if (completedQuestions[key]) return;
+        var entry = pendingUploads[key];
+        if (!entry || !entry.segmentBlob) return;
+        if (entry.attemptCount >= MAX_ATTEMPTS) return;
+        if (entry.status === "in_flight" || entry.status === "retrying") return;
+        entry.status = "pending";
+        delete failedQuestions[key];
+        pushQueueEntry(key);
+      });
+      return waitForIdle(burstMs);
+    }
+
     function waitForQuestionIdle(questionNumber, timeoutMs) {
       var waitMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 25000;
       return new Promise(function (resolve) {
         var start = Date.now();
         function tick() {
           var state = getQuestionUploadState(questionNumber);
-          if (state !== "pending" && state !== "in_flight") {
+          if (state !== "pending" && state !== "in_flight" && state !== "retrying") {
             resolve(state);
             return;
           }
@@ -193,7 +348,9 @@
       enqueue: enqueue,
       pendingCount: pendingCount,
       stats: stats,
+      getSegmentUploadClientInfo: getSegmentUploadClientInfo,
       waitForIdle: waitForIdle,
+      runFinishRetryBurst: runFinishRetryBurst,
       cancelPendingForQuestion: cancelPendingForQuestion,
       isUploadInFlight: isUploadInFlight,
       hasCompletedUpload: hasCompletedUpload,

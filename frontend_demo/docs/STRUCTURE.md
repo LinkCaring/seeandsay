@@ -27,7 +27,7 @@ frontend_demo/
       scoring/               # Comprehension scoring
       expression/            # expressionSegmentUploadQueue.js (incremental)
       ui/                    # Pause/AFK, overlays (incl. incremental interrupt), summary
-      finish/                # Session complete, expression AI poll, incremental drain
+      finish/                # Session complete, expression AI poll, incremental drain + finish retry burst
 ```
 
 ## Global namespaces

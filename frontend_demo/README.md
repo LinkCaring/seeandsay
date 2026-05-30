@@ -84,7 +84,7 @@ index.html
 
 **Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores. Mid-test resume keys are **not** cleared when fixing results routing.
 
-**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.4**.
+**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.6**.
 
 ---
 
@@ -218,8 +218,8 @@ Loaded **before** root `recording.js`, which exposes the unified API the game us
 | `flow/` | Timers, mic intro, start screens, load question / index |
 | `scoring/` | Comprehension tap scoring and advance rules |
 | `ui/` | Pause/AFK, overlays, question layout, session-complete screen |
-| `expression/` | `expressionSegmentUploadQueue.js` — per-question upload state, cancel/wait helpers |
-| `finish/` | End session, upload pipeline, expression AI polling, incremental queue drain + score reconcile |
+| `expression/` | `expressionSegmentUploadQueue.js` — Q-keyed blobs, 3× retry, cancel/wait/finish burst helpers |
+| `finish/` | End session, upload pipeline, expression AI polling, incremental drain + finish retry burst |
 
 ---
 
@@ -260,13 +260,17 @@ At login, the parent chooses expression recording mode:
 | `record_session/*` | Implementation (capture, timestamps, encode) |
 | `recording.js` | Facade → **`SessionRecorder`** global |
 | `js/record_session/expressionSegmentRecorder.js` | Incremental segment capture (one segment per expression question) |
-| `js/test/expression/expressionSegmentUploadQueue.js` | Incremental async queue: encode + upload + register segment |
+| `js/test/expression/expressionSegmentUploadQueue.js` | Incremental async queue: encode + upload + register segment; Q-keyed blob retention; up to 3 retries per question |
 | `test.js` + modules | Starts mode-specific recording flow, marks timestamps in legacy, and enqueues segment uploads in incremental |
 
 On finish, `testSessionFinish.js` branches by mode:
 
 - **`legacy`**: waits for session MP3, uploads via SAS, then calls `updateUserTests` with scores + timestamp text.
-- **`incremental`**: `testScoring.js` enqueues the last segment before advance/finish; drains pending uploads (60s on finish), freezes the 20s expression countdown during drain, skips full-session blob upload, calls `updateUserTests` for metadata-only finalize, then `releaseIncrementalCaptureResources()` on success. Score counters are reconciled from deduped `questionResults` at finish.
+- **`incremental`**: `testScoring.js` enqueues the last segment before advance/finish; at finish runs a 30s retry burst for failed uploads (only), then drains pending uploads (60s), freezes the 20s expression countdown during drain, always calls `updateUserTests` for metadata-only finalize (no legacy full-audio fallback when zero segments succeed), then `releaseIncrementalCaptureResources()` on success. Score counters are reconciled from deduped `questionResults` at finish. Summary / expression AI polling waits for full `done` with no 30s UI cap.
+
+### Incremental upload retry (iOS / flaky network)
+
+When prepare, blob PUT, or segment register fails (common during phone calls on iOS), the client retries up to **3 times** per question with 1s/2s backoff. Blobs stay in `pendingUploads[questionNumber]` until register succeeds. At finish, eligible failed uploads get a **30s retry burst** before the **60s** main queue drain. Exhausted uploads are recorded in `clientInfo.segmentUpload` at finalize; the server inserts `processing_failed` fallback rows for missing segments. Parent-visible AI text is unchanged for those rows.
 
 ### Incremental segment interrupt (mic / call)
 
@@ -279,7 +283,7 @@ Only when `expressionAudioMode === "incremental"` and on an expression question:
 | After interrupt | 20s countdown frozen; navbar and question UI hidden; re-record gated on live `getUserMedia`; mandatory re-record until segment is registered on server (Continue only when upload `completed`) |
 | Restart | `restartCurrentIncrementalExpressionQuestion` — cancel pending queue jobs for that question; blocked after server register; waits on `in_flight` upload |
 
-Queue helpers: `getQuestionUploadState`, `cancelPendingForQuestion`, `waitForQuestionIdle`. Segment blobs are bound to their originating question number (no cross-question reuse).
+Queue helpers: `getQuestionUploadState`, `cancelPendingForQuestion`, `waitForQuestionIdle`, `runFinishRetryBurst`, `getSegmentUploadClientInfo`. Segment blobs are bound to their originating question number (no cross-question reuse).
 
 ### Token results page (`?t=` / `?results=`)
 
@@ -314,7 +318,7 @@ Expression scoring runs on the server in both modes:
 - **`legacy`**: mainly after finish, using slices from the uploaded session audio.
 - **`incremental`**: continuously during test from uploaded expression segments; finalize waits for all expression rows (server retries + fallbacks), then impression; summary polls until `done` with `processed >= total`.
 
-**Changelog (28 May 2026):** [`../changes/CHANGES_2026-05-28_28.md`](../changes/CHANGES_2026-05-28_28.md) — full numbered list (login mode, segment APIs, interrupt recovery, results routing fix, version 5.4).
+**Changelog (30 May 2026):** [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md) — segment upload retry, finish recovery, version 5.6. Prior: [`../changes/CHANGES_2026-05-28_28.md`](../changes/CHANGES_2026-05-28_28.md).
 
 ---
 

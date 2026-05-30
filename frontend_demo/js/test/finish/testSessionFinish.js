@@ -159,6 +159,13 @@
           if (typeof pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload === "function") {
             pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload();
           }
+          if (typeof pipelineCtx.runExpressionSegmentFinishRetryBurst === "function") {
+            try {
+              pipelineCtx.setTestUploadState("saving_metadata");
+              seedLocalExpressionUploadPhase("scoring_questions");
+              await pipelineCtx.runExpressionSegmentFinishRetryBurst(30000);
+            } catch (burstErr) {}
+          }
           if (typeof pipelineCtx.waitForExpressionSegmentQueueIdle === "function") {
             try {
               pipelineCtx.setTestUploadState("saving_metadata");
@@ -166,22 +173,19 @@
               await pipelineCtx.waitForExpressionSegmentQueueIdle(60000);
             } catch (idleErr) {}
           }
-          var segStats =
-            typeof pipelineCtx.getExpressionSegmentUploadStats === "function"
-              ? pipelineCtx.getExpressionSegmentUploadStats()
-              : { pending: 0, completed: 0, failed: 0 };
-          var hasUploadedSegments = (segStats && segStats.completed > 0);
-          if (!hasUploadedSegments) {
-            console.warn(
-              "[incremental] no uploaded segments before finish; falling back to legacy full-audio upload"
-            );
-          } else {
           pipelineCtx.setTestUploadState("saving_metadata");
           pipelineCtx.expressionPhaseRecordingStartedRef.current = false;
           if (typeof pipelineCtx.releaseIncrementalCaptureResources === "function") {
             pipelineCtx.releaseIncrementalCaptureResources();
           }
           pipelineCtx.setSessionCompleted(true);
+          var incrementalFinalizeOpts = null;
+          if (typeof pipelineCtx.getExpressionSegmentUploadClientInfo === "function") {
+            var segmentUploadInfo = pipelineCtx.getExpressionSegmentUploadClientInfo();
+            if (segmentUploadInfo) {
+              incrementalFinalizeOpts = { segmentUpload: segmentUploadInfo };
+            }
+          }
           var incrementalResult = await pipelineCtx.updateUserTests(
             pipelineCtx.idDigits,
             pipelineCtx.ageYears,
@@ -194,11 +198,11 @@
             null,
             pipelineCtx.childGender,
             null,
-            pipelineCtx.ensurePendingTestId()
+            pipelineCtx.ensurePendingTestId(),
+            incrementalFinalizeOpts
           );
           handleUploadResult(incrementalResult);
           return;
-          }
         }
         pipelineCtx.setTestUploadState("preparing_recording");
 

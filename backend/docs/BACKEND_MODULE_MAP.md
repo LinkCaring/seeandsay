@@ -40,7 +40,7 @@ flowchart TB
 1. **Login** — `POST /api/createUser` → `MongoDB.add_user` (optional `parentPhone`; `clientInfo.expressionAudioMode` from frontend).
 2. **During test (incremental)** — `POST /api/tests/prepareSegmentUpload` → SAS; **PUT** segment blob; `POST /api/tests/expressionSegment` → `MongoDB.upsert_expression_segment` (per question).
 3. **Finish (legacy)** — `POST /api/tests/prepareUpload` → SAS; browser **PUT** `session.mp3`; `POST /api/addTestToUser` → save test + queue expression AI from full session.
-4. **Finish (incremental)** — client drains segment queue, then `POST /api/addTestToUser` metadata-only; `_ensure_incremental_expression_rows_complete` (retries, `processing_failed` fallback) before impression; optional results SMS when `done`.
+4. **Finish (incremental)** — client finish retry burst (30s, failed uploads) + segment queue drain (60s), then `POST /api/addTestToUser` metadata-only with optional `clientInfo.segmentUpload`; `_ensure_incremental_expression_rows_complete` (retries, `processing_failed` fallback) before impression; optional results SMS when `done`.
 5. **Background** — `_run_expression_ai_background` → Gemini per-question scores + Hebrew impression.
 6. **Summary poll** — `GET /api/expressionAiStatus?userId&testId`
 7. **Public results** — `GET /api/results/by-token?t=...` → `MongoDB.find_test_by_results_token` (410 when expired).
