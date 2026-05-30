@@ -436,6 +436,28 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     expressionSegmentRecorderRef.current.clearLastBlob();
   }
 
+  function getExpressionSegmentUploadStatsFromQueue() {
+    return expressionSegmentQueueRef.current && expressionSegmentQueueRef.current.stats
+      ? expressionSegmentQueueRef.current.stats()
+      : { pending: 0, completed: 0, failed: 0, exhausted: 0, byQuestion: {} };
+  }
+
+  function getExpressionSegmentUploadClientInfoFromQueue() {
+    return expressionSegmentQueueRef.current && expressionSegmentQueueRef.current.getSegmentUploadClientInfo
+      ? expressionSegmentQueueRef.current.getSegmentUploadClientInfo()
+      : null;
+  }
+
+  async function waitForExpressionSegmentQueueIdleFn(timeoutMs) {
+    if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
+    await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
+  }
+
+  async function runExpressionSegmentFinishRetryBurstFn(timeoutMs) {
+    if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.runFinishRetryBurst) return;
+    await expressionSegmentQueueRef.current.runFinishRetryBurst(timeoutMs);
+  }
+
   function releaseIncrementalCaptureResources() {
     if (getExpressionAudioMode() !== "incremental") return;
     if (expressionSegmentRecorderRef.current && expressionSegmentRecorderRef.current.cleanup) {
@@ -3238,15 +3260,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         ? expressionSegmentQueueRef.current.pendingCount()
         : 0;
     },
-    getExpressionSegmentUploadStats: function () {
-      return expressionSegmentQueueRef.current && expressionSegmentQueueRef.current.stats
-        ? expressionSegmentQueueRef.current.stats()
-        : { pending: 0, completed: 0, failed: 0 };
-    },
-    waitForExpressionSegmentQueueIdle: async function (timeoutMs) {
-      if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
-      await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
-    },
+    getExpressionSegmentUploadStats: getExpressionSegmentUploadStatsFromQueue,
+    getExpressionSegmentUploadClientInfo: getExpressionSegmentUploadClientInfoFromQueue,
+    waitForExpressionSegmentQueueIdle: waitForExpressionSegmentQueueIdleFn,
+    runExpressionSegmentFinishRetryBurst: runExpressionSegmentFinishRetryBurstFn,
     reconcileSessionScoreCounters: reconcileSessionScoreCountersFromResults,
     beginExpressionEvalFreezeForIncrementalUpload: beginExpressionEvalFreezeForIncrementalUpload,
     releaseIncrementalCaptureResources: releaseIncrementalCaptureResources,
@@ -3297,10 +3314,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     requestCompleteSessionOrConfirm: requestCompleteSessionOrConfirm,
     enqueueExpressionSegmentUpload: enqueueExpressionSegmentUpload,
     getExpressionAudioMode: getExpressionAudioMode,
-    waitForExpressionSegmentQueueIdle: async function (timeoutMs) {
-      if (!expressionSegmentQueueRef.current || !expressionSegmentQueueRef.current.waitForIdle) return;
-      await expressionSegmentQueueRef.current.waitForIdle(timeoutMs);
-    },
+    waitForExpressionSegmentQueueIdle: waitForExpressionSegmentQueueIdleFn,
+    runExpressionSegmentFinishRetryBurst: runExpressionSegmentFinishRetryBurstFn,
     beginExpressionEvalFreezeForIncrementalUpload: beginExpressionEvalFreezeForIncrementalUpload,
     openIncompleteSummaryConfirm: openIncompleteSummaryConfirm,
     tryGateExpressionMicCheckBeforeNavigatingTo: tryGateExpressionMicCheckBeforeNavigatingTo,
