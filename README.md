@@ -111,7 +111,7 @@ On localhost, [`apiToMongo.js`](frontend_demo/js/api/apiToMongo.js) uses port **
 | **API** | [`backend/docs/BACKEND_MODULE_MAP.md`](backend/docs/BACKEND_MODULE_MAP.md) |
 | Backend layout & rules | [`backend/docs/BACKEND_STRUCTURE.md`](backend/docs/BACKEND_STRUCTURE.md) |
 | SMS + token results | [`backend/docs/SMS_RESULTS.md`](backend/docs/SMS_RESULTS.md) |
-| Recent engineering changes | [`changes/CHANGES_2026-05-30_30.md`](changes/CHANGES_2026-05-30_30.md) (iOS segment upload retry); [`changes/CHANGES_2026-05-28_28.md`](changes/CHANGES_2026-05-28_28.md) (incremental pipeline, interrupt recovery) |
+| Recent engineering changes | [`changes/CHANGES_2026-05-31_31.md`](changes/CHANGES_2026-05-31_31.md) (iOS mic check AudioContext); [`changes/CHANGES_2026-05-30_30.md`](changes/CHANGES_2026-05-30_30.md) (iOS segment upload retry) |
 
 ---
 
@@ -167,7 +167,7 @@ Rubrics are read from **`frontend_demo/resources/query_database.csv`** at startu
 
 ## Incremental expression (May 2026 highlights)
 
-Client footer / `MILI_APP_VERSION`: **5.6**. Login persists `expressionAudioMode` (`legacy` | `incremental`).
+Client footer / `MILI_APP_VERSION`: **5.7**. Login persists `expressionAudioMode` (`legacy` | `incremental`).
 
 | Area | Behavior |
 |------|----------|

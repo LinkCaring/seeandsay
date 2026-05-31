@@ -84,7 +84,7 @@ index.html
 
 **Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores. Mid-test resume keys are **not** cleared when fixing results routing.
 
-**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.6**.
+**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.7**.
 
 ---
 
@@ -318,7 +318,7 @@ Expression scoring runs on the server in both modes:
 - **`legacy`**: mainly after finish, using slices from the uploaded session audio.
 - **`incremental`**: continuously during test from uploaded expression segments; finalize waits for all expression rows (server retries + fallbacks), then impression; summary polls until `done` with `processed >= total`.
 
-**Changelog (30 May 2026):** [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md) — segment upload retry, finish recovery, version 5.6. Prior: [`../changes/CHANGES_2026-05-28_28.md`](../changes/CHANGES_2026-05-28_28.md).
+**Changelog (31 May 2026):** [`../changes/CHANGES_2026-05-31_31.md`](../changes/CHANGES_2026-05-31_31.md) — expression mic check AudioContext resume, version 5.7. Prior: [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md).
 
 ---
 

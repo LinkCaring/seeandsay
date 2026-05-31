@@ -4,6 +4,22 @@
  */
 (function () {
   function createMicIntro(getCtx) {
+    async function ensureAudioContextRunning(audioCtx) {
+      if (!audioCtx || audioCtx.state === "closed") return false;
+      if (audioCtx.state === "running") return true;
+      try {
+        await audioCtx.resume();
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume();
+        }
+      } catch (resumeErr) {
+        console.warn("[micCheck] audioCtx.resume failed", resumeErr);
+        return false;
+      }
+      console.log("[micCheck] audioCtx.state after resume:", audioCtx.state);
+      return audioCtx.state === "running";
+    }
+
     function stopMicrophoneCheck() {
       var ctx = getCtx();
       if (!ctx || !ctx.micCheckRafRef) return;
@@ -37,18 +53,27 @@
       ctx.setMicPermissionError("");
 
       try {
-        var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        ctx.micCheckStreamRef.current = stream;
         var AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error("AudioContext not supported");
         var audioCtx = new AudioCtx();
         ctx.micCheckAudioContextRef.current = audioCtx;
+
+        var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        ctx.micCheckStreamRef.current = stream;
         var source = audioCtx.createMediaStreamSource(stream);
         var analyser = audioCtx.createAnalyser();
         analyser.fftSize = 1024;
         analyser.smoothingTimeConstant = 0.85;
         source.connect(analyser);
         ctx.micCheckAnalyserRef.current = analyser;
+
+        var running = await ensureAudioContextRunning(audioCtx);
+        if (!running) {
+          stopMicrophoneCheck();
+          ctx.setMicPermissionError(ctx.tr("test.mic.check.audioNotReady"));
+          return;
+        }
+
         var data = new Uint8Array(analyser.fftSize);
         var stableFrames = 0;
         var minGoodLevel = 0.08;
@@ -62,6 +87,10 @@
 
         function tick() {
           if (!ctx.micCheckAnalyserRef.current) return;
+          if (audioCtx.state !== "running") {
+            ctx.micCheckRafRef.current = requestAnimationFrame(tick);
+            return;
+          }
           analyser.getByteTimeDomainData(data);
           var sum = 0;
           for (var i = 0; i < data.length; i++) {
