@@ -56,6 +56,8 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
   const expressionAnswerEndTimerRef = React.useRef(null);
   const expressionSegmentRecorderRef = React.useRef(null);
   const expressionSegmentQueueRef = React.useRef(null);
+  const segmentBlobVaultRef = React.useRef(null);
+  const segmentVaultFlushInFlightRef = React.useRef(false);
   var exprTimerCtxRef = React.useRef({});
   var exprTimersRef = React.useRef(null);
   function ensureExprTimers() {
@@ -412,28 +414,123 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     }
   }
 
-  async function enqueueExpressionSegmentUpload(question, headlightResult) {
-    if (!question || question.query_type !== "הבעה") return;
-    if (getExpressionAudioMode() !== "incremental") return;
-    if (!expressionSegmentRecorderRef.current || !expressionSegmentQueueRef.current) return;
+  function enqueueSegmentJobFromBlob(questionNumber, headlightResult, blob) {
+    if (!blob || !expressionSegmentQueueRef.current) return;
     var testId = ensurePendingTestId();
-    var blob = await expressionSegmentRecorderRef.current.stopSegment(question.query_number);
-    if (!blob) {
-      console.warn("[incremental] missing segment blob for q" + String(question.query_number || ""));
-      return;
-    }
+    var qn = String(questionNumber || "");
     expressionSegmentQueueRef.current.enqueue({
       userId: idDigits,
       testId: testId,
-      questionNumber: String(question.query_number || ""),
+      questionNumber: qn,
       headlightResult: headlightResult,
       segmentBlob: blob,
       childGender: childGender,
       ageYears: ageYears,
       ageMonths: ageMonths,
     });
-    console.log("[incremental] queued segment upload q" + String(question.query_number || ""));
+    console.log("[incremental] queued segment upload q" + qn);
+  }
+
+  async function flushVaultedExpressionSegments() {
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (!segmentBlobVaultRef.current || !expressionSegmentQueueRef.current) return;
+    if (segmentVaultFlushInFlightRef.current) return;
+    segmentVaultFlushInFlightRef.current = true;
+    try {
+      var testId = ensurePendingTestId();
+      var vault = segmentBlobVaultRef.current;
+      var queue = expressionSegmentQueueRef.current;
+      var pendingKeys = await vault.listPendingKeys(testId);
+      var rows = dedupeQuestionResultsKeepLastAttempt(questionResults);
+      var headlightByQ = {};
+      rows.forEach(function (r) {
+        if (r && r.questionNumber) headlightByQ[String(r.questionNumber)] = r.result;
+      });
+      for (var i = 0; i < pendingKeys.length; i++) {
+        var key = pendingKeys[i];
+        if (queue.getQuestionUploadState(key) === "completed") {
+          await vault.remove(testId, key);
+          continue;
+        }
+        if (
+          queue.getQuestionUploadState(key) === "pending" ||
+          queue.getQuestionUploadState(key) === "in_flight" ||
+          queue.getQuestionUploadState(key) === "retrying"
+        ) {
+          continue;
+        }
+        var entry = await vault.getEntry(testId, key);
+        if (!entry || !entry.blob) continue;
+        var hr = entry.headlightResult || headlightByQ[key] || null;
+        enqueueSegmentJobFromBlob(key, hr, entry.blob);
+      }
+      for (var j = 0; j < rows.length; j++) {
+        var row = rows[j];
+        if (!row || !row.questionNumber) continue;
+        var qKey = String(row.questionNumber);
+        var q = null;
+        for (var k = 0; k < questions.length; k++) {
+          if (String(questions[k].query_number) === qKey) {
+            q = questions[k];
+            break;
+          }
+        }
+        if (!q || q.query_type !== "הבעה") continue;
+        if (queue.getQuestionUploadState(qKey) === "completed") continue;
+        if (
+          queue.getQuestionUploadState(qKey) === "pending" ||
+          queue.getQuestionUploadState(qKey) === "in_flight" ||
+          queue.getQuestionUploadState(qKey) === "retrying"
+        ) {
+          continue;
+        }
+        var vaulted = await vault.getEntry(testId, qKey);
+        if (!vaulted || !vaulted.blob) continue;
+        enqueueSegmentJobFromBlob(qKey, vaulted.headlightResult || row.result, vaulted.blob);
+      }
+    } catch (flushErr) {
+      console.warn("[incremental] flushVaultedExpressionSegments failed", flushErr);
+    } finally {
+      segmentVaultFlushInFlightRef.current = false;
+    }
+  }
+
+  async function enqueueExpressionSegmentUpload(question, headlightResult) {
+    if (!question || question.query_type !== "הבעה") return;
+    if (getExpressionAudioMode() !== "incremental") return;
+    if (!expressionSegmentRecorderRef.current || !expressionSegmentQueueRef.current) return;
+    var testId = ensurePendingTestId();
+    var qn = String(question.query_number || "");
+    var blob = await expressionSegmentRecorderRef.current.stopSegment(question.query_number);
+    if (!blob && segmentBlobVaultRef.current) {
+      blob = await segmentBlobVaultRef.current.get(testId, qn);
+    }
+    if (!blob) {
+      console.warn("[incremental] missing segment blob for q" + qn);
+      if (segmentBlobVaultRef.current) {
+        segmentBlobVaultRef.current.recordSkippedNoBlob(qn);
+      }
+      return;
+    }
+    if (segmentBlobVaultRef.current) {
+      await segmentBlobVaultRef.current.put(testId, qn, blob, headlightResult);
+    }
+    enqueueSegmentJobFromBlob(qn, headlightResult, blob);
     expressionSegmentRecorderRef.current.clearLastBlob();
+  }
+
+  async function getExpressionSegmentFinalizeClientInfo() {
+    var uploadInfo = getExpressionSegmentUploadClientInfoFromQueue();
+    if (getExpressionAudioMode() !== "incremental" || !segmentBlobVaultRef.current) {
+      return { segmentUpload: uploadInfo };
+    }
+    var vaultInfo = await segmentBlobVaultRef.current.getClientInfo(ensurePendingTestId());
+    return { segmentUpload: uploadInfo, segmentVault: vaultInfo };
+  }
+
+  async function purgeSegmentBlobVaultForTest() {
+    if (getExpressionAudioMode() !== "incremental" || !segmentBlobVaultRef.current) return;
+    await segmentBlobVaultRef.current.purgeTest(ensurePendingTestId());
   }
 
   function getExpressionSegmentUploadStatsFromQueue() {
@@ -485,6 +582,25 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     var health =
       rec && typeof rec.checkHealth === "function" ? rec.checkHealth() : { ok: false };
     if (!force && health.ok) return;
+
+    if (rec && rec.emergencySnapshot && segmentBlobVaultRef.current) {
+      var snapQn = qn;
+      var vault = segmentBlobVaultRef.current;
+      var testIdForSnap = ensurePendingTestId();
+      (async function () {
+        try {
+          var snap = await rec.emergencySnapshot(snapQn);
+          if (snap && snap.blob && vault) {
+            await vault.put(testIdForSnap, snap.questionNumber, snap.blob, null);
+            vault.recordInterruptSnapshot();
+            console.log("[incremental] emergency snapshot vaulted q" + snap.questionNumber);
+          }
+        } catch (snapErr) {
+          console.warn("[incremental] emergency snapshot failed", snapErr);
+        }
+      })();
+    }
+
     freezeExpressionEvalCountdown();
     setIncrementalSegmentInterrupt({
       questionNumber: qn,
@@ -848,6 +964,9 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
 
   React.useEffect(function initIncrementalExpressionPipeline() {
     if (!window.MiliTestModules) return;
+    if (window.MiliTestModules.createSegmentBlobVault) {
+      segmentBlobVaultRef.current = window.MiliTestModules.createSegmentBlobVault();
+    }
     if (window.MiliTestModules.createExpressionSegmentRecorder) {
       expressionSegmentRecorderRef.current = window.MiliTestModules.createExpressionSegmentRecorder();
       if (expressionSegmentRecorderRef.current.setOnInterrupted) {
@@ -863,12 +982,28 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
         prepareSegmentUpload: prepareSegmentUpload,
         registerExpressionSegment: registerExpressionSegment,
         putSessionAudioToBlob: putSessionAudioToBlob,
+        onQuestionCompleted: function (questionKey) {
+          if (segmentBlobVaultRef.current) {
+            segmentBlobVaultRef.current.remove(ensurePendingTestId(), questionKey);
+          }
+        },
       });
     }
     return function () {
       if (expressionSegmentRecorderRef.current && expressionSegmentRecorderRef.current.cleanup) {
         expressionSegmentRecorderRef.current.cleanup();
       }
+    };
+  }, []);
+
+  React.useEffect(function flushVaultOnNetworkOnline() {
+    if (getExpressionAudioMode() !== "incremental") return;
+    function onOnline() {
+      flushVaultedExpressionSegments();
+    }
+    window.addEventListener("online", onOnline);
+    return function () {
+      window.removeEventListener("online", onOnline);
     };
   }, []);
 
@@ -902,7 +1037,10 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     var qn = incrementalSegmentInterrupt.questionNumber;
     function pollInterruptRecovery() {
       probeExpressionMicAvailable().then(function (ok) {
-        if (!cancelled) setIncrementalRestartMicReady(!!ok);
+        if (!cancelled) {
+          setIncrementalRestartMicReady(!!ok);
+          if (ok) flushVaultedExpressionSegments();
+        }
       });
       var queue = expressionSegmentQueueRef.current;
       if (queue && queue.getQuestionUploadState && qn) {
@@ -3262,6 +3400,9 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     },
     getExpressionSegmentUploadStats: getExpressionSegmentUploadStatsFromQueue,
     getExpressionSegmentUploadClientInfo: getExpressionSegmentUploadClientInfoFromQueue,
+    getExpressionSegmentFinalizeClientInfo: getExpressionSegmentFinalizeClientInfo,
+    flushVaultedExpressionSegments: flushVaultedExpressionSegments,
+    purgeSegmentBlobVaultForTest: purgeSegmentBlobVaultForTest,
     waitForExpressionSegmentQueueIdle: waitForExpressionSegmentQueueIdleFn,
     runExpressionSegmentFinishRetryBurst: runExpressionSegmentFinishRetryBurstFn,
     reconcileSessionScoreCounters: reconcileSessionScoreCountersFromResults,

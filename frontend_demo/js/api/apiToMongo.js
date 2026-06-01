@@ -139,13 +139,13 @@ async function createUser(userId, userName, parentPhone) {
 var PENDING_TEST_ID_KEY = "seeandsayPendingTestId";
 var PENDING_BLOB_UPLOADED_KEY = "seeandsayPendingBlobUploaded";
 /** Keep in sync with `app-version-label` in js/app/app.js */
-var MILI_APP_VERSION = "5.7";
+var MILI_APP_VERSION = "5.8";
 
 /**
  * Debug metadata sent with each finished test (device, browser, upload state).
  * @param {string|number} demoUserId - UI/local idDigits passed to API layer
  * @param {string} [testId] - pending test id at finish
- * @param {{ blobUploadOk?: boolean, segmentUpload?: object }} [opts]
+ * @param {{ blobUploadOk?: boolean, segmentUpload?: object, segmentVault?: object }} [opts]
  */
 function collectClientInfo(demoUserId, testId, opts) {
   opts = opts || {};
@@ -223,6 +223,10 @@ function collectClientInfo(demoUserId, testId, opts) {
 
   if (opts.segmentUpload && typeof opts.segmentUpload === "object") {
     info.segmentUpload = opts.segmentUpload;
+  }
+
+  if (opts.segmentVault && typeof opts.segmentVault === "object") {
+    info.segmentVault = opts.segmentVault;
   }
 
   return info;

@@ -159,6 +159,11 @@
           if (typeof pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload === "function") {
             pipelineCtx.beginExpressionEvalFreezeForIncrementalUpload();
           }
+          if (typeof pipelineCtx.flushVaultedExpressionSegments === "function") {
+            try {
+              await pipelineCtx.flushVaultedExpressionSegments();
+            } catch (vaultFlushErr) {}
+          }
           if (typeof pipelineCtx.runExpressionSegmentFinishRetryBurst === "function") {
             try {
               pipelineCtx.setTestUploadState("saving_metadata");
@@ -180,7 +185,9 @@
           }
           pipelineCtx.setSessionCompleted(true);
           var incrementalFinalizeOpts = null;
-          if (typeof pipelineCtx.getExpressionSegmentUploadClientInfo === "function") {
+          if (typeof pipelineCtx.getExpressionSegmentFinalizeClientInfo === "function") {
+            incrementalFinalizeOpts = await pipelineCtx.getExpressionSegmentFinalizeClientInfo();
+          } else if (typeof pipelineCtx.getExpressionSegmentUploadClientInfo === "function") {
             var segmentUploadInfo = pipelineCtx.getExpressionSegmentUploadClientInfo();
             if (segmentUploadInfo) {
               incrementalFinalizeOpts = { segmentUpload: segmentUploadInfo };
@@ -201,6 +208,11 @@
             pipelineCtx.ensurePendingTestId(),
             incrementalFinalizeOpts
           );
+          if (typeof pipelineCtx.purgeSegmentBlobVaultForTest === "function") {
+            try {
+              await pipelineCtx.purgeSegmentBlobVaultForTest();
+            } catch (vaultPurgeErr) {}
+          }
           handleUploadResult(incrementalResult);
           return;
         }

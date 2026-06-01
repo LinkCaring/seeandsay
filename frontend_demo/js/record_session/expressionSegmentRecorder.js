@@ -3,6 +3,8 @@
  * Records only bounded answer windows (no full-session chunk growth).
  */
 (function () {
+  var SEGMENT_TIMESLICE_MS = 2000;
+
   function createExpressionSegmentRecorder() {
     var stream = null;
     var recorder = null;
@@ -14,6 +16,12 @@
     var onInterruptedCallback = null;
     var segmentInterrupted = false;
     var expectActiveCapture = false;
+    var mimeType = "audio/webm";
+
+    function buildBlobFromChunks() {
+      if (!chunks.length) return null;
+      return new Blob(chunks, { type: mimeType });
+    }
 
     function notifyInterrupted(reason) {
       if (segmentInterrupted) return;
@@ -74,11 +82,12 @@
       expectActiveCapture = true;
       segmentInterrupted = false;
       recorder = new MediaRecorder(stream);
+      mimeType = recorder.mimeType || "audio/webm";
       recorder.ondataavailable = function (e) {
         if (e && e.data && e.data.size > 0) chunks.push(e.data);
       };
       recorder.onstop = function () {
-        lastBlob = chunks.length ? new Blob(chunks, { type: recorder.mimeType || "audio/webm" }) : null;
+        lastBlob = buildBlobFromChunks();
         lastBlobQuestionNumber = activeQuestionNumber;
         chunks = [];
         if (stopResolve) {
@@ -86,7 +95,7 @@
           stopResolve = null;
         }
       };
-      recorder.start();
+      recorder.start(SEGMENT_TIMESLICE_MS);
       return true;
     }
 
@@ -105,7 +114,7 @@
         try {
           recorder.stop();
         } catch (e) {
-          resolve(lastBlob);
+          resolve(lastBlob || buildBlobFromChunks());
         }
       });
     }
@@ -113,6 +122,36 @@
     function clearLastBlob() {
       lastBlob = null;
       lastBlobQuestionNumber = null;
+    }
+
+    /**
+     * Materialize partial audio before cleanup (e.g. phone call). Does not call cleanup().
+     */
+    async function emergencySnapshot(questionNumber) {
+      var qn = String(questionNumber || activeQuestionNumber || "");
+      if (!qn) return null;
+
+      if (recorder && recorder.state === "recording") {
+        try {
+          var blob = await stopSegment(qn);
+          if (blob) {
+            return { blob: blob, questionNumber: qn };
+          }
+        } catch (e) {}
+      }
+
+      var partial = buildBlobFromChunks();
+      if (partial) {
+        lastBlob = partial;
+        lastBlobQuestionNumber = qn;
+        return { blob: partial, questionNumber: qn };
+      }
+
+      if (lastBlob && lastBlobQuestionNumber === qn) {
+        return { blob: lastBlob, questionNumber: qn };
+      }
+
+      return null;
     }
 
     function setOnInterrupted(callback) {
@@ -161,6 +200,7 @@
       startSegment: startSegment,
       stopSegment: stopSegment,
       clearLastBlob: clearLastBlob,
+      emergencySnapshot: emergencySnapshot,
       setOnInterrupted: setOnInterrupted,
       checkHealth: checkHealth,
       isExpectingActiveCapture: isExpectingActiveCapture,

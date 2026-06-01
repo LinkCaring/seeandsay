@@ -84,7 +84,7 @@ index.html
 
 **Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores. Mid-test resume keys are **not** cleared when fixing results routing.
 
-**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.7**.
+**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.8**.
 
 ---
 
@@ -259,14 +259,29 @@ At login, the parent chooses expression recording mode:
 |-------|----------------|
 | `record_session/*` | Implementation (capture, timestamps, encode) |
 | `recording.js` | Facade → **`SessionRecorder`** global |
-| `js/record_session/expressionSegmentRecorder.js` | Incremental segment capture (one segment per expression question) |
+| `js/record_session/expressionSegmentRecorder.js` | Incremental segment capture (2s timeslices; `emergencySnapshot` on interrupt) |
+| `js/test/expression/segmentBlobVault.js` | IndexedDB + memory vault for segment blobs before register succeeds (incremental only) |
 | `js/test/expression/expressionSegmentUploadQueue.js` | Incremental async queue: encode + upload + register segment; Q-keyed blob retention; up to 3 retries per question |
 | `test.js` + modules | Starts mode-specific recording flow, marks timestamps in legacy, and enqueues segment uploads in incremental |
 
 On finish, `testSessionFinish.js` branches by mode:
 
 - **`legacy`**: waits for session MP3, uploads via SAS, then calls `updateUserTests` with scores + timestamp text.
-- **`incremental`**: `testScoring.js` enqueues the last segment before advance/finish; at finish runs a 30s retry burst for failed uploads (only), then drains pending uploads (60s), freezes the 20s expression countdown during drain, always calls `updateUserTests` for metadata-only finalize (no legacy full-audio fallback when zero segments succeed), then `releaseIncrementalCaptureResources()` on success. Score counters are reconciled from deduped `questionResults` at finish. Summary / expression AI polling waits for full `done` with no 30s UI cap.
+- **`incremental`**: `testScoring.js` enqueues the last segment before advance/finish; at finish flushes the segment vault, runs a 30s retry burst for failed uploads (only), then drains pending uploads (60s), freezes the 20s expression countdown during drain, always calls `updateUserTests` for metadata-only finalize (no legacy full-audio fallback when zero segments succeed), then purges vault entries for the test and `releaseIncrementalCaptureResources()` on success. Score counters are reconciled from deduped `questionResults` at finish. Summary / expression AI polling waits for full `done` with no 30s UI cap.
+
+### Incremental segment vault (call / interrupt)
+
+When a phone call or track loss would wipe in-RAM recorder chunks before `enqueue`, incremental mode:
+
+| Layer | Behavior |
+|-------|----------|
+| **Vault** | `segmentBlobVault.js` stores one blob per `testId|questionNumber` in IndexedDB (memory cache fallback); typical live set is 0–3 blobs, not all 36 questions |
+| **On Continue** | `stopSegment` → vault `put` before queue; read vault if `stopSegment` returns null; game still advances (non-blocking) |
+| **On interrupt** | `emergencySnapshot` + vault before interrupt modal; other questions’ vault entries untouched on re-record |
+| **Backfill** | `flushVaultedExpressionSegments` after mic recovery, `online`, and at start of finish pipeline |
+| **Cleanup** | Vault row removed when segment register succeeds; `purgeTest(testId)` after finalize upload |
+
+Finalize sends `clientInfo.segmentVault` (`pending`, `skippedNoBlob`, `interruptSnapshots`) alongside `segmentUpload`. Legacy mode does not use the vault.
 
 ### Incremental upload retry (iOS / flaky network)
 
@@ -318,7 +333,7 @@ Expression scoring runs on the server in both modes:
 - **`legacy`**: mainly after finish, using slices from the uploaded session audio.
 - **`incremental`**: continuously during test from uploaded expression segments; finalize waits for all expression rows (server retries + fallbacks), then impression; summary polls until `done` with `processed >= total`.
 
-**Changelog (31 May 2026):** [`../changes/CHANGES_2026-05-31_31.md`](../changes/CHANGES_2026-05-31_31.md) — expression mic check AudioContext resume, version 5.7. Prior: [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md).
+**Changelog (1 Jun 2026):** [`../changes/CHANGES_2026-06-01_01.md`](../changes/CHANGES_2026-06-01_01.md) — incremental segment blob vault, version 5.8. Prior: [`../changes/CHANGES_2026-05-31_31.md`](../changes/CHANGES_2026-05-31_31.md) (mic check 5.7), [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md).
 
 ---
 

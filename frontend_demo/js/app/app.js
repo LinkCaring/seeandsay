@@ -368,7 +368,7 @@ function App() {
     React.createElement(
       "div",
       { className: "app-version-label", "aria-hidden": "true" },
-      "version 5.7"
+      "version 5.8"
     ),
     /* Reset button moved to test navbar */
     showResetConfirm

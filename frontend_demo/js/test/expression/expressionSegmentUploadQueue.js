@@ -41,6 +41,9 @@
   }
 
   function createExpressionSegmentUploadQueue(deps) {
+    deps = deps || {};
+    var onQuestionCompleted =
+      typeof deps.onQuestionCompleted === "function" ? deps.onQuestionCompleted : null;
     var queue = [];
     var running = false;
     var completed = 0;
@@ -218,7 +221,13 @@
           completed += 1;
           completedQuestions[key] = true;
           delete failedQuestions[key];
+          var completedEntry = pendingUploads[key];
           delete pendingUploads[key];
+          if (onQuestionCompleted) {
+            try {
+              onQuestionCompleted(key, completedEntry);
+            } catch (cbErr) {}
+          }
           console.log("[segmentQueue] uploaded q" + key + " (completed=" + completed + ")");
         } catch (err) {
           entry.attemptCount = (entry.attemptCount || 0) + 1;
