@@ -162,6 +162,28 @@
       return expectActiveCapture;
     }
 
+    /**
+     * Read-only snapshot before stopSegment (for clientInfo diagnostics).
+     */
+    function getCaptureDiagnostics() {
+      var track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+      var chunkBytes = 0;
+      for (var i = 0; i < chunks.length; i++) {
+        if (chunks[i] && chunks[i].size) chunkBytes += chunks[i].size;
+      }
+      return {
+        questionNumber: activeQuestionNumber,
+        chunkCount: chunks.length,
+        chunkBytes: chunkBytes,
+        trackReadyState: track ? track.readyState : null,
+        trackMuted: track ? !!track.muted : null,
+        trackEnabled: track ? !!track.enabled : null,
+        recorderState: recorder ? recorder.state : null,
+        segmentInterrupted: !!segmentInterrupted,
+        expectActiveCapture: !!expectActiveCapture,
+      };
+    }
+
     function checkHealth() {
       if (segmentInterrupted) {
         return { ok: false, interrupted: true, reason: "interrupted" };
@@ -203,6 +225,7 @@
       emergencySnapshot: emergencySnapshot,
       setOnInterrupted: setOnInterrupted,
       checkHealth: checkHealth,
+      getCaptureDiagnostics: getCaptureDiagnostics,
       isExpectingActiveCapture: isExpectingActiveCapture,
       cleanup: cleanup,
     };

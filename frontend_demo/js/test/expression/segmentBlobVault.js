@@ -163,7 +163,9 @@
     var telemetry = {
       interruptSnapshots: 0,
       skippedNoBlob: [],
+      continueCaptures: [],
     };
+    var MAX_CONTINUE_CAPTURES = 48;
 
     function put(testId, questionNumber, blob, headlightResult) {
       if (!blob || !testId || !questionNumber) return Promise.resolve();
@@ -260,10 +262,41 @@
       }
     }
 
+    function recordContinueCapture(entry) {
+      if (!entry || !entry.questionNumber) return;
+      var row = {
+        at: new Date().toISOString(),
+        questionNumber: qKey(entry.questionNumber),
+        chunkCount: typeof entry.chunkCount === "number" ? entry.chunkCount : null,
+        chunkBytes: typeof entry.chunkBytes === "number" ? entry.chunkBytes : null,
+        trackReadyState: entry.trackReadyState != null ? String(entry.trackReadyState) : null,
+        trackMuted: typeof entry.trackMuted === "boolean" ? entry.trackMuted : null,
+        trackEnabled: typeof entry.trackEnabled === "boolean" ? entry.trackEnabled : null,
+        recorderState: entry.recorderState != null ? String(entry.recorderState) : null,
+        segmentInterrupted: !!entry.segmentInterrupted,
+        hadBlob: !!entry.hadBlob,
+        blobFromVault: !!entry.blobFromVault,
+        blobSizeBytes: typeof entry.blobSizeBytes === "number" ? entry.blobSizeBytes : 0,
+        enqueued: !!entry.enqueued,
+        callLikely: !!entry.callLikely,
+        segmentHealthReason: entry.segmentHealthReason || null,
+        sessionRecordingInterrupted:
+          typeof entry.sessionRecordingInterrupted === "boolean"
+            ? entry.sessionRecordingInterrupted
+            : null,
+        visibilityState: entry.visibilityState || null,
+      };
+      telemetry.continueCaptures.push(row);
+      if (telemetry.continueCaptures.length > MAX_CONTINUE_CAPTURES) {
+        telemetry.continueCaptures.shift();
+      }
+    }
+
     function getTelemetry() {
       return {
         interruptSnapshots: telemetry.interruptSnapshots,
         skippedNoBlob: telemetry.skippedNoBlob.slice(),
+        continueCaptures: telemetry.continueCaptures.slice(),
       };
     }
 
@@ -274,6 +307,7 @@
           pending: pending,
           skippedNoBlob: t.skippedNoBlob,
           interruptSnapshots: t.interruptSnapshots,
+          continueCaptures: t.continueCaptures,
         };
       });
     }
@@ -288,6 +322,7 @@
       purgeTest: purgeTest,
       recordInterruptSnapshot: recordInterruptSnapshot,
       recordSkippedNoBlob: recordSkippedNoBlob,
+      recordContinueCapture: recordContinueCapture,
       getTelemetry: getTelemetry,
       getClientInfo: getClientInfo,
     };

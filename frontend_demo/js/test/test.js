@@ -501,22 +501,62 @@ function Test({ allQuestions, lang, t, onHome, onReset, setLang, onTestPhase }) 
     if (!expressionSegmentRecorderRef.current || !expressionSegmentQueueRef.current) return;
     var testId = ensurePendingTestId();
     var qn = String(question.query_number || "");
-    var blob = await expressionSegmentRecorderRef.current.stopSegment(question.query_number);
+    var rec = expressionSegmentRecorderRef.current;
+    var diag =
+      rec && typeof rec.getCaptureDiagnostics === "function" ? rec.getCaptureDiagnostics() : {};
+    var health = rec && typeof rec.checkHealth === "function" ? rec.checkHealth() : null;
+    var sessionRecInterrupted = null;
+    if (typeof SessionRecorder !== "undefined" && SessionRecorder.isRecordingInterrupted) {
+      sessionRecInterrupted = !!SessionRecorder.isRecordingInterrupted();
+    }
+    var visibilityState =
+      typeof document !== "undefined" && document.visibilityState ? document.visibilityState : null;
+    var callLikely =
+      diag.trackReadyState === "ended" ||
+      !!diag.segmentInterrupted ||
+      !!(health && health.ok === false && health.interrupted);
+    var blobFromVault = false;
+    var blob = await rec.stopSegment(question.query_number);
     if (!blob && segmentBlobVaultRef.current) {
       blob = await segmentBlobVaultRef.current.get(testId, qn);
+      blobFromVault = !!blob;
     }
+    var hadBlob = !!blob;
+    var blobSizeBytes = blob && blob.size ? blob.size : 0;
+    var enqueued = false;
     if (!blob) {
       console.warn("[incremental] missing segment blob for q" + qn);
       if (segmentBlobVaultRef.current) {
         segmentBlobVaultRef.current.recordSkippedNoBlob(qn);
       }
-      return;
+    } else {
+      if (segmentBlobVaultRef.current) {
+        await segmentBlobVaultRef.current.put(testId, qn, blob, headlightResult);
+      }
+      enqueueSegmentJobFromBlob(qn, headlightResult, blob);
+      enqueued = true;
+      rec.clearLastBlob();
     }
-    if (segmentBlobVaultRef.current) {
-      await segmentBlobVaultRef.current.put(testId, qn, blob, headlightResult);
+    if (segmentBlobVaultRef.current && segmentBlobVaultRef.current.recordContinueCapture) {
+      segmentBlobVaultRef.current.recordContinueCapture({
+        questionNumber: qn,
+        chunkCount: diag.chunkCount,
+        chunkBytes: diag.chunkBytes,
+        trackReadyState: diag.trackReadyState,
+        trackMuted: diag.trackMuted,
+        trackEnabled: diag.trackEnabled,
+        recorderState: diag.recorderState,
+        segmentInterrupted: diag.segmentInterrupted,
+        hadBlob: hadBlob,
+        blobFromVault: blobFromVault,
+        blobSizeBytes: blobSizeBytes,
+        enqueued: enqueued,
+        callLikely: callLikely,
+        segmentHealthReason: health && health.reason ? health.reason : null,
+        sessionRecordingInterrupted: sessionRecInterrupted,
+        visibilityState: visibilityState,
+      });
     }
-    enqueueSegmentJobFromBlob(qn, headlightResult, blob);
-    expressionSegmentRecorderRef.current.clearLastBlob();
   }
 
   async function getExpressionSegmentFinalizeClientInfo() {

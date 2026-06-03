@@ -84,7 +84,7 @@ index.html
 
 **Resume:** `MiliTestRun` (in `app.js`) detects an in-progress run before login or when starting from home. Welcome can show “continue vs new game”; the test can restore index and scores. Mid-test resume keys are **not** cleared when fixing results routing.
 
-**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.8**.
+**App version:** Footer label and `MILI_APP_VERSION` in `apiToMongo.js` (keep in sync) — currently **5.9**.
 
 ---
 
@@ -281,7 +281,7 @@ When a phone call or track loss would wipe in-RAM recorder chunks before `enqueu
 | **Backfill** | `flushVaultedExpressionSegments` after mic recovery, `online`, and at start of finish pipeline |
 | **Cleanup** | Vault row removed when segment register succeeds; `purgeTest(testId)` after finalize upload |
 
-Finalize sends `clientInfo.segmentVault` (`pending`, `skippedNoBlob`, `interruptSnapshots`) alongside `segmentUpload`. Legacy mode does not use the vault.
+Finalize sends `clientInfo.segmentVault` (`pending`, `skippedNoBlob`, `interruptSnapshots`, `continueCaptures`) alongside `segmentUpload`. Each `continueCaptures` row logs at expression Continue: `questionNumber`, `chunkCount`, `trackReadyState`, `hadBlob`, `enqueued`, `callLikely` (track-ended proxy, not native call API). Legacy mode does not use the vault.
 
 ### Incremental upload retry (iOS / flaky network)
 
@@ -333,7 +333,7 @@ Expression scoring runs on the server in both modes:
 - **`legacy`**: mainly after finish, using slices from the uploaded session audio.
 - **`incremental`**: continuously during test from uploaded expression segments; finalize waits for all expression rows (server retries + fallbacks), then impression; summary polls until `done` with `processed >= total`.
 
-**Changelog (1 Jun 2026):** [`../changes/CHANGES_2026-06-01_01.md`](../changes/CHANGES_2026-06-01_01.md) — incremental segment blob vault, version 5.8. Prior: [`../changes/CHANGES_2026-05-31_31.md`](../changes/CHANGES_2026-05-31_31.md) (mic check 5.7), [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md).
+**Changelog (1 Jun 2026):** [`../changes/CHANGES_2026-06-01_01.md`](../changes/CHANGES_2026-06-01_01.md) — segment vault 5.8; Continue capture diagnostics 5.9. Prior: [`../changes/CHANGES_2026-05-31_31.md`](../changes/CHANGES_2026-05-31_31.md) (mic check 5.7), [`../changes/CHANGES_2026-05-30_30.md`](../changes/CHANGES_2026-05-30_30.md).
 
 ---
 
